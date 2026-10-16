@@ -2,7 +2,15 @@
  * Cliente HTTP tipado para a API PCN Advogadas (FastAPI).
  */
 
-const API_BASE = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000/api/v1";
+function getApiBase(): string {
+  let raw = (process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000/api/v1").trim().replace(/\/+$/, "");
+  if (!raw.startsWith("http://") && !raw.startsWith("https://")) {
+    raw = `https://${raw}`;
+  }
+  return raw;
+}
+
+const API_BASE = getApiBase();
 
 interface RequestOptions extends RequestInit {
   token?: string;
