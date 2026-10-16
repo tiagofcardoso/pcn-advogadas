@@ -37,6 +37,8 @@ import {
   ArrowRight,
   Eye,
   SlidersHorizontal,
+  Database,
+  LogIn,
 } from "lucide-react";
 import { INITIAL_USERS, INITIAL_CLIENTS, INITIAL_TASKS } from "@/lib/mockData";
 import { Task, Client, UserProfile } from "@/lib/types";
@@ -298,6 +300,74 @@ export default function App() {
   const [clientFormPhone, setClientFormPhone] = useState("");
   const [clientFormNotes, setClientFormNotes] = useState("");
   const [isSubmittingClient, setIsSubmittingClient] = useState(false);
+
+  // Auth & Connection Modal
+  const [isLoginModalOpen, setIsLoginModalOpen] = useState(false);
+  const [loginEmail, setLoginEmail] = useState("patricia@pcnadvogadas.pt");
+  const [loginPassword, setLoginPassword] = useState("Advogada2026!");
+  const [isLoggingIn, setIsLoggingIn] = useState(false);
+  const [loginError, setLoginError] = useState<string | null>(null);
+  const [loginSuccessMsg, setLoginSuccessMsg] = useState<string | null>(null);
+
+  const handleManualLogin = async (e?: React.FormEvent) => {
+    if (e) e.preventDefault();
+    setIsLoggingIn(true);
+    setLoginError(null);
+    setLoginSuccessMsg(null);
+    try {
+      const loginRes = await loginApi(loginEmail, loginPassword);
+      if (loginRes.access_token) {
+        setAuthToken(loginRes.access_token);
+        setApiConnected(true);
+        setLoginSuccessMsg("Autenticação com PostgreSQL efetuada com sucesso!");
+
+        const matched = INITIAL_USERS.find(
+          (u) => u.email.toLowerCase() === loginEmail.toLowerCase()
+        );
+        if (matched) setCurrentUser(matched);
+
+        try {
+          const apiTasks = await getDirectionBoard(loginRes.access_token);
+          if (apiTasks) {
+            setTasks(
+              apiTasks.map((t: any) => ({
+                id: t.id,
+                title: t.title,
+                description: t.description,
+                client_id: t.client_id,
+                client_name: t.client?.name || "Cliente",
+                task_type: t.task_type?.name || "Geral",
+                status: t.status,
+                assigned_to: t.assigned_to,
+                lawyer_name: t.assignee?.name || "—",
+                due_date: t.due_date ? t.due_date.split("T")[0] : undefined,
+                total_duration_seconds: t.total_duration_seconds || 0,
+                fee_amount: t.fee_amount ? parseFloat(t.fee_amount) : undefined,
+              }))
+            );
+          }
+        } catch {}
+
+        try {
+          const apiClients = await getClientsApi(loginRes.access_token);
+          if (apiClients) {
+            setClients(apiClients);
+          }
+        } catch {}
+
+        setTimeout(() => {
+          setIsLoginModalOpen(false);
+          setLoginSuccessMsg(null);
+        }, 1200);
+      } else {
+        setLoginError("Resposta inesperada do servidor.");
+      }
+    } catch (err: any) {
+      setLoginError(err.message || "Erro ao conectar à API. Verifique as credenciais.");
+    } finally {
+      setIsLoggingIn(false);
+    }
+  };
 
   // 1. Initial Login & Database Sync on mount
   useEffect(() => {
@@ -1002,16 +1072,26 @@ PCN Advogadas · Plataforma Forense`;
                 </button>
               )}
 
-              <div className="flex items-center gap-2 px-1 py-1 text-xs text-[#666]">
-                <span
-                  className={`w-2 h-2 rounded-full ${
-                    apiConnected ? "bg-emerald-500" : "bg-amber-400"
-                  }`}
-                />
-                <span className="font-medium">
-                  {apiConnected ? "Base de Dados Conectada" : "Modo Local / Offline"}
-                </span>
-              </div>
+              <button
+                type="button"
+                onClick={() => {
+                  setIsMobileMenuOpen(false);
+                  setIsLoginModalOpen(true);
+                }}
+                className="w-full flex items-center justify-between px-2.5 py-1.5 text-xs text-[#555] bg-[#FAF8F5] border border-[#ECE6DB] rounded-md hover:bg-[#F2EDE4] transition-all cursor-pointer text-left"
+              >
+                <div className="flex items-center gap-2">
+                  <span
+                    className={`w-2 h-2 rounded-full ${
+                      apiConnected ? "bg-emerald-500 animate-pulse" : "bg-amber-400"
+                    }`}
+                  />
+                  <span className="font-medium text-[11px]">
+                    {apiConnected ? "Base Conectada" : "Modo Local · Fazer Login"}
+                  </span>
+                </div>
+                <LogIn className="w-3.5 h-3.5 text-[#888]" />
+              </button>
               <div className="pt-1 text-[10px] text-[#888] leading-tight">
                 <p className="font-bold text-[#666]">PCN ADVOGADAS · PWA</p>
                 <p>Plataforma Forense Interna v1.0</p>
@@ -1161,16 +1241,24 @@ PCN Advogadas · Plataforma Forense`;
             </button>
           )}
 
-          <div className="flex items-center gap-1.5 px-1 py-1 text-[11px] text-[#666]">
-            <span
-              className={`w-2 h-2 rounded-full ${
-                apiConnected ? "bg-emerald-500" : "bg-amber-400"
-              }`}
-            />
-            <span>
-              {apiConnected ? "Base de Dados Conectada" : "Modo Local / Offline"}
-            </span>
-          </div>
+          <button
+            type="button"
+            onClick={() => setIsLoginModalOpen(true)}
+            className="w-full flex items-center justify-between px-2.5 py-1.5 text-xs text-[#555] bg-[#FAF8F5] border border-[#ECE6DB] rounded-md hover:bg-[#F2EDE4] transition-all cursor-pointer text-left shadow-2xs"
+            title="Clique para autenticar ou verificar a ligação à base de dados"
+          >
+            <div className="flex items-center gap-2">
+              <span
+                className={`w-2 h-2 rounded-full ${
+                  apiConnected ? "bg-emerald-500 animate-pulse" : "bg-amber-400"
+                }`}
+              />
+              <span className="font-semibold text-[11px]">
+                {apiConnected ? "Base Conectada" : "Modo Local · Fazer Login"}
+              </span>
+            </div>
+            <LogIn className="w-3.5 h-3.5 text-[#888]" />
+          </button>
 
           <div className="pt-2 text-[10px] text-[#999] leading-tight">
             <p className="font-semibold text-[#666]">PCN ADVOGADAS</p>
@@ -1289,6 +1377,25 @@ PCN Advogadas · Plataforma Forense`;
               <span className="text-[11px] font-semibold text-[#AA820A] bg-[#FCF8EE] border border-[#F1E5C7] px-2.5 py-1 rounded-md">
                 {isStandalone ? "Modo PWA Forense" : "Protótipo 5.2"}
               </span>
+
+              <button
+                type="button"
+                onClick={() => setIsLoginModalOpen(true)}
+                className={`flex items-center gap-1.5 text-xs font-semibold px-3 py-1.5 rounded-md border transition-all cursor-pointer shadow-2xs ${
+                  apiConnected
+                    ? "bg-emerald-50 text-emerald-800 border-emerald-300 hover:bg-emerald-100"
+                    : "bg-[#FAF8F5] text-[#92006F] border-[#92006F] hover:bg-[#FCF8EE]"
+                }`}
+                title={apiConnected ? "Base de Dados Conectada. Clique para gerir sessão." : "Clique para autenticar e ligar ao PostgreSQL"}
+              >
+                <span
+                  className={`w-2 h-2 rounded-full ${
+                    apiConnected ? "bg-emerald-500 animate-pulse" : "bg-amber-500"
+                  }`}
+                />
+                <Database className="w-3.5 h-3.5" />
+                <span>{apiConnected ? "Base Conectada" : "Fazer Login / Ligar"}</span>
+              </button>
 
               <div className="flex items-center gap-2">
                 <span className="text-xs text-[#666]">Visualizar como:</span>
@@ -3013,6 +3120,131 @@ PCN Advogadas · Plataforma Forense`;
                   <span>{isDeletingTask ? "A eliminar..." : "Sim, Eliminar Definitivamente"}</span>
                 </button>
               </div>
+            </div>
+          </div>
+        )}
+
+        {/* ── MODAL DE AUTENTICAÇÃO / CONEXÃO POSTGRESQL ── */}
+        {isLoginModalOpen && (
+          <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-xs p-4 overflow-y-auto animate-in fade-in duration-200">
+            <div className="bg-white border border-[#D9D1C5] rounded-xl shadow-2xl max-w-md w-full p-6 space-y-4 relative">
+              <button
+                type="button"
+                onClick={() => setIsLoginModalOpen(false)}
+                className="absolute right-4 top-4 text-[#888] hover:text-[#222] p-1 rounded-md cursor-pointer"
+              >
+                <X className="w-4 h-4" />
+              </button>
+
+              <div className="flex items-center gap-3">
+                <div className="w-10 h-10 rounded-lg bg-[#FAF8F5] border border-[#ECE6DB] flex items-center justify-center text-[#92006F] shrink-0">
+                  <Database className="w-5 h-5" />
+                </div>
+                <div>
+                  <h3 className="text-sm font-bold text-[#141414]">Autenticação & Ligação à Base de Dados</h3>
+                  <p className="text-[11px] text-[#666]">
+                    PCN Advogadas · PostgreSQL no Railway
+                  </p>
+                </div>
+              </div>
+
+              {loginSuccessMsg && (
+                <div className="p-3 bg-emerald-50 border border-emerald-200 rounded-lg text-xs text-emerald-800 flex items-center gap-2">
+                  <CheckCircle2 className="w-4 h-4 text-emerald-600 shrink-0" />
+                  <span>{loginSuccessMsg}</span>
+                </div>
+              )}
+
+              {loginError && (
+                <div className="p-3 bg-rose-50 border border-rose-200 rounded-lg text-xs text-rose-800 flex items-start gap-2">
+                  <AlertCircle className="w-4 h-4 text-rose-600 shrink-0 mt-0.5" />
+                  <div className="flex-1">
+                    <p className="font-semibold">Erro de Ligação</p>
+                    <p className="text-[11px] mt-0.5">{loginError}</p>
+                  </div>
+                </div>
+              )}
+
+              <form onSubmit={handleManualLogin} className="space-y-3">
+                <div>
+                  <label className="block text-xs font-semibold text-[#444] mb-1">
+                    Selecionar Advogada
+                  </label>
+                  <div className="grid grid-cols-3 gap-1.5 mb-2">
+                    {[
+                      { name: "Patrícia", email: "patricia@pcnadvogadas.pt" },
+                      { name: "Inês", email: "ines@pcnadvogadas.pt" },
+                      { name: "Sofia", email: "sofia@pcnadvogadas.pt" },
+                    ].map((lawyer) => (
+                      <button
+                        key={lawyer.email}
+                        type="button"
+                        onClick={() => setLoginEmail(lawyer.email)}
+                        className={`px-2 py-1.5 rounded-md text-xs font-medium border text-center transition-all cursor-pointer ${
+                          loginEmail.toLowerCase() === lawyer.email.toLowerCase()
+                            ? "bg-[#92006F] text-white border-[#92006F] shadow-xs"
+                            : "bg-[#FAF8F5] text-[#444] border-[#D9D1C5] hover:bg-[#F2EDE4]"
+                        }`}
+                      >
+                        Dr.ª {lawyer.name}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+
+                <div>
+                  <label className="block text-xs font-semibold text-[#444] mb-1">
+                    Email Forense
+                  </label>
+                  <input
+                    type="email"
+                    value={loginEmail}
+                    onChange={(e) => setLoginEmail(e.target.value)}
+                    required
+                    className="w-full text-xs bg-[#FAF8F5] border border-[#D9D1C5] rounded-md px-3 py-2 text-[#222] focus:outline-none focus:ring-1 focus:ring-[#92006F]"
+                  />
+                </div>
+
+                <div>
+                  <label className="block text-xs font-semibold text-[#444] mb-1">
+                    Palavra-passe
+                  </label>
+                  <input
+                    type="password"
+                    value={loginPassword}
+                    onChange={(e) => setLoginPassword(e.target.value)}
+                    required
+                    className="w-full text-xs bg-[#FAF8F5] border border-[#D9D1C5] rounded-md px-3 py-2 text-[#222] focus:outline-none focus:ring-1 focus:ring-[#92006F]"
+                  />
+                </div>
+
+                <div className="pt-2 flex items-center justify-between border-t border-[#ECE6DB]">
+                  <button
+                    type="button"
+                    onClick={() => setIsLoginModalOpen(false)}
+                    className="px-3 py-2 text-xs font-medium text-[#666] hover:text-[#222] cursor-pointer"
+                  >
+                    Fechar
+                  </button>
+                  <button
+                    type="submit"
+                    disabled={isLoggingIn}
+                    className="bg-[#92006F] hover:bg-[#7E0060] text-white text-xs font-semibold px-4 py-2 rounded-md flex items-center gap-2 shadow-xs cursor-pointer disabled:opacity-50"
+                  >
+                    {isLoggingIn ? (
+                      <>
+                        <RefreshCw className="w-3.5 h-3.5 animate-spin" />
+                        <span>A ligar...</span>
+                      </>
+                    ) : (
+                      <>
+                        <LogIn className="w-3.5 h-3.5" />
+                        <span>Entrar e Ligar Base de Dados</span>
+                      </>
+                    )}
+                  </button>
+                </div>
+              </form>
             </div>
           </div>
         )}
