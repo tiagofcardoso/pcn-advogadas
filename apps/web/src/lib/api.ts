@@ -3,7 +3,10 @@
  */
 
 function getApiBase(): string {
-  let raw = (process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000/api/v1").trim().replace(/\/+$/, "");
+  let raw = (
+    process.env.NEXT_PUBLIC_API_URL ||
+    "https://remarkable-cat-production-2dc2.up.railway.app/api/v1"
+  ).trim().replace(/\/+$/, "");
   if (!raw.startsWith("http://") && !raw.startsWith("https://")) {
     raw = `https://${raw}`;
   }
