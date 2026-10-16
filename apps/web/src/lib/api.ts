@@ -32,6 +32,20 @@ export async function apiFetch<T>(endpoint: string, options: RequestOptions = {}
     ...rest,
   });
 
+  if (res.status === 401) {
+    if (typeof window !== "undefined") {
+      localStorage.removeItem("pcn_session_token");
+      localStorage.removeItem("pcn_session_expiry");
+      localStorage.removeItem("pcn_session_user");
+      window.dispatchEvent(
+        new CustomEvent("pcn_session_expired", {
+          detail: "A sua sessão expirou por motivos de segurança forense (30 min). Por favor, inicie sessão novamente.",
+        })
+      );
+    }
+    throw new Error("A sua sessão expirou. Por favor, autentique-se novamente.");
+  }
+
   if (!res.ok) {
     const errorBody = await res.json().catch(() => ({}));
     throw new Error(errorBody.message || `Erro ${res.status}: ${res.statusText}`);

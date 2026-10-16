@@ -39,6 +39,10 @@ import {
   SlidersHorizontal,
   Database,
   LogIn,
+  LogOut,
+  ShieldCheck,
+  UserPlus,
+  ShieldAlert,
 } from "lucide-react";
 import { INITIAL_USERS, INITIAL_CLIENTS, INITIAL_TASKS } from "@/lib/mockData";
 import { Task, Client, UserProfile } from "@/lib/types";
@@ -63,14 +67,37 @@ import {
   getExcelExportUrl,
   downloadFeeNoteExcelApi,
   clearDemoDataApi,
+  getUsersApi,
+  createUserApi,
+  updateUserApi,
 } from "@/lib/api";
 
 export default function App() {
   const [currentUser, setCurrentUser] = useState<UserProfile>(INITIAL_USERS[0]);
   const [authToken, setAuthToken] = useState<string | null>(null);
+  const [isAuthenticated, setIsAuthenticated] = useState<boolean>(false);
+  const [sessionExpiry, setSessionExpiry] = useState<number | null>(null);
+  const [sessionNotice, setSessionNotice] = useState<string | null>(null);
   const [activeTab, setActiveTab] = useState<
-    "dashboard" | "tasks" | "archived" | "clients" | "calendar" | "feenotes" | "reports"
+    "dashboard" | "tasks" | "archived" | "clients" | "calendar" | "feenotes" | "reports" | "users"
   >("dashboard");
+
+  // User Management State (Portal Admin)
+  const [usersList, setUsersList] = useState<any[]>(INITIAL_USERS);
+  const [isLoadingUsers, setIsLoadingUsers] = useState<boolean>(false);
+  const [isNewUserModalOpen, setIsNewUserModalOpen] = useState<boolean>(false);
+  const [newUserForm, setNewUserForm] = useState<{
+    name: string;
+    email: string;
+    role: "admin_lawyer" | "lawyer";
+    password: string;
+  }>({
+    name: "",
+    email: "",
+    role: "lawyer",
+    password: "Advogada2026!",
+  });
+  const [isSubmittingUser, setIsSubmittingUser] = useState<boolean>(false);
 
   const [tasks, setTasks] = useState<Task[]>(INITIAL_TASKS);
   const [clients, setClients] = useState<Client[]>(INITIAL_CLIENTS);
@@ -151,7 +178,7 @@ export default function App() {
 
   // Navigation with native mobile back gesture/popstate support
   const switchTab = (
-    tab: "dashboard" | "tasks" | "archived" | "clients" | "calendar" | "feenotes" | "reports"
+    tab: "dashboard" | "tasks" | "archived" | "clients" | "calendar" | "feenotes" | "reports" | "users"
   ) => {
     if (typeof window !== "undefined") {
       window.history.pushState({ tab }, "");
@@ -301,121 +328,220 @@ export default function App() {
   const [clientFormNotes, setClientFormNotes] = useState("");
   const [isSubmittingClient, setIsSubmittingClient] = useState(false);
 
-  // Auth & Connection Modal
-  const [isLoginModalOpen, setIsLoginModalOpen] = useState(false);
+  // ── AUTENTICAÇÃO E SESSÃO SEGURA (30 MINUTOS) ──
   const [loginEmail, setLoginEmail] = useState("patricia@pcnadvogadas.pt");
   const [loginPassword, setLoginPassword] = useState("Advogada2026!");
   const [isLoggingIn, setIsLoggingIn] = useState(false);
   const [loginError, setLoginError] = useState<string | null>(null);
-  const [loginSuccessMsg, setLoginSuccessMsg] = useState<string | null>(null);
 
-  const handleManualLogin = async (e?: React.FormEvent) => {
+  const loadAllData = async (token: string, userRole?: string) => {
+    setIsLoadingApi(true);
+    try {
+      // 1. Tarefas
+      try {
+        const apiTasks = await getDirectionBoard(token);
+        if (apiTasks) {
+          setTasks(
+            apiTasks.map((t: any) => ({
+              id: t.id,
+              title: t.title,
+              description: t.description,
+              client_id: t.client_id,
+              client_name: t.client?.name || "Cliente",
+              task_type: t.task_type?.name || "Geral",
+              status: t.status,
+              assigned_to: t.assigned_to,
+              lawyer_name: t.assignee?.name || "—",
+              due_date: t.due_date ? t.due_date.split("T")[0] : undefined,
+              total_duration_seconds: t.total_duration_seconds || 0,
+              fee_amount: t.fee_amount ? parseFloat(t.fee_amount) : undefined,
+            }))
+          );
+        }
+      } catch (e) {
+        console.warn("Aviso ao carregar tarefas:", e);
+      }
+
+      // 2. Clientes
+      try {
+        const apiClients = await getClientsApi(token);
+        if (apiClients) {
+          setClients(apiClients);
+        }
+      } catch (e) {
+        console.warn("Aviso ao carregar clientes:", e);
+      }
+
+      // 3. Utilizadores (se Direção / Admin)
+      const roleToCheck = userRole || currentUser?.role;
+      if (roleToCheck === "admin_lawyer") {
+        try {
+          setIsLoadingUsers(true);
+          const apiUsers = await getUsersApi(token);
+          if (apiUsers && apiUsers.length > 0) {
+            setUsersList(apiUsers);
+          }
+        } catch (e) {
+          console.warn("Aviso ao carregar utilizadoras:", e);
+        } finally {
+          setIsLoadingUsers(false);
+        }
+      }
+    } finally {
+      setIsLoadingApi(false);
+    }
+  };
+
+  const handleLogout = (notice?: string) => {
+    if (typeof window !== "undefined") {
+      localStorage.removeItem("pcn_session_token");
+      localStorage.removeItem("pcn_session_expiry");
+      localStorage.removeItem("pcn_session_user");
+    }
+    setAuthToken(null);
+    setSessionExpiry(null);
+    setIsAuthenticated(false);
+    setApiConnected(false);
+    if (notice) {
+      setSessionNotice(notice);
+    } else {
+      setSessionNotice(null);
+    }
+    setActiveTab("dashboard");
+  };
+
+  const handleLoginSubmit = async (e?: React.FormEvent) => {
     if (e) e.preventDefault();
     setIsLoggingIn(true);
     setLoginError(null);
-    setLoginSuccessMsg(null);
+    setSessionNotice(null);
     try {
       const loginRes = await loginApi(loginEmail, loginPassword);
       if (loginRes.access_token) {
-        setAuthToken(loginRes.access_token);
-        setApiConnected(true);
-        setLoginSuccessMsg("Autenticação com PostgreSQL efetuada com sucesso!");
-
+        const expiry = Date.now() + 30 * 60 * 1000; // 30 minutos exatos
         const matched = INITIAL_USERS.find(
           (u) => u.email.toLowerCase() === loginEmail.toLowerCase()
         );
-        if (matched) setCurrentUser(matched);
+        const userProfile: UserProfile = {
+          id: loginRes.user_id,
+          name:
+            loginRes.name ||
+            matched?.name ||
+            (loginRes.role === "admin_lawyer" ? "Dr.ª Patrícia" : "Advogada Associada"),
+          role: loginRes.role === "admin_lawyer" ? "admin_lawyer" : "lawyer",
+          email: loginEmail,
+        };
 
-        try {
-          const apiTasks = await getDirectionBoard(loginRes.access_token);
-          if (apiTasks) {
-            setTasks(
-              apiTasks.map((t: any) => ({
-                id: t.id,
-                title: t.title,
-                description: t.description,
-                client_id: t.client_id,
-                client_name: t.client?.name || "Cliente",
-                task_type: t.task_type?.name || "Geral",
-                status: t.status,
-                assigned_to: t.assigned_to,
-                lawyer_name: t.assignee?.name || "—",
-                due_date: t.due_date ? t.due_date.split("T")[0] : undefined,
-                total_duration_seconds: t.total_duration_seconds || 0,
-                fee_amount: t.fee_amount ? parseFloat(t.fee_amount) : undefined,
-              }))
-            );
-          }
-        } catch {}
+        if (typeof window !== "undefined") {
+          localStorage.setItem("pcn_session_token", loginRes.access_token);
+          localStorage.setItem("pcn_session_expiry", expiry.toString());
+          localStorage.setItem("pcn_session_user", JSON.stringify(userProfile));
+        }
 
-        try {
-          const apiClients = await getClientsApi(loginRes.access_token);
-          if (apiClients) {
-            setClients(apiClients);
-          }
-        } catch {}
+        setAuthToken(loginRes.access_token);
+        setSessionExpiry(expiry);
+        setCurrentUser(userProfile);
+        setIsAuthenticated(true);
+        setApiConnected(true);
 
-        setTimeout(() => {
-          setIsLoginModalOpen(false);
-          setLoginSuccessMsg(null);
-        }, 1200);
+        loadAllData(loginRes.access_token, userProfile.role);
       } else {
-        setLoginError("Resposta inesperada do servidor.");
+        setLoginError("Resposta inesperada do servidor de autenticação.");
       }
     } catch (err: any) {
-      setLoginError(err.message || "Erro ao conectar à API. Verifique as credenciais.");
+      setLoginError(err.message || "Credenciais inválidas ou erro de ligação à base de dados.");
     } finally {
       setIsLoggingIn(false);
     }
   };
 
-  // 1. Initial Login & Database Sync on mount
+  // Restauração de Sessão no Mount (se ainda dentro dos 30 minutos)
   useEffect(() => {
-    async function initAuthAndData() {
-      try {
-        setIsLoadingApi(true);
-        // Login as Patrícia to obtain JWT access token
-        const loginRes = await loginApi("patricia@pcnadvogadas.pt", "Advogada2026!");
-        if (loginRes.access_token) {
-          setAuthToken(loginRes.access_token);
+    if (typeof window === "undefined") return;
+    try {
+      const savedToken = localStorage.getItem("pcn_session_token");
+      const savedExpiry = localStorage.getItem("pcn_session_expiry");
+      const savedUser = localStorage.getItem("pcn_session_user");
+
+      if (savedToken && savedExpiry && savedUser) {
+        const expiryTime = parseInt(savedExpiry, 10);
+        if (Date.now() < expiryTime) {
+          const profile = JSON.parse(savedUser);
+          setAuthToken(savedToken);
+          setSessionExpiry(expiryTime);
+          setCurrentUser(profile);
+          setIsAuthenticated(true);
           setApiConnected(true);
-
-          // Fetch real tasks from backend
-          const apiTasks = await getDirectionBoard(loginRes.access_token);
-          if (apiTasks && apiTasks.length > 0) {
-            setTasks(
-              apiTasks.map((t: any) => ({
-                id: t.id,
-                title: t.title,
-                description: t.description,
-                client_id: t.client_id,
-                client_name: t.client?.name || "Cliente",
-                task_type: t.task_type?.name || "Geral",
-                status: t.status,
-                assigned_to: t.assigned_to,
-                lawyer_name: t.assignee?.name || "—",
-                due_date: t.due_date ? t.due_date.split("T")[0] : undefined,
-                total_duration_seconds: t.total_duration_seconds,
-                fee_amount: t.fee_amount ? parseFloat(t.fee_amount) : undefined,
-              }))
-            );
-          }
-
-          // Fetch real clients
-          const apiClients = await getClientsApi(loginRes.access_token);
-          if (apiClients && apiClients.length > 0) {
-            setClients(apiClients);
-          }
+          loadAllData(savedToken, profile.role);
+        } else {
+          localStorage.removeItem("pcn_session_token");
+          localStorage.removeItem("pcn_session_expiry");
+          localStorage.removeItem("pcn_session_user");
+          setSessionNotice(
+            "A sua sessão anterior expirou após 30 minutos por motivos de segurança forense. Por favor, autentique-se novamente."
+          );
         }
-      } catch (err) {
-        console.warn("Backend local a utilizar cache/dados de demonstração:", err);
-      } finally {
-        setIsLoadingApi(false);
       }
+    } catch {}
+  }, []);
+
+  // Monitorização em tempo real do limite de 30 minutos e 401s
+  useEffect(() => {
+    const handleExpiredEvent = (e: any) => {
+      handleLogout(e.detail || "Sessão expirada. Por favor, autentique-se novamente.");
+    };
+    if (typeof window !== "undefined") {
+      window.addEventListener("pcn_session_expired", handleExpiredEvent);
     }
 
-    initAuthAndData();
-  }, []);
+    if (!isAuthenticated || !sessionExpiry) {
+      return () => {
+        if (typeof window !== "undefined") {
+          window.removeEventListener("pcn_session_expired", handleExpiredEvent);
+        }
+      };
+    }
+
+    const interval = setInterval(() => {
+      if (Date.now() >= sessionExpiry) {
+        handleLogout(
+          "A sua sessão expirou após 30 minutos de inatividade por motivos de segurança forense. Por favor, inicie sessão novamente."
+        );
+      }
+    }, 5000);
+
+    return () => {
+      if (typeof window !== "undefined") {
+        window.removeEventListener("pcn_session_expired", handleExpiredEvent);
+      }
+      clearInterval(interval);
+    };
+  }, [isAuthenticated, sessionExpiry]);
+
+  // Criação de Nova Utilizadora (Portal Admin)
+  const handleCreateUserSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!authToken) return;
+    setIsSubmittingUser(true);
+    try {
+      await createUserApi(authToken, newUserForm);
+      setModalFeedback("Nova utilizadora criada com sucesso no PostgreSQL!");
+      setIsNewUserModalOpen(false);
+      setNewUserForm({
+        name: "",
+        email: "",
+        role: "lawyer",
+        password: "Advogada2026!",
+      });
+      const updated = await getUsersApi(authToken);
+      if (updated) setUsersList(updated);
+      setTimeout(() => setModalFeedback(null), 3500);
+    } catch (err: any) {
+      alert(err.message || "Erro ao criar utilizadora.");
+    } finally {
+      setIsSubmittingUser(false);
+    }
+  };
 
   // 2. Live timer interval
   useEffect(() => {
@@ -926,6 +1052,178 @@ PCN Advogadas · Plataforma Forense`;
   const completedTasksCount = tasks.filter((t) => t.status === "completed").length;
   const poolTasksCount = tasks.filter((t) => t.status === "pool").length;
 
+  // ── SE NÃO ESTIVER AUTENTICADO: ECRÃ DEDICADO DE LOGIN (BLOQUEIO TOTAL) ──
+  if (!isAuthenticated) {
+    return (
+      <div className="min-h-screen bg-[#FAF8F5] flex flex-col justify-between select-none relative overflow-hidden font-sans">
+        {/* Subtle Luxury Glows */}
+        <div className="absolute top-0 right-0 w-[550px] h-[550px] bg-[#92006F]/5 rounded-full blur-3xl pointer-events-none" />
+        <div className="absolute bottom-0 left-0 w-[550px] h-[550px] bg-[#D4AF37]/5 rounded-full blur-3xl pointer-events-none" />
+
+        {/* Top Header */}
+        <header className="px-6 py-4 sm:px-8 sm:py-5 flex items-center justify-between z-10 border-b border-[#ECE6DB] bg-white/80 backdrop-blur-sm">
+          <div className="relative w-40 sm:w-48 h-12">
+            <Image src="/logo_pcn.svg" alt="PCN Advogadas" fill className="object-contain" priority />
+          </div>
+          <div className="flex items-center gap-2">
+            <span className="w-2 h-2 rounded-full bg-amber-500 animate-pulse" />
+            <span className="text-[11px] font-bold text-[#8C7D6B] tracking-wider uppercase bg-[#FAF8F5] border border-[#ECE6DB] px-3 py-1 rounded-full shadow-2xs">
+              Portal Forense Reservado
+            </span>
+          </div>
+        </header>
+
+        {/* Login Form Container */}
+        <main className="flex-1 flex items-center justify-center p-4 sm:p-8 z-10">
+          <div className="bg-white border border-[#D9D1C5] rounded-2xl shadow-xl max-w-md w-full p-6 sm:p-8 space-y-6 relative">
+            <div className="gold-divider-ribbon absolute top-0 left-6 right-6" />
+
+            <div className="text-center pt-2">
+              <h1 className="text-xl sm:text-2xl font-bold text-[#141414] tracking-tight">
+                Entrar na Plataforma Forense
+              </h1>
+              <p className="text-xs sm:text-sm text-[#666] mt-1.5">
+                Rigor jurídico, gestão integrada e controlo de honorários.
+              </p>
+            </div>
+
+            {sessionNotice && (
+              <div className="p-3.5 bg-amber-50 border border-amber-200 rounded-xl text-xs text-amber-800 flex items-start gap-2.5 shadow-2xs animate-in fade-in">
+                <Clock className="w-4 h-4 text-amber-600 shrink-0 mt-0.5" />
+                <span className="leading-relaxed">{sessionNotice}</span>
+              </div>
+            )}
+
+            {loginError && (
+              <div className="p-3.5 bg-rose-50 border border-rose-200 rounded-xl text-xs text-rose-800 flex items-start gap-2.5 shadow-2xs animate-in fade-in">
+                <AlertCircle className="w-4 h-4 text-rose-600 shrink-0 mt-0.5" />
+                <div className="flex-1">
+                  <p className="font-bold">Acesso não autorizado</p>
+                  <p className="text-[11px] mt-0.5">{loginError}</p>
+                </div>
+              </div>
+            )}
+
+            {/* Quick Profile Selection */}
+            <div>
+              <div className="flex items-center justify-between mb-2">
+                <label className="text-[11px] font-bold text-[#736B5E] uppercase tracking-wider">
+                  Selecionar Advogada
+                </label>
+                <span className="text-[10px] text-[#999]">Clique para preencher</span>
+              </div>
+              <div className="grid grid-cols-3 gap-2">
+                {[
+                  { name: "Patrícia", role: "Direção (Admin)", email: "patricia@pcnadvogadas.pt" },
+                  { name: "Inês", role: "Associada", email: "ines@pcnadvogadas.pt" },
+                  { name: "Sofia", role: "Associada", email: "sofia@pcnadvogadas.pt" },
+                ].map((lawyer) => {
+                  const isSelected = loginEmail.toLowerCase() === lawyer.email.toLowerCase();
+                  return (
+                    <button
+                      key={lawyer.email}
+                      type="button"
+                      onClick={() => {
+                        setLoginEmail(lawyer.email);
+                        setLoginPassword("Advogada2026!");
+                        setLoginError(null);
+                      }}
+                      className={`p-2.5 rounded-xl border text-center transition-all cursor-pointer ${
+                        isSelected
+                          ? "bg-[#92006F] text-white border-[#92006F] shadow-md scale-[1.02]"
+                          : "bg-[#FAF8F5] text-[#333] border-[#D9D1C5] hover:bg-[#F2EDE4] hover:border-[#C8BFB2]"
+                      }`}
+                    >
+                      <p className="font-bold text-xs">Dr.ª {lawyer.name}</p>
+                      <p
+                        className={`text-[10px] mt-0.5 font-medium ${
+                          isSelected ? "text-pink-200" : "text-[#777]"
+                        }`}
+                      >
+                        {lawyer.role}
+                      </p>
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+
+            {/* Login Form */}
+            <form onSubmit={handleLoginSubmit} className="space-y-4">
+              <div>
+                <label className="block text-xs font-semibold text-[#444] mb-1.5">
+                  Correio Eletrónico Forense
+                </label>
+                <input
+                  type="email"
+                  value={loginEmail}
+                  onChange={(e) => setLoginEmail(e.target.value)}
+                  required
+                  placeholder="utilizadora@pcnadvogadas.pt"
+                  className="w-full text-xs sm:text-sm bg-[#FAF8F5] border border-[#D9D1C5] rounded-xl px-3.5 py-2.5 text-[#141414] focus:outline-none focus:ring-2 focus:ring-[#92006F]/30 focus:border-[#92006F] transition-all"
+                />
+              </div>
+
+              <div>
+                <div className="flex items-center justify-between mb-1.5">
+                  <label className="text-xs font-semibold text-[#444]">
+                    Palavra-passe
+                  </label>
+                  <span className="text-[10px] text-[#999] flex items-center gap-1">
+                    <Clock className="w-3 h-3 text-[#92006F]" />
+                    Sessão válida 30 min
+                  </span>
+                </div>
+                <input
+                  type="password"
+                  value={loginPassword}
+                  onChange={(e) => setLoginPassword(e.target.value)}
+                  required
+                  placeholder="••••••••••••"
+                  className="w-full text-xs sm:text-sm bg-[#FAF8F5] border border-[#D9D1C5] rounded-xl px-3.5 py-2.5 text-[#141414] focus:outline-none focus:ring-2 focus:ring-[#92006F]/30 focus:border-[#92006F] transition-all"
+                />
+              </div>
+
+              <button
+                type="submit"
+                disabled={isLoggingIn}
+                className="w-full bg-[#92006F] hover:bg-[#7E0060] text-white font-bold text-sm py-3 rounded-xl flex items-center justify-center gap-2 shadow-md hover:shadow-lg transition-all cursor-pointer disabled:opacity-50"
+              >
+                {isLoggingIn ? (
+                  <>
+                    <RefreshCw className="w-4 h-4 animate-spin" />
+                    <span>A validar credenciais...</span>
+                  </>
+                ) : (
+                  <>
+                    <LogIn className="w-4 h-4" />
+                    <span>Entrar na Plataforma</span>
+                  </>
+                )}
+              </button>
+            </form>
+
+            <div className="pt-3 border-t border-[#ECE6DB] flex items-center justify-between text-[11px] text-[#777]">
+              <span className="flex items-center gap-1.5">
+                <ShieldCheck className="w-3.5 h-3.5 text-emerald-600" />
+                Argon2id · JWT 30 Minutos
+              </span>
+              <span className="font-medium text-[#92006F]">PostgreSQL · Railway</span>
+            </div>
+          </div>
+        </main>
+
+        {/* Footer */}
+        <footer className="p-4 sm:p-5 text-center text-xs text-[#888] border-t border-[#ECE6DB] bg-white/60">
+          <p className="font-semibold text-[#666]">PCN ADVOGADAS · Sociedade de Advogadas</p>
+          <p className="text-[11px] text-[#999] mt-0.5">
+            Sistema Integrado de Gestão Jurídica, Prazos e Controlo de Honorários
+          </p>
+        </footer>
+      </div>
+    );
+  }
+
   return (
     <div className="flex min-h-screen bg-[#FAF8F5]">
       {/* ── GAVETA LATERAL MOBILE / TABLET / PWA (DRAWER) ── */}
@@ -1057,6 +1355,25 @@ PCN Advogadas · Plataforma Forense`;
                   <Clock className="w-4 h-4 text-[#888]" />
                   <span>Relatório PCN</span>
                 </button>
+
+                {currentUser.role === "admin_lawyer" && (
+                  <button
+                    onClick={() => switchTab("users")}
+                    className={`w-full flex items-center justify-between px-3.5 py-2.5 rounded-lg text-sm font-medium transition-all ${
+                      activeTab === "users"
+                        ? "bg-[#FDF2F8] text-[#92006F] font-semibold border border-[#FBCFE8]"
+                        : "text-[#555] hover:bg-[#F9F6F0]"
+                    }`}
+                  >
+                    <div className="flex items-center gap-3">
+                      <ShieldCheck className="w-4 h-4 text-[#92006F]" />
+                      <span>Gestão de Utilizadoras</span>
+                    </div>
+                    <span className="text-[10px] bg-[#92006F] text-white font-bold px-1.5 py-0.5 rounded">
+                      Admin
+                    </span>
+                  </button>
+                )}
               </nav>
             </div>
 
@@ -1072,26 +1389,38 @@ PCN Advogadas · Plataforma Forense`;
                 </button>
               )}
 
-              <button
-                type="button"
-                onClick={() => {
-                  setIsMobileMenuOpen(false);
-                  setIsLoginModalOpen(true);
-                }}
-                className="w-full flex items-center justify-between px-2.5 py-1.5 text-xs text-[#555] bg-[#FAF8F5] border border-[#ECE6DB] rounded-md hover:bg-[#F2EDE4] transition-all cursor-pointer text-left"
-              >
+              <div className="w-full flex items-center justify-between px-2.5 py-1.5 text-xs text-[#555] bg-[#FAF8F5] border border-[#ECE6DB] rounded-md text-left">
                 <div className="flex items-center gap-2">
-                  <span
-                    className={`w-2 h-2 rounded-full ${
-                      apiConnected ? "bg-emerald-500 animate-pulse" : "bg-amber-400"
-                    }`}
-                  />
-                  <span className="font-medium text-[11px]">
-                    {apiConnected ? "Base Conectada" : "Modo Local · Fazer Login"}
+                  <span className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse" />
+                  <span className="font-semibold text-[11px] text-emerald-800">
+                    Base Conectada · PostgreSQL
                   </span>
                 </div>
-                <LogIn className="w-3.5 h-3.5 text-[#888]" />
-              </button>
+                <Database className="w-3.5 h-3.5 text-emerald-700" />
+              </div>
+
+              <div className="flex items-center justify-between pt-1">
+                <div className="flex items-center gap-2 overflow-hidden">
+                  <div className="w-6 h-6 rounded-full bg-[#92006F] text-white font-bold text-[10px] flex items-center justify-center shrink-0">
+                    {currentUser.name.replace("Dr.ª ", "").charAt(0)}
+                  </div>
+                  <div className="truncate text-left leading-tight">
+                    <p className="text-[11px] font-bold text-[#141414] truncate">{currentUser.name}</p>
+                    <p className="text-[9px] text-[#777] truncate">
+                      {currentUser.role === "admin_lawyer" ? "Direção (Admin)" : "Advogada Associada"}
+                    </p>
+                  </div>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => handleLogout()}
+                  className="p-1.5 rounded-md text-rose-700 hover:bg-rose-50 flex items-center gap-1 text-[11px] font-semibold cursor-pointer shrink-0"
+                  title="Terminar Sessão"
+                >
+                  <LogOut className="w-3.5 h-3.5" />
+                  <span>Sair</span>
+                </button>
+              </div>
               <div className="pt-1 text-[10px] text-[#888] leading-tight">
                 <p className="font-bold text-[#666]">PCN ADVOGADAS · PWA</p>
                 <p>Plataforma Forense Interna v1.0</p>
@@ -1226,6 +1555,25 @@ PCN Advogadas · Plataforma Forense`;
               <Clock className="w-4 h-4 text-[#888]" />
               <span>Relatório PCN</span>
             </button>
+
+            {currentUser.role === "admin_lawyer" && (
+              <button
+                onClick={() => switchTab("users")}
+                className={`w-full flex items-center justify-between px-3.5 py-2.5 rounded-lg text-sm font-medium transition-all ${
+                  activeTab === "users"
+                    ? "bg-[#FDF2F8] text-[#92006F] font-semibold shadow-xs border border-[#FBCFE8]"
+                    : "text-[#555] hover:bg-[#F9F6F0] hover:text-[#111]"
+                }`}
+              >
+                <div className="flex items-center gap-3">
+                  <ShieldCheck className="w-4 h-4 text-[#92006F]" />
+                  <span>Gestão de Utilizadoras</span>
+                </div>
+                <span className="text-[10px] bg-[#92006F] text-white font-bold px-1.5 py-0.5 rounded">
+                  Admin
+                </span>
+              </button>
+            )}
           </nav>
         </div>
 
@@ -1241,24 +1589,37 @@ PCN Advogadas · Plataforma Forense`;
             </button>
           )}
 
-          <button
-            type="button"
-            onClick={() => setIsLoginModalOpen(true)}
-            className="w-full flex items-center justify-between px-2.5 py-1.5 text-xs text-[#555] bg-[#FAF8F5] border border-[#ECE6DB] rounded-md hover:bg-[#F2EDE4] transition-all cursor-pointer text-left shadow-2xs"
-            title="Clique para autenticar ou verificar a ligação à base de dados"
-          >
+          <div className="w-full flex items-center justify-between px-2.5 py-1.5 text-xs text-[#555] bg-[#FAF8F5] border border-[#ECE6DB] rounded-md text-left shadow-2xs">
             <div className="flex items-center gap-2">
-              <span
-                className={`w-2 h-2 rounded-full ${
-                  apiConnected ? "bg-emerald-500 animate-pulse" : "bg-amber-400"
-                }`}
-              />
-              <span className="font-semibold text-[11px]">
-                {apiConnected ? "Base Conectada" : "Modo Local · Fazer Login"}
+              <span className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse" />
+              <span className="font-semibold text-[11px] text-emerald-800">
+                Base Conectada · PostgreSQL
               </span>
             </div>
-            <LogIn className="w-3.5 h-3.5 text-[#888]" />
-          </button>
+            <Database className="w-3.5 h-3.5 text-emerald-700" />
+          </div>
+
+          <div className="flex items-center justify-between pt-1">
+            <div className="flex items-center gap-2 overflow-hidden">
+              <div className="w-6 h-6 rounded-full bg-[#92006F] text-white font-bold text-[10px] flex items-center justify-center shrink-0">
+                {currentUser.name.replace("Dr.ª ", "").charAt(0)}
+              </div>
+              <div className="truncate text-left leading-tight">
+                <p className="text-[11px] font-bold text-[#141414] truncate">{currentUser.name}</p>
+                <p className="text-[9px] text-[#777] truncate">
+                  {currentUser.role === "admin_lawyer" ? "Direção (Admin)" : "Advogada Associada"}
+                </p>
+              </div>
+            </div>
+            <button
+              type="button"
+              onClick={() => handleLogout()}
+              className="p-1 rounded text-rose-700 hover:bg-rose-50 cursor-pointer shrink-0"
+              title="Terminar Sessão"
+            >
+              <LogOut className="w-3.5 h-3.5" />
+            </button>
+          </div>
 
           <div className="pt-2 text-[10px] text-[#999] leading-tight">
             <p className="font-semibold text-[#666]">PCN ADVOGADAS</p>
@@ -1321,22 +1682,18 @@ PCN Advogadas · Plataforma Forense`;
               </button>
             )}
 
-            <div className="relative">
-              <select
-                value={currentUser.id}
-                onChange={(e) => {
-                  const u = INITIAL_USERS.find((usr) => usr.id === e.target.value);
-                  if (u) setCurrentUser(u);
-                }}
-                className="text-[11px] sm:text-xs font-semibold text-[#222] bg-[#FAF8F5] border border-[#D9D1C5] rounded px-2 py-1 pr-5 appearance-none cursor-pointer focus:outline-none"
+            <div className="flex items-center gap-1.5">
+              <span className="text-[11px] font-bold text-[#141414] bg-[#FAF8F5] border border-[#D9D1C5] rounded px-2 py-1">
+                {currentUser.name.replace("Dr.ª ", "")}
+              </span>
+              <button
+                type="button"
+                onClick={() => handleLogout()}
+                className="p-1 rounded text-rose-700 hover:bg-rose-50"
+                title="Terminar Sessão"
               >
-                {INITIAL_USERS.map((u) => (
-                  <option key={u.id} value={u.id}>
-                    {u.name.replace("Dr.ª ", "")}
-                  </option>
-                ))}
-              </select>
-              <ChevronDown className="w-3 h-3 text-[#666] absolute right-1.5 top-2 pointer-events-none" />
+                <LogOut className="w-4 h-4" />
+              </button>
             </div>
           </div>
         </div>
@@ -1356,6 +1713,7 @@ PCN Advogadas · Plataforma Forense`;
                 {activeTab === "calendar" && "Agendas e Prazos Processuais"}
                 {activeTab === "feenotes" && "Notas de Honorários"}
                 {activeTab === "reports" && "Relatório PCN"}
+                {activeTab === "users" && "Gestão de Utilizadoras & Níveis de Acesso"}
               </h1>
               <p className="text-xs text-[#736B5E] mt-0.5 hidden sm:block">
                 Rigor jurídico, gestão integrada e identidade PCN.
@@ -1374,49 +1732,46 @@ PCN Advogadas · Plataforma Forense`;
                 </button>
               )}
 
-              <span className="text-[11px] font-semibold text-[#AA820A] bg-[#FCF8EE] border border-[#F1E5C7] px-2.5 py-1 rounded-md">
-                {isStandalone ? "Modo PWA Forense" : "Protótipo 5.2"}
+              <span className="text-[11px] font-semibold text-[#92006F] bg-[#FDF2F8] border border-[#FBCFE8] px-2.5 py-1 rounded-md flex items-center gap-1.5 shadow-2xs">
+                <Clock className="w-3.5 h-3.5 text-[#92006F]" />
+                <span>Sessão Ativa (30m)</span>
               </span>
 
-              <button
-                type="button"
-                onClick={() => setIsLoginModalOpen(true)}
-                className={`flex items-center gap-1.5 text-xs font-semibold px-3 py-1.5 rounded-md border transition-all cursor-pointer shadow-2xs ${
-                  apiConnected
-                    ? "bg-emerald-50 text-emerald-800 border-emerald-300 hover:bg-emerald-100"
-                    : "bg-[#FAF8F5] text-[#92006F] border-[#92006F] hover:bg-[#FCF8EE]"
-                }`}
-                title={apiConnected ? "Base de Dados Conectada. Clique para gerir sessão." : "Clique para autenticar e ligar ao PostgreSQL"}
+              {/* Estado da Conexão */}
+              <div
+                className="flex items-center gap-1.5 text-xs font-semibold px-2.5 py-1.5 rounded-md border bg-emerald-50 text-emerald-800 border-emerald-300 shadow-2xs"
+                title="Ligação segura ativa com PostgreSQL"
               >
-                <span
-                  className={`w-2 h-2 rounded-full ${
-                    apiConnected ? "bg-emerald-500 animate-pulse" : "bg-amber-500"
-                  }`}
-                />
-                <Database className="w-3.5 h-3.5" />
-                <span>{apiConnected ? "Base Conectada" : "Fazer Login / Ligar"}</span>
-              </button>
+                <span className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse" />
+                <Database className="w-3.5 h-3.5 text-emerald-700" />
+                <span className="hidden xl:inline">PostgreSQL Ativo</span>
+              </div>
 
-              <div className="flex items-center gap-2">
-                <span className="text-xs text-[#666]">Visualizar como:</span>
-                <div className="relative">
-                  <select
-                    value={currentUser.id}
-                    onChange={(e) => {
-                      const u = INITIAL_USERS.find((usr) => usr.id === e.target.value);
-                      if (u) setCurrentUser(u);
-                    }}
-                    className="text-xs font-semibold text-[#222] bg-[#FAF8F5] border border-[#D9D1C5] rounded-md px-3 py-1.5 pr-7 appearance-none cursor-pointer focus:outline-none focus:ring-1 focus:ring-[#92006F]"
-                  >
-                    {INITIAL_USERS.map((u) => (
-                      <option key={u.id} value={u.id}>
-                        {u.name} {u.role === "admin_lawyer" ? "(Direção)" : "(Associada)"}
-                      </option>
-                    ))}
-                  </select>
-                  <ChevronDown className="w-3.5 h-3.5 text-[#666] absolute right-2 top-2.5 pointer-events-none" />
+              {/* Utilizador Autenticado Real */}
+              <div className="flex items-center gap-2 bg-[#FAF8F5] border border-[#D9D1C5] rounded-md px-3 py-1 shadow-2xs">
+                <div className="w-6 h-6 rounded-full bg-[#92006F] text-white font-bold text-[11px] flex items-center justify-center shrink-0">
+                  {currentUser.name.replace("Dr.ª ", "").charAt(0)}
+                </div>
+                <div className="leading-tight text-left">
+                  <p className="text-xs font-bold text-[#141414] leading-none">
+                    {currentUser.name}
+                  </p>
+                  <p className="text-[10px] text-[#888] font-medium mt-0.5">
+                    {currentUser.role === "admin_lawyer" ? "Direção (Admin)" : "Advogada Associada"}
+                  </p>
                 </div>
               </div>
+
+              {/* Botão Terminar Sessão */}
+              <button
+                type="button"
+                onClick={() => handleLogout()}
+                className="flex items-center gap-1.5 text-xs font-semibold text-rose-700 bg-rose-50 hover:bg-rose-100 border border-rose-200 px-2.5 py-1.5 rounded-md transition-colors cursor-pointer shadow-2xs"
+                title="Terminar sessão com segurança"
+              >
+                <LogOut className="w-3.5 h-3.5" />
+                <span>Sair</span>
+              </button>
             </div>
           </div>
 
@@ -2623,6 +2978,272 @@ PCN Advogadas · Plataforma Forense`;
           </div>
         )}
 
+        {/* ── CONTEÚDO DA TAB: GESTÃO DE UTILIZADORAS & ACESSOS (PORTAL ADMIN) ── */}
+        {activeTab === "users" && currentUser.role === "admin_lawyer" && (
+          <div className="p-4 sm:p-8 space-y-6 max-w-7xl w-full mx-auto">
+            <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4 bg-white p-5 sm:p-6 rounded-xl border border-[#ECE6DB] shadow-xs">
+              <div>
+                <div className="flex items-center gap-2">
+                  <span className="p-2 rounded-lg bg-[#FAF8F5] text-[#92006F] border border-[#ECE6DB]">
+                    <ShieldCheck className="w-5 h-5" />
+                  </span>
+                  <div>
+                    <h2 className="text-lg sm:text-xl font-bold text-[#141414]">
+                      Gestão de Utilizadoras & Níveis de Acesso
+                    </h2>
+                    <p className="text-xs text-[#666] mt-0.5">
+                      Portal exclusivo da Direção (Dr.ª Patrícia) · Criação de advogadas e privilégios de sistema no PostgreSQL.
+                    </p>
+                  </div>
+                </div>
+              </div>
+
+              <button
+                type="button"
+                onClick={() => setIsNewUserModalOpen(true)}
+                className="bg-[#92006F] hover:bg-[#7E0060] text-white text-xs font-semibold px-4 py-2.5 rounded-lg flex items-center gap-2 shadow-xs transition-all cursor-pointer"
+              >
+                <UserPlus className="w-4 h-4" />
+                <span>+ Nova Utilizadora / Advogada</span>
+              </button>
+            </div>
+
+            {/* Summary Cards */}
+            <div className="grid grid-cols-2 lg:grid-cols-4 gap-3 sm:gap-4">
+              <div className="bg-white p-4 rounded-xl border border-[#ECE6DB] shadow-xs">
+                <p className="text-xs text-[#666] font-medium">Total de Utilizadoras</p>
+                <p className="text-2xl font-bold text-[#141414] mt-1">{usersList.length}</p>
+                <p className="text-[10px] text-[#888] mt-0.5">Contas registadas no PostgreSQL</p>
+              </div>
+              <div className="bg-white p-4 rounded-xl border border-[#ECE6DB] shadow-xs">
+                <p className="text-xs text-[#666] font-medium">Direção / Administradoras</p>
+                <p className="text-2xl font-bold text-[#92006F] mt-1">
+                  {usersList.filter((u) => u.role === "admin_lawyer").length}
+                </p>
+                <p className="text-[10px] text-[#888] mt-0.5">Acesso total e gestão financeira</p>
+              </div>
+              <div className="bg-white p-4 rounded-xl border border-[#ECE6DB] shadow-xs">
+                <p className="text-xs text-[#666] font-medium">Advogadas Associadas</p>
+                <p className="text-2xl font-bold text-[#AA820A] mt-1">
+                  {usersList.filter((u) => u.role === "lawyer").length}
+                </p>
+                <p className="text-[10px] text-[#888] mt-0.5">Acesso a tarefas e cronómetros</p>
+              </div>
+              <div className="bg-white p-4 rounded-xl border border-[#ECE6DB] shadow-xs">
+                <p className="text-xs text-[#666] font-medium">Sessão Ativa</p>
+                <p className="text-sm font-bold text-emerald-700 mt-2 flex items-center gap-1.5">
+                  <span className="w-2.5 h-2.5 rounded-full bg-emerald-500 animate-pulse" />
+                  30 Minutos (Ativa)
+                </p>
+                <p className="text-[10px] text-[#888] mt-0.5">Expiração automática por inatividade</p>
+              </div>
+            </div>
+
+            {/* Table */}
+            <div className="bg-white rounded-xl border border-[#ECE6DB] shadow-xs overflow-hidden">
+              <div className="px-5 py-4 border-b border-[#ECE6DB] flex items-center justify-between">
+                <h3 className="text-sm font-bold text-[#141414]">Utilizadoras Registadas no Escritório</h3>
+                {isLoadingUsers && (
+                  <span className="text-xs text-[#92006F] flex items-center gap-1.5">
+                    <RefreshCw className="w-3.5 h-3.5 animate-spin" /> A atualizar lista...
+                  </span>
+                )}
+              </div>
+
+              <div className="overflow-x-auto">
+                <table className="w-full text-left text-xs text-[#222]">
+                  <thead className="bg-[#FAF8F5] border-b border-[#ECE6DB] text-[11px] font-bold text-[#666] uppercase tracking-wider">
+                    <tr>
+                      <th className="px-5 py-3">Nome da Advogada</th>
+                      <th className="px-5 py-3">Correio Eletrónico</th>
+                      <th className="px-5 py-3">Nível de Acesso</th>
+                      <th className="px-5 py-3">Estado</th>
+                      <th className="px-5 py-3 text-right">Identificador</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-[#ECE6DB]">
+                    {usersList.map((u) => (
+                      <tr key={u.id} className="hover:bg-[#FAF8F5]/60 transition-colors">
+                        <td className="px-5 py-3.5 font-bold text-[#141414] flex items-center gap-2">
+                          <div className="w-7 h-7 rounded-full bg-[#FAF8F5] border border-[#ECE6DB] flex items-center justify-center text-[#92006F] font-bold text-xs shrink-0">
+                            {u.name.replace("Dr.ª ", "").charAt(0)}
+                          </div>
+                          <span>{u.name}</span>
+                        </td>
+                        <td className="px-5 py-3.5 text-[#555] font-mono text-[11px]">{u.email}</td>
+                        <td className="px-5 py-3.5">
+                          <select
+                            value={u.role}
+                            disabled={u.email.toLowerCase() === currentUser.email.toLowerCase()}
+                            onChange={async (e) => {
+                              const newRole = e.target.value;
+                              try {
+                                if (!authToken) return;
+                                await updateUserApi(authToken, u.id, { role: newRole });
+                                setUsersList((prev) =>
+                                  prev.map((usr) => (usr.id === u.id ? { ...usr, role: newRole } : usr))
+                                );
+                                setModalFeedback(
+                                  `Nível de acesso de ${u.name} atualizado para ${
+                                    newRole === "admin_lawyer" ? "Direção" : "Advogada Associada"
+                                  }!`
+                                );
+                                setTimeout(() => setModalFeedback(null), 3500);
+                              } catch (err: any) {
+                                alert(err.message || "Erro ao atualizar nível de acesso.");
+                              }
+                            }}
+                            className={`text-xs font-semibold px-2.5 py-1 rounded-md border cursor-pointer focus:outline-none focus:ring-1 focus:ring-[#92006F] shadow-2xs transition-all ${
+                              u.role === "admin_lawyer"
+                                ? "bg-[#FDF2F8] text-[#92006F] border-[#FBCFE8]"
+                                : "bg-[#FCF8EE] text-[#7A5B00] border-[#F1E5C7]"
+                            }`}
+                            title={
+                              u.email.toLowerCase() === currentUser.email.toLowerCase()
+                                ? "Não é possível alterar o nível da sua própria conta de Direção"
+                                : "Alterar nível de acesso forense"
+                            }
+                          >
+                            <option value="admin_lawyer">Direção / Administradora</option>
+                            <option value="lawyer">Advogada Associada</option>
+                          </select>
+                        </td>
+                        <td className="px-5 py-3.5">
+                          <span className="inline-flex items-center gap-1 text-emerald-700 font-semibold text-[11px]">
+                            <span className="w-2 h-2 rounded-full bg-emerald-500" />
+                            Ativa
+                          </span>
+                        </td>
+                        <td className="px-5 py-3.5 text-right font-mono text-[10px] text-[#888]">
+                          {u.id}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* ── MODAL: NOVA UTILIZADORA / ADVOGADA (PORTAL ADMIN) ── */}
+        {isNewUserModalOpen && (
+          <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-xs p-4 overflow-y-auto animate-in fade-in duration-200">
+            <div className="bg-white border border-[#D9D1C5] rounded-xl shadow-2xl max-w-md w-full p-6 space-y-4 relative">
+              <button
+                type="button"
+                onClick={() => setIsNewUserModalOpen(false)}
+                className="absolute right-4 top-4 text-[#888] hover:text-[#222] p-1 rounded-md cursor-pointer"
+              >
+                <X className="w-4 h-4" />
+              </button>
+
+              <div className="flex items-center gap-3">
+                <div className="w-10 h-10 rounded-lg bg-[#FAF8F5] border border-[#ECE6DB] flex items-center justify-center text-[#92006F] shrink-0">
+                  <UserPlus className="w-5 h-5" />
+                </div>
+                <div>
+                  <h3 className="text-sm font-bold text-[#141414]">Criar Nova Utilizadora Forense</h3>
+                  <p className="text-[11px] text-[#666]">
+                    Registo de conta e atribuição de nível de acesso no PostgreSQL
+                  </p>
+                </div>
+              </div>
+
+              <form onSubmit={handleCreateUserSubmit} className="space-y-3.5">
+                <div>
+                  <label className="block text-xs font-semibold text-[#444] mb-1">
+                    Nome Completo da Advogada
+                  </label>
+                  <input
+                    type="text"
+                    value={newUserForm.name}
+                    onChange={(e) => setNewUserForm({ ...newUserForm, name: e.target.value })}
+                    required
+                    placeholder="ex: Dr.ª Mariana Silva"
+                    className="w-full text-xs bg-[#FAF8F5] border border-[#D9D1C5] rounded-md px-3 py-2 text-[#222] focus:outline-none focus:ring-1 focus:ring-[#92006F]"
+                  />
+                </div>
+
+                <div>
+                  <label className="block text-xs font-semibold text-[#444] mb-1">
+                    Correio Eletrónico Forense
+                  </label>
+                  <input
+                    type="email"
+                    value={newUserForm.email}
+                    onChange={(e) => setNewUserForm({ ...newUserForm, email: e.target.value })}
+                    required
+                    placeholder="mariana@pcnadvogadas.pt"
+                    className="w-full text-xs bg-[#FAF8F5] border border-[#D9D1C5] rounded-md px-3 py-2 text-[#222] focus:outline-none focus:ring-1 focus:ring-[#92006F]"
+                  />
+                </div>
+
+                <div>
+                  <label className="block text-xs font-semibold text-[#444] mb-1">
+                    Nível de Acesso / Perfil
+                  </label>
+                  <select
+                    value={newUserForm.role}
+                    onChange={(e) =>
+                      setNewUserForm({
+                        ...newUserForm,
+                        role: e.target.value as "admin_lawyer" | "lawyer",
+                      })
+                    }
+                    className="w-full text-xs bg-[#FAF8F5] border border-[#D9D1C5] rounded-md px-3 py-2 text-[#222] focus:outline-none focus:ring-1 focus:ring-[#92006F]"
+                  >
+                    <option value="lawyer">Advogada Associada (Tarefas, Prazos e Cronómetro)</option>
+                    <option value="admin_lawyer">
+                      Direção / Administradora (Acesso Total, Honorários e Gestão de Utilizadoras)
+                    </option>
+                  </select>
+                </div>
+
+                <div>
+                  <label className="block text-xs font-semibold text-[#444] mb-1">
+                    Palavra-passe Inicial
+                  </label>
+                  <input
+                    type="text"
+                    value={newUserForm.password}
+                    onChange={(e) => setNewUserForm({ ...newUserForm, password: e.target.value })}
+                    required
+                    className="w-full text-xs bg-[#FAF8F5] border border-[#D9D1C5] rounded-md px-3 py-2 text-[#222] font-mono focus:outline-none focus:ring-1 focus:ring-[#92006F]"
+                  />
+                </div>
+
+                <div className="pt-2 flex items-center justify-end gap-2 border-t border-[#ECE6DB]">
+                  <button
+                    type="button"
+                    onClick={() => setIsNewUserModalOpen(false)}
+                    className="px-3 py-2 text-xs font-medium text-[#666] hover:text-[#222] cursor-pointer"
+                  >
+                    Cancelar
+                  </button>
+                  <button
+                    type="submit"
+                    disabled={isSubmittingUser}
+                    className="bg-[#92006F] hover:bg-[#7E0060] text-white text-xs font-semibold px-4 py-2 rounded-md flex items-center gap-2 shadow-xs cursor-pointer disabled:opacity-50"
+                  >
+                    {isSubmittingUser ? (
+                      <>
+                        <RefreshCw className="w-3.5 h-3.5 animate-spin" />
+                        <span>A criar conta...</span>
+                      </>
+                    ) : (
+                      <>
+                        <UserPlus className="w-3.5 h-3.5" />
+                        <span>Criar Utilizadora no PostgreSQL</span>
+                      </>
+                    )}
+                  </button>
+                </div>
+              </form>
+            </div>
+          </div>
+        )}
+
         {/* Notificação Toast */}
         {modalFeedback && (
           <div className="fixed bottom-6 right-6 z-50 bg-[#92006F] text-white px-5 py-3 rounded-lg shadow-xl flex items-center gap-3 border border-[#D4AF37]/50 text-xs font-semibold animate-in slide-in-from-bottom duration-300">
@@ -3120,131 +3741,6 @@ PCN Advogadas · Plataforma Forense`;
                   <span>{isDeletingTask ? "A eliminar..." : "Sim, Eliminar Definitivamente"}</span>
                 </button>
               </div>
-            </div>
-          </div>
-        )}
-
-        {/* ── MODAL DE AUTENTICAÇÃO / CONEXÃO POSTGRESQL ── */}
-        {isLoginModalOpen && (
-          <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-xs p-4 overflow-y-auto animate-in fade-in duration-200">
-            <div className="bg-white border border-[#D9D1C5] rounded-xl shadow-2xl max-w-md w-full p-6 space-y-4 relative">
-              <button
-                type="button"
-                onClick={() => setIsLoginModalOpen(false)}
-                className="absolute right-4 top-4 text-[#888] hover:text-[#222] p-1 rounded-md cursor-pointer"
-              >
-                <X className="w-4 h-4" />
-              </button>
-
-              <div className="flex items-center gap-3">
-                <div className="w-10 h-10 rounded-lg bg-[#FAF8F5] border border-[#ECE6DB] flex items-center justify-center text-[#92006F] shrink-0">
-                  <Database className="w-5 h-5" />
-                </div>
-                <div>
-                  <h3 className="text-sm font-bold text-[#141414]">Autenticação & Ligação à Base de Dados</h3>
-                  <p className="text-[11px] text-[#666]">
-                    PCN Advogadas · PostgreSQL no Railway
-                  </p>
-                </div>
-              </div>
-
-              {loginSuccessMsg && (
-                <div className="p-3 bg-emerald-50 border border-emerald-200 rounded-lg text-xs text-emerald-800 flex items-center gap-2">
-                  <CheckCircle2 className="w-4 h-4 text-emerald-600 shrink-0" />
-                  <span>{loginSuccessMsg}</span>
-                </div>
-              )}
-
-              {loginError && (
-                <div className="p-3 bg-rose-50 border border-rose-200 rounded-lg text-xs text-rose-800 flex items-start gap-2">
-                  <AlertCircle className="w-4 h-4 text-rose-600 shrink-0 mt-0.5" />
-                  <div className="flex-1">
-                    <p className="font-semibold">Erro de Ligação</p>
-                    <p className="text-[11px] mt-0.5">{loginError}</p>
-                  </div>
-                </div>
-              )}
-
-              <form onSubmit={handleManualLogin} className="space-y-3">
-                <div>
-                  <label className="block text-xs font-semibold text-[#444] mb-1">
-                    Selecionar Advogada
-                  </label>
-                  <div className="grid grid-cols-3 gap-1.5 mb-2">
-                    {[
-                      { name: "Patrícia", email: "patricia@pcnadvogadas.pt" },
-                      { name: "Inês", email: "ines@pcnadvogadas.pt" },
-                      { name: "Sofia", email: "sofia@pcnadvogadas.pt" },
-                    ].map((lawyer) => (
-                      <button
-                        key={lawyer.email}
-                        type="button"
-                        onClick={() => setLoginEmail(lawyer.email)}
-                        className={`px-2 py-1.5 rounded-md text-xs font-medium border text-center transition-all cursor-pointer ${
-                          loginEmail.toLowerCase() === lawyer.email.toLowerCase()
-                            ? "bg-[#92006F] text-white border-[#92006F] shadow-xs"
-                            : "bg-[#FAF8F5] text-[#444] border-[#D9D1C5] hover:bg-[#F2EDE4]"
-                        }`}
-                      >
-                        Dr.ª {lawyer.name}
-                      </button>
-                    ))}
-                  </div>
-                </div>
-
-                <div>
-                  <label className="block text-xs font-semibold text-[#444] mb-1">
-                    Email Forense
-                  </label>
-                  <input
-                    type="email"
-                    value={loginEmail}
-                    onChange={(e) => setLoginEmail(e.target.value)}
-                    required
-                    className="w-full text-xs bg-[#FAF8F5] border border-[#D9D1C5] rounded-md px-3 py-2 text-[#222] focus:outline-none focus:ring-1 focus:ring-[#92006F]"
-                  />
-                </div>
-
-                <div>
-                  <label className="block text-xs font-semibold text-[#444] mb-1">
-                    Palavra-passe
-                  </label>
-                  <input
-                    type="password"
-                    value={loginPassword}
-                    onChange={(e) => setLoginPassword(e.target.value)}
-                    required
-                    className="w-full text-xs bg-[#FAF8F5] border border-[#D9D1C5] rounded-md px-3 py-2 text-[#222] focus:outline-none focus:ring-1 focus:ring-[#92006F]"
-                  />
-                </div>
-
-                <div className="pt-2 flex items-center justify-between border-t border-[#ECE6DB]">
-                  <button
-                    type="button"
-                    onClick={() => setIsLoginModalOpen(false)}
-                    className="px-3 py-2 text-xs font-medium text-[#666] hover:text-[#222] cursor-pointer"
-                  >
-                    Fechar
-                  </button>
-                  <button
-                    type="submit"
-                    disabled={isLoggingIn}
-                    className="bg-[#92006F] hover:bg-[#7E0060] text-white text-xs font-semibold px-4 py-2 rounded-md flex items-center gap-2 shadow-xs cursor-pointer disabled:opacity-50"
-                  >
-                    {isLoggingIn ? (
-                      <>
-                        <RefreshCw className="w-3.5 h-3.5 animate-spin" />
-                        <span>A ligar...</span>
-                      </>
-                    ) : (
-                      <>
-                        <LogIn className="w-3.5 h-3.5" />
-                        <span>Entrar e Ligar Base de Dados</span>
-                      </>
-                    )}
-                  </button>
-                </div>
-              </form>
             </div>
           </div>
         )}
