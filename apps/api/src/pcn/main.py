@@ -22,12 +22,12 @@ from pcn.models.base import Base
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     configure_logging()
-    # Para desenvolvimento / testes locais com SQLite/MySQL:
-    settings = get_settings()
-    if not settings.is_production:
-        session_factory = get_session_factory()
-        async with session_factory.kw["bind"].begin() as conn:
-            await conn.run_sync(Base.metadata.create_all)
+    try:
+        from pcn.seed import run_seed
+        await run_seed()
+    except Exception as exc:
+        import logging
+        logging.getLogger("pcn").warning(f"Aviso na inicialização da base de dados: {exc}")
     yield
     await dispose_engine()
 

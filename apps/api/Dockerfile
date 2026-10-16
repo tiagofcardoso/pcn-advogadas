@@ -12,9 +12,6 @@ RUN useradd --create-home --uid 10001 app
 WORKDIR /app
 COPY --from=builder /wheels /wheels
 RUN pip install --no-cache-dir /wheels/* && rm -rf /wheels
-COPY alembic.ini ./
-COPY alembic ./alembic
 USER app
 EXPOSE 8000
-# Migrations run explicitly at deploy time: `alembic upgrade head`
-CMD ["uvicorn", "pcn.main:app", "--host", "0.0.0.0", "--port", "8000", "--proxy-headers", "--forwarded-allow-ips", "*"]
+CMD ["sh", "-c", "uvicorn pcn.main:app --host 0.0.0.0 --port ${PORT:-8000} --proxy-headers --forwarded-allow-ips '*'"]
