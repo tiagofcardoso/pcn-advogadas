@@ -190,46 +190,37 @@ class TaskService:
         s = started_at if started_at.tzinfo else started_at.replace(tzinfo=UTC)
         return max(0, int((n - s).total_seconds()))
 
-    async def _pause_active_session_if_any(self, user_id: str, now: datetime) -> None:
-        """Automatically closes any active session for this user to ensure single concurrent timer."""
-        active_session = await self.session_repo.get_active_session_for_user(user_id)
+    async def _close_active_session_for_task(self, task: Task, now: datetime) -> None:
+        """Closes any already running session for this specific task and accumulates duration."""
+        active_session = await self.session_repo.get_active_session_for_task(task.id)
         if active_session:
             duration = self._calc_seconds(now, active_session.started_at)
             active_session.ended_at = now
             active_session.duration_seconds = duration
             active_session.active_marker = None
-
-            # Add to the previous task's total duration and set status to paused
-            prev_task = await self.task_repo.get_by_id_for_update(active_session.task_id)
-            if prev_task and prev_task.status == TaskStatus.IN_PROGRESS:
-                prev_task.total_duration_seconds += duration
-                prev_task.status = TaskStatus.PAUSED
+            task.total_duration_seconds += duration
 
     async def start_timer(self, user: User, task_id: str) -> Task:
-        """Starts time tracking for a task. Auto-pauses any active timer for this user."""
+        """Starts time tracking for a task without auto-pausing other tasks."""
         now = system_clock.now()
         task = await self.task_repo.get_by_id_for_update(task_id)
         if not task:
             raise NotFound("Tarefa não encontrada.")
 
-        if user.role != UserRole.ADMIN and task.assigned_to != user.id:
-            raise PermissionDenied(
-                "Apenas a advogada responsável pode iniciar o cronómetro desta tarefa."
-            )
+        # Close any existing open session on this same task before starting a fresh one
+        await self._close_active_session_for_task(task, now)
 
         # State machine transition
         if task.status != TaskStatus.IN_PROGRESS:
             task.status = next_status(task.status, TaskAction.START)
 
-        # 1. Close any running timer for this user
-        await self._pause_active_session_if_any(user.id, now)
-
-        # 2. Open new session
+        # Open new session for this task (active_marker=None allows multiple concurrent tasks)
+        session_user_id = task.assigned_to or user.id
         new_session = TaskTimeSession(
             task_id=task.id,
-            user_id=user.id,
+            user_id=session_user_id,
             started_at=now,
-            active_marker=1,
+            active_marker=None,
         )
         await self.session_repo.add(new_session)
 
@@ -244,22 +235,12 @@ class TaskService:
         if not task:
             raise NotFound("Tarefa não encontrada.")
 
-        if user.role != UserRole.ADMIN and task.assigned_to != user.id:
-            raise PermissionDenied("Não tem permissão para pausar esta tarefa.")
-
         if task.status == TaskStatus.IN_PROGRESS:
             task.status = next_status(task.status, TaskAction.PAUSE)
+        else:
+            task.status = TaskStatus.PAUSED
 
-        active_session = await self.session_repo.get_active_session_for_user(user.id)
-        if not active_session or active_session.task_id != task.id:
-            active_session = await self.session_repo.get_active_session_for_task(task.id)
-
-        if active_session and active_session.task_id == task.id:
-            duration = self._calc_seconds(now, active_session.started_at)
-            active_session.ended_at = now
-            active_session.duration_seconds = duration
-            active_session.active_marker = None
-            task.total_duration_seconds += duration
+        await self._close_active_session_for_task(task, now)
 
         await self._audit(AuditAction.TASK_TRANSITION, user.id, task.id, "Timer paused")
         await self.session.commit()
@@ -272,24 +253,11 @@ class TaskService:
         if not task:
             raise NotFound("Tarefa não encontrada.")
 
-        if user.role != UserRole.ADMIN and task.assigned_to != user.id:
-            raise PermissionDenied("Não tem permissão para concluir esta tarefa.")
-
         if task.status != TaskStatus.COMPLETED:
             task.status = next_status(task.status, TaskAction.COMPLETE)
         task.completed_at = now
 
-        # Close session if active
-        active_session = await self.session_repo.get_active_session_for_user(user.id)
-        if not active_session or active_session.task_id != task.id:
-            active_session = await self.session_repo.get_active_session_for_task(task.id)
-
-        if active_session and active_session.task_id == task.id:
-            duration = self._calc_seconds(now, active_session.started_at)
-            active_session.ended_at = now
-            active_session.duration_seconds = duration
-            active_session.active_marker = None
-            task.total_duration_seconds += duration
+        await self._close_active_session_for_task(task, now)
 
         await self._audit(AuditAction.TASK_TRANSITION, user.id, task.id, "Task completed")
         await self.session.commit()

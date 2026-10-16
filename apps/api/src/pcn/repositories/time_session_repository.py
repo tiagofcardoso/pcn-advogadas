@@ -15,16 +15,17 @@ class TimeSessionRepository(BaseRepository[TaskTimeSession]):
         super().__init__(TaskTimeSession, session)
 
     async def get_active_session_for_user(self, user_id: str) -> TaskTimeSession | None:
-        """Returns the currently running session for this user, if any."""
+        """Returns the most recent currently running session for this user, if any."""
         result = await self.session.execute(
             select(TaskTimeSession)
             .where(
                 TaskTimeSession.user_id == user_id,
-                TaskTimeSession.active_marker == 1,
+                TaskTimeSession.ended_at.is_(None),
             )
+            .order_by(TaskTimeSession.started_at.desc())
             .options(selectinload(TaskTimeSession.task))
         )
-        return result.scalar_one_or_none()
+        return result.scalars().first()
 
     async def get_active_session_for_task(self, task_id: str) -> TaskTimeSession | None:
         """Returns the currently running session for a given task, if any."""
@@ -32,8 +33,9 @@ class TimeSessionRepository(BaseRepository[TaskTimeSession]):
             select(TaskTimeSession)
             .where(
                 TaskTimeSession.task_id == task_id,
-                TaskTimeSession.active_marker == 1,
+                TaskTimeSession.ended_at.is_(None),
             )
+            .order_by(TaskTimeSession.started_at.desc())
             .options(selectinload(TaskTimeSession.task))
         )
         return result.scalars().first()

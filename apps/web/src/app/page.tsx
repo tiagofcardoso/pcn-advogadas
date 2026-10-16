@@ -698,18 +698,24 @@ export default function App() {
     }
   };
 
-  // 2. Live timer interval
+  // 2. Live timer interval (supports multiple concurrent in_progress tasks)
+  const hasRunningTasks = tasks.some((t) => t.status === "in_progress");
   useEffect(() => {
-    let interval: NodeJS.Timeout | null = null;
-    if (isTimerRunning && activeTaskId) {
-      interval = setInterval(() => {
+    if (!hasRunningTasks && !isTimerRunning) return;
+    const interval = setInterval(() => {
+      setTasks((prev) =>
+        prev.map((t) =>
+          t.status === "in_progress"
+            ? { ...t, total_duration_seconds: (t.total_duration_seconds || 0) + 1 }
+            : t
+        )
+      );
+      if (isTimerRunning && activeTaskId) {
         setTimerSeconds((prev) => prev + 1);
-      }, 1000);
-    }
-    return () => {
-      if (interval) clearInterval(interval);
-    };
-  }, [isTimerRunning, activeTaskId]);
+      }
+    }, 1000);
+    return () => clearInterval(interval);
+  }, [hasRunningTasks, isTimerRunning, activeTaskId]);
 
   const formatSeconds = (sec: number) => {
     const h = Math.floor(sec / 3600);
@@ -730,15 +736,6 @@ export default function App() {
         console.error(e);
       }
     }
-    if (activeTaskId && activeTaskId !== task.id) {
-      setTasks((prev) =>
-        prev.map((t) =>
-          t.id === activeTaskId
-            ? { ...t, status: "paused", total_duration_seconds: timerSeconds }
-            : t
-        )
-      );
-    }
     setActiveTaskId(task.id);
     setTimerSeconds(serverDuration);
     setIsTimerRunning(true);
@@ -753,34 +750,46 @@ export default function App() {
 
   const handlePauseTimer = async (taskToPause?: Task) => {
     const targetId = taskToPause?.id || activeTaskId;
-    setIsTimerRunning(false);
-    if (targetId) {
-      let finalSeconds = targetId === activeTaskId ? timerSeconds : (taskToPause?.total_duration_seconds || 0);
-      if (authToken && apiConnected) {
-        try {
-          const updated = await pauseTimerApi(targetId, authToken);
-          if (updated && typeof updated.total_duration_seconds === "number") {
-            finalSeconds = updated.total_duration_seconds;
-          }
-        } catch (e) {
-          console.error(e);
+    if (!targetId) return;
+
+    const currentTask = tasks.find((t) => t.id === targetId) || taskToPause;
+    let finalSeconds = currentTask?.total_duration_seconds ?? timerSeconds;
+
+    if (authToken && apiConnected) {
+      try {
+        const updated = await pauseTimerApi(targetId, authToken);
+        if (updated && typeof updated.total_duration_seconds === "number") {
+          finalSeconds = updated.total_duration_seconds;
         }
+      } catch (e) {
+        console.error(e);
       }
-      if (targetId === activeTaskId) {
+    }
+
+    const otherRunning = tasks.find((t) => t.id !== targetId && t.status === "in_progress");
+    if (targetId === activeTaskId) {
+      if (otherRunning) {
+        setActiveTaskId(otherRunning.id);
+        setTimerSeconds(otherRunning.total_duration_seconds);
+        setIsTimerRunning(true);
+      } else {
+        setIsTimerRunning(false);
         setTimerSeconds(finalSeconds);
       }
-      setTasks((prev) =>
-        prev.map((t) =>
-          t.id === targetId
-            ? { ...t, status: "paused", total_duration_seconds: finalSeconds }
-            : t
-        )
-      );
     }
+
+    setTasks((prev) =>
+      prev.map((t) =>
+        t.id === targetId
+          ? { ...t, status: "paused", total_duration_seconds: finalSeconds }
+          : t
+      )
+    );
   };
 
   const handleCompleteTask = async (task: Task) => {
-    let finalSeconds = activeTaskId === task.id ? timerSeconds : task.total_duration_seconds;
+    const currentTask = tasks.find((t) => t.id === task.id) || task;
+    let finalSeconds = currentTask.total_duration_seconds;
     if (authToken && apiConnected) {
       try {
         const updated = await completeTaskApi(task.id, authToken);
@@ -792,8 +801,15 @@ export default function App() {
       }
     }
     if (activeTaskId === task.id) {
-      setIsTimerRunning(false);
-      setActiveTaskId(null);
+      const otherRunning = tasks.find((t) => t.id !== task.id && t.status === "in_progress");
+      if (otherRunning) {
+        setActiveTaskId(otherRunning.id);
+        setTimerSeconds(otherRunning.total_duration_seconds);
+        setIsTimerRunning(true);
+      } else {
+        setIsTimerRunning(false);
+        setActiveTaskId(null);
+      }
     }
     setTasks((prev) =>
       prev.map((t) =>
@@ -2268,9 +2284,9 @@ PCN Advogadas · Plataforma Forense`;
               })}
             </div>
 
-            {/* Visualização: Quando filtro é "all" -> Modo Kanban de 3 Colunas */}
+            {/* Visualização: Quando filtro é "all" -> Modo Kanban de 4 Colunas */}
             {taskStatusFilter === "all" ? (
-              <div className="grid grid-cols-1 md:grid-cols-3 gap-4 sm:gap-6">
+              <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4 gap-4 sm:gap-5">
                 {/* Coluna 1: Pool Partilhada */}
                 <div className="pcn-card p-3.5 sm:p-4 bg-[#FDFCFB]">
                   <div className="flex items-center justify-between pb-3 border-b border-[#ECE6DB]">
@@ -2337,37 +2353,30 @@ PCN Advogadas · Plataforma Forense`;
                   </div>
                 </div>
 
-                {/* Coluna 2: Em Execução / Pausadas / Abertas */}
+                {/* Coluna 2: Em Andamento (e Abertas) */}
                 <div className="pcn-card p-3.5 sm:p-4 bg-[#FDFCFB]">
                   <div className="flex items-center justify-between pb-3 border-b border-[#ECE6DB]">
                     <h3 className="text-xs font-bold text-[#141414] uppercase tracking-wider">
-                      Em Execução / Pausadas (
+                      Em Andamento (
                       {
                         tasks.filter(
-                          (t) =>
-                            (t.status === "assigned" ||
-                              t.status === "in_progress" ||
-                              t.status === "paused") &&
-                            (currentUser.role === "admin_lawyer" || t.assigned_to === currentUser.id)
+                          (t) => t.status === "assigned" || t.status === "in_progress"
                         ).length
                       }
                       )
                     </h3>
-                    <span className="text-[10px] bg-amber-100 text-[#AA820A] px-2 py-0.5 rounded font-semibold">
-                      Ativas
+                    <span className="text-[10px] bg-emerald-100 text-emerald-800 px-2 py-0.5 rounded font-semibold">
+                      Em Execução
                     </span>
                   </div>
 
                   <div className="space-y-3 mt-3">
                     {tasks
                       .filter(
-                        (t) =>
-                          t.status === "assigned" ||
-                          t.status === "in_progress" ||
-                          t.status === "paused"
+                        (t) => t.status === "assigned" || t.status === "in_progress"
                       )
                       .map((task) => {
-                        const isRunningThis = task.id === activeTaskId && isTimerRunning;
+                        const isRunningThis = task.status === "in_progress";
                         return (
                           <div
                             key={task.id}
@@ -2383,11 +2392,6 @@ PCN Advogadas · Plataforma Forense`;
                                 {task.status === "in_progress" && (
                                   <span className="text-[10px] bg-emerald-100 text-emerald-800 font-bold px-1.5 py-0.5 rounded flex items-center gap-1">
                                     <Play className="w-2.5 h-2.5 fill-current" /> Em Andamento
-                                  </span>
-                                )}
-                                {task.status === "paused" && (
-                                  <span className="text-[10px] bg-amber-100 text-[#AA820A] font-bold px-1.5 py-0.5 rounded flex items-center gap-1">
-                                    <Pause className="w-2.5 h-2.5" /> Pausada
                                   </span>
                                 )}
                                 {task.status === "assigned" && (
@@ -2431,14 +2435,12 @@ PCN Advogadas · Plataforma Forense`;
                             <div className="bg-[#FAF7F2] p-2 rounded border border-[#EFE8DD] flex items-center justify-between text-xs font-mono">
                               <span className="text-[#666]">Tempo acumulado:</span>
                               <span className="font-bold text-[#141414]">
-                                {task.id === activeTaskId
-                                  ? formatSeconds(timerSeconds)
-                                  : formatSeconds(task.total_duration_seconds)}
+                                {formatSeconds(task.total_duration_seconds)}
                               </span>
                             </div>
 
                             <div className="pt-2 border-t border-[#F2ECE1] flex items-center justify-between gap-2">
-                              {(task.id === activeTaskId && isTimerRunning) || task.status === "in_progress" ? (
+                              {task.status === "in_progress" ? (
                                 <button
                                   onClick={() => handlePauseTimer(task)}
                                   className="w-full bg-amber-500 hover:bg-amber-600 text-white text-[11px] font-semibold py-1.5 rounded flex items-center justify-center gap-1 cursor-pointer transition-colors"
@@ -2465,19 +2467,106 @@ PCN Advogadas · Plataforma Forense`;
                         );
                       })}
                     {tasks.filter(
-                      (t) =>
-                        t.status === "assigned" ||
-                        t.status === "in_progress" ||
-                        t.status === "paused"
+                      (t) => t.status === "assigned" || t.status === "in_progress"
                     ).length === 0 && (
                       <p className="text-xs text-[#888] text-center py-6 italic">
-                        Nenhuma tarefa em andamento ou pausada.
+                        Nenhuma tarefa em andamento.
                       </p>
                     )}
                   </div>
                 </div>
 
-                {/* Coluna 3: Tarefas Concluídas */}
+                {/* Coluna 3: Pausadas */}
+                <div className="pcn-card p-3.5 sm:p-4 bg-[#FDFCFB]">
+                  <div className="flex items-center justify-between pb-3 border-b border-[#ECE6DB]">
+                    <h3 className="text-xs font-bold text-[#141414] uppercase tracking-wider">
+                      Pausadas ({tasks.filter((t) => t.status === "paused").length})
+                    </h3>
+                    <span className="text-[10px] bg-amber-100 text-[#AA820A] px-2 py-0.5 rounded font-semibold">
+                      Em Pausa
+                    </span>
+                  </div>
+
+                  <div className="space-y-3 mt-3">
+                    {tasks
+                      .filter((t) => t.status === "paused")
+                      .map((task) => (
+                        <div
+                          key={task.id}
+                          className="bg-white border border-[#E5DECF] p-3 sm:p-3.5 rounded-lg shadow-xs space-y-2.5 hover:border-[#D4AF37] transition-all"
+                        >
+                          <div className="flex items-center justify-between">
+                            <span className="text-[10px] font-bold text-[#92006F] uppercase">
+                              {task.task_type}
+                            </span>
+                            <span className="text-[10px] bg-amber-100 text-[#AA820A] font-bold px-1.5 py-0.5 rounded flex items-center gap-1">
+                              <Pause className="w-2.5 h-2.5" /> Pausada
+                            </span>
+                          </div>
+
+                          <div className="flex items-start justify-between gap-2">
+                            <h4
+                              onClick={() => openTaskDetails(task)}
+                              className="text-xs font-bold text-[#141414] hover:text-[#92006F] cursor-pointer"
+                            >
+                              {task.title}
+                            </h4>
+                            <div className="flex items-center gap-1 shrink-0">
+                              <button
+                                onClick={() => openTaskDetails(task)}
+                                className="text-[#888] hover:text-[#92006F] p-1 rounded cursor-pointer"
+                                title="Detalhes & Reatribuir"
+                              >
+                                <UserCheck className="w-3.5 h-3.5" />
+                              </button>
+                              <button
+                                onClick={() => confirmDeleteTask(task)}
+                                className="text-[#999] hover:text-rose-600 p-1 rounded cursor-pointer"
+                                title="Eliminar Tarefa"
+                              >
+                                <Trash2 className="w-3.5 h-3.5" />
+                              </button>
+                            </div>
+                          </div>
+
+                          <div className="text-[11px] text-[#777] flex items-center justify-between">
+                            <span>Cliente: <strong>{task.client_name}</strong></span>
+                            <span>Resp: <strong>{task.lawyer_name || "—"}</strong></span>
+                          </div>
+
+                          <div className="bg-[#FAF7F2] p-2 rounded border border-[#EFE8DD] flex items-center justify-between text-xs font-mono">
+                            <span className="text-[#666]">Tempo acumulado:</span>
+                            <span className="font-bold text-[#141414]">
+                              {formatSeconds(task.total_duration_seconds)}
+                            </span>
+                          </div>
+
+                          <div className="pt-2 border-t border-[#F2ECE1] flex items-center justify-between gap-2">
+                            <button
+                              onClick={() => handleStartTimer(task)}
+                              className="w-full bg-[#92006F] hover:bg-[#7E0060] text-white text-[11px] font-semibold py-1.5 rounded flex items-center justify-center gap-1 cursor-pointer transition-colors"
+                            >
+                              <Play className="w-3 h-3 fill-current" /> Iniciar
+                            </button>
+
+                            <button
+                              onClick={() => handleCompleteTask(task)}
+                              className="bg-emerald-600 hover:bg-emerald-700 text-white text-[11px] font-semibold px-3 py-1.5 rounded cursor-pointer transition-colors"
+                            >
+                              Concluir
+                            </button>
+                          </div>
+                        </div>
+                      ))}
+                    {tasks.filter((t) => t.status === "paused").length === 0 && (
+                      <p className="text-xs text-[#888] text-center py-6 italic">
+                        Nenhuma tarefa pausada de momento.
+                      </p>
+                    )}
+                  </div>
+                </div>
+
+                {/* Coluna 4: Tarefas Concluídas */}
                 <div className="pcn-card p-3.5 sm:p-4 bg-[#FDFCFB]">
                   <div className="flex items-center justify-between pb-3 border-b border-[#ECE6DB]">
                     <h3 className="text-xs font-bold text-[#141414] uppercase tracking-wider">
@@ -2621,9 +2710,7 @@ PCN Advogadas · Plataforma Forense`;
                           <div className="flex justify-between text-[#666]">
                             <span>Tempo acumulado:</span>
                             <strong className="font-mono text-[#141414]">
-                              {task.id === activeTaskId
-                                ? formatSeconds(timerSeconds)
-                                : formatSeconds(task.total_duration_seconds)}
+                              {formatSeconds(task.total_duration_seconds)}
                             </strong>
                           </div>
                         </div>
