@@ -24,8 +24,9 @@ class FeeNoteRepository(BaseRepository[FeeNote]):
                 selectinload(FeeNote.items),
                 selectinload(FeeNote.tasks),
             )
+            .execution_options(populate_existing=True)
         )
-        return result.scalar_one_or_none()
+        return result.scalars().first()
 
     async def get_latest_by_client(self, client_id: str) -> FeeNote | None:
         result = await self.session.execute(

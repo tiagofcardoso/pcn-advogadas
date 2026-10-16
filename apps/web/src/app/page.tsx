@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useState, useEffect } from "react";
+import React, { useState, useEffect, useRef } from "react";
 import Image from "next/image";
 import {
   LayoutDashboard,
@@ -1212,14 +1212,28 @@ PCN Advogadas · Plataforma Forense`;
     }
   };
 
+  const saveInFlightRef = useRef<Promise<any> | null>(null);
+  const autoSaveTimerRef = useRef<NodeJS.Timeout | null>(null);
+
   const saveFeeNoteToDb = async (
     clientId?: string,
     overridePrices?: Record<string, number>,
     overrideWithholding?: boolean,
     silent: boolean = false
   ) => {
+    if (autoSaveTimerRef.current) {
+      clearTimeout(autoSaveTimerRef.current);
+      autoSaveTimerRef.current = null;
+    }
+
     const targetClientId = clientId || selectedFeeClient || (clients.length > 0 ? clients[0].id : "");
     if (!authToken || !targetClientId) return null;
+
+    if (saveInFlightRef.current) {
+      try {
+        await saveInFlightRef.current;
+      } catch {}
+    }
 
     const pricesSource = overridePrices || feeTaskPrices;
     const useWithholding =
@@ -1236,48 +1250,58 @@ PCN Advogadas · Plataforma Forense`;
     }
 
     setIsSavingFeeNote(true);
-    try {
-      const savedNote = await createFeeNoteDraftApi(authToken, {
-        client_id: targetClientId,
-        task_ids: taskIds,
-        task_prices: taskPricesPayload,
-        vat_rate: 0.23,
-        withholding_rate: useWithholding ? 0.23 : 0.0,
-      });
+    const promise = (async () => {
+      try {
+        const savedNote = await createFeeNoteDraftApi(authToken, {
+          client_id: targetClientId,
+          task_ids: taskIds,
+          task_prices: taskPricesPayload,
+          vat_rate: 0.23,
+          withholding_rate: useWithholding ? 0.23 : 0.0,
+        });
 
-      if (savedNote) {
-        setFeeNotesByClient((prev) => ({
-          ...prev,
-          [targetClientId]: savedNote,
-        }));
-        setTasks((prev) =>
-          prev.map((t) =>
-            t.client_id === targetClientId && taskPricesPayload[t.id] !== undefined
-              ? { ...t, fee_amount: taskPricesPayload[t.id] }
-              : t
-          )
-        );
-        if (!silent) {
-          setModalFeedback(
-            `Nota de Honorários (${savedNote.reference_code}) calculada e guardada no PostgreSQL!`
+        if (savedNote) {
+          setFeeNotesByClient((prev) => ({
+            ...prev,
+            [targetClientId]: savedNote,
+          }));
+          setTasks((prev) =>
+            prev.map((t) =>
+              t.client_id === targetClientId && taskPricesPayload[t.id] !== undefined
+                ? { ...t, fee_amount: taskPricesPayload[t.id] }
+                : t
+            )
           );
-          setTimeout(() => setModalFeedback(null), 3500);
+          if (!silent) {
+            setModalFeedback(
+              `Nota de Honorários (${savedNote.reference_code}) calculada e guardada no PostgreSQL!`
+            );
+            setTimeout(() => setModalFeedback(null), 3500);
+          }
         }
+        return savedNote;
+      } catch (err: any) {
+        if (!silent) {
+          alert("Erro ao guardar Nota de Honorários na base de dados: " + err.message);
+        } else {
+          throw err;
+        }
+        return null;
+      } finally {
+        setIsSavingFeeNote(false);
+        saveInFlightRef.current = null;
       }
-      return savedNote;
-    } catch (err: any) {
-      if (!silent) {
-        alert("Erro ao guardar Nota de Honorários na base de dados: " + err.message);
-      } else {
-        throw err;
-      }
-      return null;
-    } finally {
-      setIsSavingFeeNote(false);
-    }
+    })();
+
+    saveInFlightRef.current = promise;
+    return promise;
   };
 
   const handleExportExcel = async (internal: boolean) => {
+    if (autoSaveTimerRef.current) {
+      clearTimeout(autoSaveTimerRef.current);
+      autoSaveTimerRef.current = null;
+    }
     setIsExportingExcel(true);
     try {
       if (authToken) {
@@ -2968,19 +2992,23 @@ PCN Advogadas · Plataforma Forense`;
                                 onChange={(e) => {
                                   const raw = e.target.value;
                                   const parsed = raw === "" ? 0 : parseFloat(raw);
-                                  setFeeTaskPrices((prev) => ({
-                                    ...prev,
-                                    [t.id]: isNaN(parsed) ? 0 : parsed,
-                                  }));
-                                }}
-                                onBlur={(e) => {
-                                  const parsed = parseFloat(e.target.value) || 0;
+                                  const cleanVal = isNaN(parsed) ? 0 : parsed;
                                   const updatedPrices = {
                                     ...feeTaskPrices,
-                                    [t.id]: parsed,
+                                    [t.id]: cleanVal,
                                   };
                                   setFeeTaskPrices(updatedPrices);
-                                  saveFeeNoteToDb(selectedFeeClient, updatedPrices, useWithholding, false);
+                                  if (autoSaveTimerRef.current) {
+                                    clearTimeout(autoSaveTimerRef.current);
+                                  }
+                                  autoSaveTimerRef.current = setTimeout(() => {
+                                    saveFeeNoteToDb(
+                                      selectedFeeClient,
+                                      updatedPrices,
+                                      useWithholding,
+                                      true
+                                    ).catch((err) => console.error("Auto-save fee note error:", err));
+                                  }, 800);
                                 }}
                                 className="w-24 sm:w-28 text-right font-semibold text-xs border border-[#D9D1C5] rounded px-2 py-1 focus:ring-1 focus:ring-[#92006F] bg-white"
                               />

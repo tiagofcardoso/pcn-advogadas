@@ -74,8 +74,6 @@ async def run_seed(include_demo_data: bool = False) -> None:
                 )
                 session.add(u)
             else:
-                u.password_hash = hash_password("Advogada2026!")
-                u.must_change_password = True
                 u.is_active = True
                 u.failed_login_attempts = 0
                 u.locked_until = None

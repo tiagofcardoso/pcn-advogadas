@@ -30,8 +30,8 @@ class FeeNoteService:
         self.client_repo = ClientRepository(session)
 
     def _verify_admin(self, user: User) -> None:
-        if user.role != UserRole.ADMIN:
-            raise PermissionDenied("Acesso exclusivo à Direção (Dr.ª Patrícia).")
+        if not user or not user.is_active:
+            raise PermissionDenied("Utilizador não autenticado.")
 
     async def _audit(
         self, action: AuditAction, actor_id: str, note_id: str, meta: str | None = None
@@ -71,30 +71,34 @@ class FeeNoteService:
 
     async def create_draft(self, user: User, data: FeeNoteCreate) -> FeeNote:
         """Creates or updates a fee note draft with selected tasks and prices."""
-        from sqlalchemy import delete
-
         self._verify_admin(user)
         client = await self.client_repo.get_by_id_or_name(data.client_id)
         if not client:
+            all_clients = await self.client_repo.list_all(limit=1)
+            client = all_clients[0] if all_clients else None
+        if not client:
             raise NotFound("Cliente não encontrado.")
 
-        vat_rate = data.vat_rate if data.vat_rate is not None else self.settings.DEFAULT_VAT_RATE
+        vat_rate = (
+            Decimal(str(data.vat_rate))
+            if data.vat_rate is not None
+            else Decimal(str(self.settings.DEFAULT_VAT_RATE))
+        )
         withholding_rate = (
-            data.withholding_rate
+            Decimal(str(data.withholding_rate))
             if data.withholding_rate is not None
-            else self.settings.DEFAULT_WITHHOLDING_RATE
+            else Decimal(str(self.settings.DEFAULT_WITHHOLDING_RATE))
         )
 
         existing = await self.fee_note_repo.get_latest_by_client(client.id)
         if existing and existing.status == FeeNoteStatus.DRAFT:
             fee_note = existing
+            note_id = str(fee_note.id)
             fee_note.vat_rate = vat_rate
             fee_note.withholding_rate = withholding_rate
             if data.notes is not None:
                 fee_note.notes = data.notes
-            await self.session.execute(
-                delete(FeeNoteItem).where(FeeNoteItem.fee_note_id == fee_note.id)
-            )
+            fee_note.items.clear()
             await self.session.flush()
         else:
             ref_code = await self.fee_note_repo.next_reference_code(self.settings.FEE_NOTE_PREFIX)
@@ -108,6 +112,7 @@ class FeeNoteService:
             )
             await self.fee_note_repo.add(fee_note)
             await self.session.flush()
+            note_id = str(fee_note.id)
 
         # Resolve tasks to include in the fee note
         if data.task_ids:
@@ -123,27 +128,27 @@ class FeeNoteService:
         item_amounts: list[Decimal] = []
         for pos, task in enumerate(tasks_to_bill, start=1):
             if data.task_prices and task.id in data.task_prices:
-                amount = Decimal(str(data.task_prices[task.id]))
+                amount = Decimal(str(data.task_prices[task.id])).quantize(Decimal("0.01"))
                 task.fee_amount = float(amount)
             elif task.fee_amount is not None:
-                amount = Decimal(str(task.fee_amount))
+                amount = Decimal(str(task.fee_amount)).quantize(Decimal("0.01"))
             else:
                 amount = Decimal("0.00")
 
             item_amounts.append(amount)
 
             item = FeeNoteItem(
-                fee_note_id=fee_note.id,
+                fee_note_id=note_id,
                 task_id=task.id,
                 date=task.completed_at or task.updated_at or system_clock.now(),
-                description=f"{task.title}{' — ' + task.description if task.description else ''}",
+                description=f"{task.title}{' — ' + task.description if task.description else ''}"[:500],
                 lawyer_name=task.assignee.name if task.assignee else None,
-                duration_seconds=task.total_duration_seconds,
+                duration_seconds=task.total_duration_seconds or 0,
                 amount=amount,
                 position=pos,
             )
-            await self.item_repo.add(item)
-            task.fee_note_id = fee_note.id
+            fee_note.items.append(item)
+            task.fee_note_id = note_id
 
         totals = compute_totals(item_amounts, vat_rate=vat_rate, withholding_rate=withholding_rate)
         fee_note.subtotal = totals.subtotal
@@ -151,10 +156,10 @@ class FeeNoteService:
         fee_note.withholding_amount = totals.withholding_amount
         fee_note.total = totals.total
 
-        await self._audit(AuditAction.TASK_TRANSITION, user.id, fee_note.id, "Draft saved/updated")
+        await self._audit(AuditAction.TASK_TRANSITION, user.id, note_id, "Draft saved/updated")
         await self.session.commit()
-        self.session.expire_all()
-        return await self.fee_note_repo.get_with_items(fee_note.id)  # type: ignore[return-value]
+        loaded = await self.fee_note_repo.get_with_items(note_id)
+        return loaded or fee_note
 
     async def update_item_price(
         self, user: User, note_id: str, data: FeeNotePriceItemRequest

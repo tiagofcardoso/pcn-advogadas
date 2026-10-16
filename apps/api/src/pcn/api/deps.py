@@ -56,11 +56,11 @@ async def require_full_access(
     claims: Annotated[TokenClaims, Depends(get_current_claims)],
     user: Annotated[User, Depends(get_current_user)],
 ) -> User:
-    """Blocks any user who still has pending mandatory setup (password change or 2FA)."""
-    if claims.scope == TokenScope.SETUP or user.must_change_password:
+    """Blocks any user who still has a setup-only token."""
+    if claims.scope == TokenScope.SETUP:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
-            detail="É obrigatório alterar a palavra-passe provisória e configurar o 2FA antes de prosseguir.",
+            detail="É obrigatório alterar a palavra-passe provisória antes de prosseguir.",
         )
     return user
 

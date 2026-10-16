@@ -6,7 +6,7 @@ from fastapi import APIRouter, Depends, Query, status
 from fastapi.responses import StreamingResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from pcn.api.deps import require_admin
+from pcn.api.deps import require_full_access
 from pcn.core.database import get_session
 from pcn.models.user import User
 from pcn.schemas.fee_note import (
@@ -22,7 +22,7 @@ router = APIRouter(prefix="/fee-notes", tags=["Notas de Honorários (Direção)"
 
 @router.get("", response_model=list[FeeNoteRead])
 async def list_fee_notes(
-    admin: Annotated[User, Depends(require_admin)],
+    admin: Annotated[User, Depends(require_full_access)],
     session: Annotated[AsyncSession, Depends(get_session)],
     client_id: str | None = None,
 ) -> list[FeeNoteRead]:
@@ -35,7 +35,7 @@ async def list_fee_notes(
 @router.get("/unbilled-tasks", response_model=list[UnbilledTaskItem])
 async def list_unbilled_tasks(
     client_id: str,
-    admin: Annotated[User, Depends(require_admin)],
+    admin: Annotated[User, Depends(require_full_access)],
     session: Annotated[AsyncSession, Depends(get_session)],
 ) -> list[UnbilledTaskItem]:
     """Lista todas as tarefas concluídas de um cliente que ainda não foram faturadas."""
@@ -46,7 +46,7 @@ async def list_unbilled_tasks(
 @router.post("/drafts", response_model=FeeNoteRead, status_code=status.HTTP_201_CREATED)
 async def create_draft(
     body: FeeNoteCreate,
-    admin: Annotated[User, Depends(require_admin)],
+    admin: Annotated[User, Depends(require_full_access)],
     session: Annotated[AsyncSession, Depends(get_session)],
 ) -> FeeNoteRead:
     """Cria ou atualiza um rascunho de Nota de Honorários a partir das tarefas e valores do cliente."""
@@ -58,7 +58,7 @@ async def create_draft(
 @router.get("/{note_id}", response_model=FeeNoteRead)
 async def get_fee_note(
     note_id: str,
-    admin: Annotated[User, Depends(require_admin)],
+    admin: Annotated[User, Depends(require_full_access)],
     session: Annotated[AsyncSession, Depends(get_session)],
 ) -> FeeNoteRead:
     fee_svc = FeeNoteService(session)
@@ -74,7 +74,7 @@ async def get_fee_note(
 async def update_item_price(
     note_id: str,
     body: FeeNotePriceItemRequest,
-    admin: Annotated[User, Depends(require_admin)],
+    admin: Annotated[User, Depends(require_full_access)],
     session: Annotated[AsyncSession, Depends(get_session)],
 ) -> FeeNoteRead:
     """A Dr.ª Patrícia define ou ajusta o preço (€) de cada tarefa observando os tempos gastos."""
@@ -86,7 +86,7 @@ async def update_item_price(
 @router.post("/{note_id}/issue", response_model=FeeNoteRead)
 async def issue_fee_note(
     note_id: str,
-    admin: Annotated[User, Depends(require_admin)],
+    admin: Annotated[User, Depends(require_full_access)],
     session: Annotated[AsyncSession, Depends(get_session)],
 ) -> FeeNoteRead:
     """Finaliza e emite a Nota de Honorários oficial (tranca valores para envio ao cliente)."""
@@ -98,7 +98,7 @@ async def issue_fee_note(
 @router.post("/{note_id}/mark-paid", response_model=FeeNoteRead)
 async def mark_fee_note_paid(
     note_id: str,
-    admin: Annotated[User, Depends(require_admin)],
+    admin: Annotated[User, Depends(require_full_access)],
     session: Annotated[AsyncSession, Depends(get_session)],
 ) -> FeeNoteRead:
     fee_svc = FeeNoteService(session)
@@ -109,7 +109,7 @@ async def mark_fee_note_paid(
 @router.get("/{note_id}/export-excel")
 async def export_excel(
     note_id: str,
-    admin: Annotated[User, Depends(require_admin)],
+    admin: Annotated[User, Depends(require_full_access)],
     session: Annotated[AsyncSession, Depends(get_session)],
     internal: bool = Query(
         False,

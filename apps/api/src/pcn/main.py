@@ -50,11 +50,22 @@ def create_app() -> FastAPI:
     app.state.limiter = limiter
     app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 
+    def _cors_headers(request: Request) -> dict[str, str]:
+        origin = request.headers.get("origin")
+        if origin:
+            return {
+                "Access-Control-Allow-Origin": origin,
+                "Access-Control-Allow-Credentials": "true",
+                "Vary": "Origin",
+            }
+        return {"Access-Control-Allow-Origin": "*"}
+
     # Application error handling
     @app.exception_handler(AppError)
     async def app_error_handler(request: Request, exc: AppError) -> JSONResponse:
         return JSONResponse(
             status_code=exc.status_code,
+            headers=_cors_headers(request),
             content={
                 "code": exc.code,
                 "message": exc.message,
@@ -68,6 +79,7 @@ def create_app() -> FastAPI:
         logging.getLogger("pcn").exception(f"Erro não tratado na API: {exc}")
         return JSONResponse(
             status_code=500,
+            headers=_cors_headers(request),
             content={
                 "code": "INTERNAL_SERVER_ERROR",
                 "message": str(exc),
