@@ -1,5 +1,6 @@
 """Authentication endpoints: login, 2FA/TOTP setup and verification, token refresh."""
 
+from datetime import datetime, timezone
 from typing import Annotated
 
 from fastapi import APIRouter, Cookie, Depends, Request, Response, status
@@ -9,6 +10,7 @@ from pcn.api.deps import get_current_user
 from pcn.core.config import Settings, get_settings
 from pcn.core.database import get_session
 from pcn.core.rate_limit import auth_rate_limit, limiter
+from pcn.core.security import TokenScope
 from pcn.models.user import User
 from pcn.schemas.auth import (
     ChangePasswordRequest,
@@ -149,4 +151,11 @@ async def change_password(
 ) -> dict[str, str]:
     auth_svc = AuthService(session)
     await auth_svc.change_password(current_user, body)
-    return {"message": "Palavra-passe atualizada com sucesso."}
+    now = datetime.now(timezone.utc)
+    new_access_token = auth_svc.jwt.create_access_token(
+        user_id=current_user.id, role=current_user.role.value, scope=TokenScope.FULL, now=now
+    )
+    return {
+        "message": "Palavra-passe atualizada com sucesso.",
+        "access_token": new_access_token,
+    }

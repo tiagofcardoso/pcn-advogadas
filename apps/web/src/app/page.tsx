@@ -43,12 +43,14 @@ import {
   ShieldCheck,
   UserPlus,
   ShieldAlert,
+  KeyRound,
 } from "lucide-react";
 import { INITIAL_USERS, INITIAL_CLIENTS, INITIAL_TASKS } from "@/lib/mockData";
 import { Task, Client, UserProfile } from "@/lib/types";
 import { detectPlatform, PlatformInfo } from "@/lib/platform";
 import {
   loginApi,
+  changePasswordApi,
   getDirectionBoard,
   getClientsApi,
   createClientApi,
@@ -95,7 +97,7 @@ export default function App() {
     name: "",
     email: "",
     role: "lawyer",
-    password: "Advogada2026!",
+    password: "",
   });
   const [isSubmittingUser, setIsSubmittingUser] = useState<boolean>(false);
 
@@ -343,10 +345,19 @@ export default function App() {
   }, [clients]);
 
   // ── AUTENTICAÇÃO E SESSÃO SEGURA (30 MINUTOS) ──
-  const [loginEmail, setLoginEmail] = useState("patricia@pcnadvogadas.pt");
-  const [loginPassword, setLoginPassword] = useState("Advogada2026!");
+  const [loginEmail, setLoginEmail] = useState("");
+  const [loginPassword, setLoginPassword] = useState("");
   const [isLoggingIn, setIsLoggingIn] = useState(false);
   const [loginError, setLoginError] = useState<string | null>(null);
+
+  // Redefinição obrigatória de palavra-passe no primeiro login
+  const [mustChangePassword, setMustChangePassword] = useState(false);
+  const [currentPasswordForReset, setCurrentPasswordForReset] = useState("");
+  const [newPassword, setNewPassword] = useState("");
+  const [confirmPassword, setConfirmPassword] = useState("");
+  const [passwordChangeError, setPasswordChangeError] = useState<string | null>(null);
+  const [isChangingPassword, setIsChangingPassword] = useState(false);
+  const [pendingUserProfile, setPendingUserProfile] = useState<UserProfile | null>(null);
 
   const loadAllData = async (token: string, userRole?: string) => {
     setIsLoadingApi(true);
@@ -456,13 +467,25 @@ export default function App() {
           email: loginEmail,
         };
 
+        setAuthToken(loginRes.access_token);
+
+        // Se for o primeiro login e exigir alteração de senha obrigatória:
+        if (loginRes.must_change_password) {
+          setCurrentPasswordForReset(loginPassword);
+          setPendingUserProfile(userProfile);
+          setMustChangePassword(true);
+          setPasswordChangeError(null);
+          setNewPassword("");
+          setConfirmPassword("");
+          return;
+        }
+
         if (typeof window !== "undefined") {
           localStorage.setItem("pcn_session_token", loginRes.access_token);
           localStorage.setItem("pcn_session_expiry", expiry.toString());
           localStorage.setItem("pcn_session_user", JSON.stringify(userProfile));
         }
 
-        setAuthToken(loginRes.access_token);
         setSessionExpiry(expiry);
         setCurrentUser(userProfile);
         setIsAuthenticated(true);
@@ -476,6 +499,64 @@ export default function App() {
       setLoginError(err.message || "Credenciais inválidas ou erro de ligação à base de dados.");
     } finally {
       setIsLoggingIn(false);
+    }
+  };
+
+  const handleChangePasswordSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setPasswordChangeError(null);
+
+    if (!authToken) {
+      setPasswordChangeError("Sessão inválida. Por favor, autentique-se novamente.");
+      setMustChangePassword(false);
+      return;
+    }
+
+    if (newPassword.length < 12) {
+      setPasswordChangeError("A nova palavra-passe deve ter no mínimo 12 caracteres.");
+      return;
+    }
+    if (!/[A-Z]/.test(newPassword) || !/[a-z]/.test(newPassword)) {
+      setPasswordChangeError("A nova palavra-passe deve conter letras maiúsculas e minúsculas.");
+      return;
+    }
+    if (!/\d/.test(newPassword) || !/[^A-Za-z0-9]/.test(newPassword)) {
+      setPasswordChangeError("A nova palavra-passe deve conter pelo menos um algarismo e um símbolo especial.");
+      return;
+    }
+    if (newPassword !== confirmPassword) {
+      setPasswordChangeError("A confirmação da palavra-passe não coincide com a nova palavra-passe.");
+      return;
+    }
+
+    setIsChangingPassword(true);
+    try {
+      const res = await changePasswordApi(authToken, currentPasswordForReset, newPassword);
+      const effectiveToken = res.access_token || authToken;
+      const expiry = Date.now() + 30 * 60 * 1000;
+      const userProfile = pendingUserProfile || currentUser;
+
+      if (typeof window !== "undefined") {
+        localStorage.setItem("pcn_session_token", effectiveToken);
+        localStorage.setItem("pcn_session_expiry", expiry.toString());
+        localStorage.setItem("pcn_session_user", JSON.stringify(userProfile));
+      }
+
+      setAuthToken(effectiveToken);
+      setSessionExpiry(expiry);
+      setCurrentUser(userProfile);
+      setMustChangePassword(false);
+      setIsAuthenticated(true);
+      setApiConnected(true);
+
+      setModalFeedback("Palavra-passe pessoal definida com sucesso! Bem-vinda à plataforma.");
+      setTimeout(() => setModalFeedback(null), 4000);
+
+      loadAllData(effectiveToken, userProfile.role);
+    } catch (err: any) {
+      setPasswordChangeError(err.message || "Erro ao definir nova palavra-passe.");
+    } finally {
+      setIsChangingPassword(false);
     }
   };
 
@@ -555,7 +636,7 @@ export default function App() {
         name: "",
         email: "",
         role: "lawyer",
-        password: "Advogada2026!",
+        password: "",
       });
       const updated = await getUsersApi(authToken);
       if (updated) setUsersList(updated);
@@ -1094,6 +1175,19 @@ PCN Advogadas · Plataforma Forense`;
         <div className="absolute top-0 right-0 w-[550px] h-[550px] bg-[#92006F]/5 rounded-full blur-3xl pointer-events-none" />
         <div className="absolute bottom-0 left-0 w-[550px] h-[550px] bg-[#D4AF37]/5 rounded-full blur-3xl pointer-events-none" />
 
+        {/* Marca d'água elegante da logo PCN no fundo */}
+        <div className="absolute inset-0 flex items-center justify-center pointer-events-none z-0 select-none overflow-hidden">
+          <div className="relative w-[550px] sm:w-[850px] md:w-[1100px] lg:w-[1350px] h-[320px] sm:h-[480px] md:h-[620px] opacity-[0.07] transform scale-105">
+            <Image
+              src="/logo_pcn.svg"
+              alt="Marca d'água PCN"
+              fill
+              className="object-contain"
+              priority
+            />
+          </div>
+        </div>
+
         {/* Top Header */}
         <header className="px-6 py-4 sm:px-8 sm:py-5 flex items-center justify-between z-10 border-b border-[#ECE6DB] bg-white/80 backdrop-blur-sm">
           <div className="relative w-40 sm:w-48 h-12">
@@ -1112,138 +1206,182 @@ PCN Advogadas · Plataforma Forense`;
           <div className="bg-white border border-[#D9D1C5] rounded-2xl shadow-xl max-w-md w-full p-6 sm:p-8 space-y-6 relative">
             <div className="gold-divider-ribbon absolute top-0 left-6 right-6" />
 
-            <div className="text-center pt-2">
-              <h1 className="text-xl sm:text-2xl font-bold text-[#141414] tracking-tight">
-                Entrar na Plataforma Forense
-              </h1>
-              <p className="text-xs sm:text-sm text-[#666] mt-1.5">
-                Rigor jurídico, gestão integrada e controlo de honorários.
-              </p>
-            </div>
-
-            {sessionNotice && (
-              <div className="p-3.5 bg-amber-50 border border-amber-200 rounded-xl text-xs text-amber-800 flex items-start gap-2.5 shadow-2xs animate-in fade-in">
-                <Clock className="w-4 h-4 text-amber-600 shrink-0 mt-0.5" />
-                <span className="leading-relaxed">{sessionNotice}</span>
-              </div>
-            )}
-
-            {loginError && (
-              <div className="p-3.5 bg-rose-50 border border-rose-200 rounded-xl text-xs text-rose-800 flex items-start gap-2.5 shadow-2xs animate-in fade-in">
-                <AlertCircle className="w-4 h-4 text-rose-600 shrink-0 mt-0.5" />
-                <div className="flex-1">
-                  <p className="font-bold">Acesso não autorizado</p>
-                  <p className="text-[11px] mt-0.5">{loginError}</p>
+            {mustChangePassword ? (
+              // ── ECRÃ DE REDEFINIÇÃO OBRIGATÓRIA NO PRIMEIRO LOGIN ──
+              <div className="space-y-5">
+                <div className="text-center pt-2">
+                  <div className="w-12 h-12 rounded-full bg-[#92006F]/10 text-[#92006F] flex items-center justify-center mx-auto mb-2.5">
+                    <KeyRound className="w-6 h-6" />
+                  </div>
+                  <h1 className="text-xl sm:text-2xl font-bold text-[#141414] tracking-tight">
+                    Definir Palavra-passe
+                  </h1>
+                  <p className="text-xs text-[#666] mt-1.5 leading-relaxed">
+                    Primeiro acesso detetado. Por rigor deontológico e segurança, é obrigatório definir a sua palavra-passe pessoal.
+                  </p>
                 </div>
-              </div>
-            )}
 
-            {/* Quick Profile Selection */}
-            <div>
-              <div className="flex items-center justify-between mb-2">
-                <label className="text-[11px] font-bold text-[#736B5E] uppercase tracking-wider">
-                  Selecionar Advogada
-                </label>
-                <span className="text-[10px] text-[#999]">Clique para preencher</span>
-              </div>
-              <div className="grid grid-cols-3 gap-2">
-                {[
-                  { name: "Patrícia", role: "Direção (Admin)", email: "patricia@pcnadvogadas.pt" },
-                  { name: "Inês", role: "Associada", email: "ines@pcnadvogadas.pt" },
-                  { name: "Sofia", role: "Associada", email: "sofia@pcnadvogadas.pt" },
-                ].map((lawyer) => {
-                  const isSelected = loginEmail.toLowerCase() === lawyer.email.toLowerCase();
-                  return (
+                {passwordChangeError && (
+                  <div className="p-3.5 bg-rose-50 border border-rose-200 rounded-xl text-xs text-rose-800 flex items-start gap-2.5 shadow-2xs animate-in fade-in">
+                    <AlertCircle className="w-4 h-4 text-rose-600 shrink-0 mt-0.5" />
+                    <span className="leading-relaxed">{passwordChangeError}</span>
+                  </div>
+                )}
+
+                <form onSubmit={handleChangePasswordSubmit} className="space-y-4">
+                  <div>
+                    <label className="block text-xs font-semibold text-[#444] mb-1.5">
+                      Nova Palavra-passe Pessoal:
+                    </label>
+                    <input
+                      type="password"
+                      value={newPassword}
+                      onChange={(e) => setNewPassword(e.target.value)}
+                      required
+                      placeholder="Mínimo 12 caracteres (maiúsculas, números e símbolos)"
+                      autoComplete="new-password"
+                      className="w-full text-xs sm:text-sm bg-[#FAF8F5] border border-[#D9D1C5] rounded-xl px-3.5 py-2.5 text-[#141414] focus:outline-none focus:ring-2 focus:ring-[#92006F]/30 focus:border-[#92006F] transition-all"
+                    />
+                  </div>
+
+                  <div>
+                    <label className="block text-xs font-semibold text-[#444] mb-1.5">
+                      Confirmar Nova Palavra-passe:
+                    </label>
+                    <input
+                      type="password"
+                      value={confirmPassword}
+                      onChange={(e) => setConfirmPassword(e.target.value)}
+                      required
+                      placeholder="Repita a nova palavra-passe"
+                      autoComplete="new-password"
+                      className="w-full text-xs sm:text-sm bg-[#FAF8F5] border border-[#D9D1C5] rounded-xl px-3.5 py-2.5 text-[#141414] focus:outline-none focus:ring-2 focus:ring-[#92006F]/30 focus:border-[#92006F] transition-all"
+                    />
+                  </div>
+
+                  {/* Checklist visual de requisitos */}
+                  <div className="p-3 bg-[#FAF8F5] border border-[#ECE6DB] rounded-xl text-[11px] text-[#666] space-y-1">
+                    <p className="font-semibold text-[#333] mb-1">Requisitos de segurança:</p>
+                    <p className={`flex items-center gap-1.5 ${newPassword.length >= 12 ? "text-emerald-700 font-semibold" : ""}`}>
+                      <span className="text-xs">{newPassword.length >= 12 ? "✓" : "•"}</span> Mínimo de 12 caracteres
+                    </p>
+                    <p className={`flex items-center gap-1.5 ${/[A-Z]/.test(newPassword) && /[a-z]/.test(newPassword) ? "text-emerald-700 font-semibold" : ""}`}>
+                      <span className="text-xs">{/[A-Z]/.test(newPassword) && /[a-z]/.test(newPassword) ? "✓" : "•"}</span> Letras maiúsculas e minúsculas
+                    </p>
+                    <p className={`flex items-center gap-1.5 ${/\d/.test(newPassword) && /[^A-Za-z0-9]/.test(newPassword) ? "text-emerald-700 font-semibold" : ""}`}>
+                      <span className="text-xs">{/\d/.test(newPassword) && /[^A-Za-z0-9]/.test(newPassword) ? "✓" : "•"}</span> Pelo menos um algarismo e um símbolo
+                    </p>
+                  </div>
+
+                  <div className="flex gap-2 pt-1">
                     <button
-                      key={lawyer.email}
                       type="button"
                       onClick={() => {
-                        setLoginEmail(lawyer.email);
-                        setLoginPassword("Advogada2026!");
-                        setLoginError(null);
+                        setMustChangePassword(false);
+                        setAuthToken(null);
+                        setLoginPassword("");
                       }}
-                      className={`p-2.5 rounded-xl border text-center transition-all cursor-pointer ${
-                        isSelected
-                          ? "bg-[#92006F] text-white border-[#92006F] shadow-md scale-[1.02]"
-                          : "bg-[#FAF8F5] text-[#333] border-[#D9D1C5] hover:bg-[#F2EDE4] hover:border-[#C8BFB2]"
-                      }`}
+                      className="px-4 py-2.5 rounded-xl border border-[#D9D1C5] text-xs font-semibold text-[#666] hover:bg-[#FAF8F5] transition-colors cursor-pointer"
                     >
-                      <p className="font-bold text-xs">Dr.ª {lawyer.name}</p>
-                      <p
-                        className={`text-[10px] mt-0.5 font-medium ${
-                          isSelected ? "text-pink-200" : "text-[#777]"
-                        }`}
-                      >
-                        {lawyer.role}
-                      </p>
+                      Cancelar
                     </button>
-                  );
-                })}
+                    <button
+                      type="submit"
+                      disabled={isChangingPassword}
+                      className="flex-1 bg-[#92006F] hover:bg-[#7E0060] text-white font-bold text-sm py-2.5 rounded-xl flex items-center justify-center gap-2 shadow-md hover:shadow-lg transition-all cursor-pointer disabled:opacity-50"
+                    >
+                      {isChangingPassword ? (
+                        <>
+                          <RefreshCw className="w-4 h-4 animate-spin" />
+                          <span>A guardar...</span>
+                        </>
+                      ) : (
+                        <>
+                          <Check className="w-4 h-4" />
+                          <span>Guardar e Entrar</span>
+                        </>
+                      )}
+                    </button>
+                  </div>
+                </form>
               </div>
-            </div>
-
-            {/* Login Form */}
-            <form onSubmit={handleLoginSubmit} className="space-y-4">
-              <div>
-                <label className="block text-xs font-semibold text-[#444] mb-1.5">
-                  Correio Eletrónico Forense
-                </label>
-                <input
-                  type="email"
-                  value={loginEmail}
-                  onChange={(e) => setLoginEmail(e.target.value)}
-                  required
-                  placeholder="utilizadora@pcnadvogadas.pt"
-                  className="w-full text-xs sm:text-sm bg-[#FAF8F5] border border-[#D9D1C5] rounded-xl px-3.5 py-2.5 text-[#141414] focus:outline-none focus:ring-2 focus:ring-[#92006F]/30 focus:border-[#92006F] transition-all"
-                />
-              </div>
-
-              <div>
-                <div className="flex items-center justify-between mb-1.5">
-                  <label className="text-xs font-semibold text-[#444]">
-                    Palavra-passe
-                  </label>
-                  <span className="text-[10px] text-[#999] flex items-center gap-1">
-                    <Clock className="w-3 h-3 text-[#92006F]" />
-                    Sessão válida 30 min
-                  </span>
+            ) : (
+              // ── FORMULÁRIO DE LOGIN NORMAL ──
+              <>
+                <div className="text-center pt-2">
+                  <h1 className="text-xl sm:text-2xl font-bold text-[#141414] tracking-tight">
+                    PCN Advogadas
+                  </h1>
                 </div>
-                <input
-                  type="password"
-                  value={loginPassword}
-                  onChange={(e) => setLoginPassword(e.target.value)}
-                  required
-                  placeholder="••••••••••••"
-                  className="w-full text-xs sm:text-sm bg-[#FAF8F5] border border-[#D9D1C5] rounded-xl px-3.5 py-2.5 text-[#141414] focus:outline-none focus:ring-2 focus:ring-[#92006F]/30 focus:border-[#92006F] transition-all"
-                />
-              </div>
 
-              <button
-                type="submit"
-                disabled={isLoggingIn}
-                className="w-full bg-[#92006F] hover:bg-[#7E0060] text-white font-bold text-sm py-3 rounded-xl flex items-center justify-center gap-2 shadow-md hover:shadow-lg transition-all cursor-pointer disabled:opacity-50"
-              >
-                {isLoggingIn ? (
-                  <>
-                    <RefreshCw className="w-4 h-4 animate-spin" />
-                    <span>A validar credenciais...</span>
-                  </>
-                ) : (
-                  <>
-                    <LogIn className="w-4 h-4" />
-                    <span>Entrar na Plataforma</span>
-                  </>
+                {sessionNotice && (
+                  <div className="p-3.5 bg-amber-50 border border-amber-200 rounded-xl text-xs text-amber-800 flex items-start gap-2.5 shadow-2xs animate-in fade-in">
+                    <Clock className="w-4 h-4 text-amber-600 shrink-0 mt-0.5" />
+                    <span className="leading-relaxed">{sessionNotice}</span>
+                  </div>
                 )}
-              </button>
-            </form>
 
-            <div className="pt-3 border-t border-[#ECE6DB] flex items-center justify-between text-[11px] text-[#777]">
-              <span className="flex items-center gap-1.5">
-                <ShieldCheck className="w-3.5 h-3.5 text-emerald-600" />
-                Argon2id · JWT 30 Minutos
-              </span>
-              <span className="font-medium text-[#92006F]">PostgreSQL · Railway</span>
-            </div>
+                {loginError && (
+                  <div className="p-3.5 bg-rose-50 border border-rose-200 rounded-xl text-xs text-rose-800 flex items-start gap-2.5 shadow-2xs animate-in fade-in">
+                    <AlertCircle className="w-4 h-4 text-rose-600 shrink-0 mt-0.5" />
+                    <div className="flex-1">
+                      <p className="font-bold">Acesso não autorizado</p>
+                      <p className="text-[11px] mt-0.5">{loginError}</p>
+                    </div>
+                  </div>
+                )}
+
+                <form onSubmit={handleLoginSubmit} className="space-y-4">
+                  <div>
+                    <label className="block text-xs font-semibold text-[#444] mb-1.5">
+                      Usuario:
+                    </label>
+                    <input
+                      type="text"
+                      value={loginEmail}
+                      onChange={(e) => setLoginEmail(e.target.value)}
+                      required
+                      placeholder="utilizador@pcnadvogadas.pt"
+                      autoComplete="username"
+                      className="w-full text-xs sm:text-sm bg-[#FAF8F5] border border-[#D9D1C5] rounded-xl px-3.5 py-2.5 text-[#141414] focus:outline-none focus:ring-2 focus:ring-[#92006F]/30 focus:border-[#92006F] transition-all"
+                    />
+                  </div>
+
+                  <div>
+                    <label className="block text-xs font-semibold text-[#444] mb-1.5">
+                      Palavra-passe:
+                    </label>
+                    <input
+                      type="password"
+                      value={loginPassword}
+                      onChange={(e) => setLoginPassword(e.target.value)}
+                      required
+                      placeholder="••••••••••••"
+                      autoComplete="current-password"
+                      className="w-full text-xs sm:text-sm bg-[#FAF8F5] border border-[#D9D1C5] rounded-xl px-3.5 py-2.5 text-[#141414] focus:outline-none focus:ring-2 focus:ring-[#92006F]/30 focus:border-[#92006F] transition-all"
+                    />
+                  </div>
+
+                  <button
+                    type="submit"
+                    disabled={isLoggingIn}
+                    className="w-full bg-[#92006F] hover:bg-[#7E0060] text-white font-bold text-sm py-3 rounded-xl flex items-center justify-center gap-2 shadow-md hover:shadow-lg transition-all cursor-pointer disabled:opacity-50"
+                  >
+                    {isLoggingIn ? (
+                      <>
+                        <RefreshCw className="w-4 h-4 animate-spin" />
+                        <span>A validar credenciais...</span>
+                      </>
+                    ) : (
+                      <>
+                        <LogIn className="w-4 h-4" />
+                        <span>Entrar na Plataforma</span>
+                      </>
+                    )}
+                  </button>
+                </form>
+              </>
+            )}
           </div>
         </main>
 
@@ -1754,35 +1892,9 @@ PCN Advogadas · Plataforma Forense`;
               </p>
             </div>
 
-            {/* Alternador de Perfil no Desktop */}
-            <div className="hidden lg:flex items-center gap-3">
-              {deferredPrompt && (
-                <button
-                  onClick={handleInstallPwa}
-                  className="flex items-center gap-1.5 bg-[#92006F] text-white text-xs font-semibold px-3 py-1.5 rounded-md shadow-xs hover:bg-[#7E0060] transition-colors cursor-pointer"
-                >
-                  <Smartphone className="w-3.5 h-3.5" />
-                  <span>Instalar PWA</span>
-                </button>
-              )}
-
-              <span className="text-[11px] font-semibold text-[#92006F] bg-[#FDF2F8] border border-[#FBCFE8] px-2.5 py-1 rounded-md flex items-center gap-1.5 shadow-2xs">
-                <Clock className="w-3.5 h-3.5 text-[#92006F]" />
-                <span>Sessão Ativa (30m)</span>
-              </span>
-
-              {/* Estado da Conexão */}
-              <div
-                className="flex items-center gap-1.5 text-xs font-semibold px-2.5 py-1.5 rounded-md border bg-emerald-50 text-emerald-800 border-emerald-300 shadow-2xs"
-                title="Ligação segura ativa com PostgreSQL"
-              >
-                <span className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse" />
-                <Database className="w-3.5 h-3.5 text-emerald-700" />
-                <span className="hidden xl:inline">PostgreSQL Ativo</span>
-              </div>
-
-              {/* Utilizador Autenticado Real */}
-              <div className="flex items-center gap-2 bg-[#FAF8F5] border border-[#D9D1C5] rounded-md px-3 py-1 shadow-2xs">
+            {/* Utilizador Autenticado no Desktop */}
+            <div className="hidden lg:flex items-center">
+              <div className="flex items-center gap-2 bg-[#FAF8F5] border border-[#D9D1C5] rounded-md px-3 py-1.5 shadow-2xs">
                 <div className="w-6 h-6 rounded-full bg-[#92006F] text-white font-bold text-[11px] flex items-center justify-center shrink-0">
                   {currentUser.name.replace("Dr.ª ", "").charAt(0)}
                 </div>
@@ -1795,17 +1907,6 @@ PCN Advogadas · Plataforma Forense`;
                   </p>
                 </div>
               </div>
-
-              {/* Botão Terminar Sessão */}
-              <button
-                type="button"
-                onClick={() => handleLogout()}
-                className="flex items-center gap-1.5 text-xs font-semibold text-rose-700 bg-rose-50 hover:bg-rose-100 border border-rose-200 px-2.5 py-1.5 rounded-md transition-colors cursor-pointer shadow-2xs"
-                title="Terminar sessão com segurança"
-              >
-                <LogOut className="w-3.5 h-3.5" />
-                <span>Sair</span>
-              </button>
             </div>
           </div>
 

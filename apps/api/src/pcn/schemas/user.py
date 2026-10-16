@@ -12,7 +12,7 @@ class UserCreate(BaseModel):
     email: EmailStr
     role: UserRole = UserRole.LAWYER
     password: str | None = None
-    must_change_password: bool = False
+    must_change_password: bool = True
 
 
 class UserCreateResponse(BaseModel):

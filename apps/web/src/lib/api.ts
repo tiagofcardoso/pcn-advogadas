@@ -51,7 +51,7 @@ export async function apiFetch<T>(endpoint: string, options: RequestOptions = {}
 
   if (!res.ok) {
     const errorBody = await res.json().catch(() => ({}));
-    throw new Error(errorBody.message || `Erro ${res.status}: ${res.statusText}`);
+    throw new Error(errorBody.detail || errorBody.message || `Erro ${res.status}: ${res.statusText}`);
   }
 
   if (res.status === 204) {
@@ -66,6 +66,17 @@ export async function loginApi(email: string, password: string) {
   return apiFetch<any>("/auth/login", {
     method: "POST",
     body: JSON.stringify({ email, password }),
+  });
+}
+
+export async function changePasswordApi(token: string, currentPassword: string, newPassword: string) {
+  return apiFetch<any>("/auth/change-password", {
+    method: "POST",
+    token,
+    body: JSON.stringify({
+      current_password: currentPassword,
+      new_password: newPassword,
+    }),
   });
 }
 
