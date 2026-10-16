@@ -44,9 +44,16 @@ class TaskService:
 
     async def create_task(self, creator: User, data: TaskCreate) -> Task:
         """Creates a new task. Can be placed in backlog, pool, or assigned directly."""
-        client = await self.client_repo.get_by_id(data.client_id)
+        client = None
+        if data.client_id and data.client_id.strip():
+            client = await self.client_repo.get_by_id_or_name(data.client_id.strip())
+
         if not client:
-            raise NotFound("Cliente não encontrado.")
+            all_clients = await self.client_repo.list_all(limit=2)
+            if len(all_clients) == 1:
+                client = all_clients[0]
+            else:
+                raise NotFound("Cliente não encontrado. Por favor, selecione um cliente válido.")
 
         task_type = await self.task_type_repo.get_by_id_or_name(data.task_type_id)
         if not task_type:

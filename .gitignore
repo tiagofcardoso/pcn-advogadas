@@ -43,5 +43,7 @@ Thumbs.db
 # ── Local data / logs ──
 *.sqlite3
 *.db
+*.db-shm
+*.db-wal
 *.log
 backups/

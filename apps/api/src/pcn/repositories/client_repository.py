@@ -17,6 +17,22 @@ class ClientRepository(BaseRepository[Client]):
         result = await self.session.execute(select(Client).where(Client.nif == nif))
         return result.scalar_one_or_none()
 
+    async def get_by_id_or_name(self, id_or_name: str) -> Client | None:
+        if not id_or_name or not id_or_name.strip():
+            return None
+        clean_val = id_or_name.strip()
+        found = await self.get_by_id(clean_val)
+        if found:
+            return found
+        result = await self.session.execute(select(Client).where(Client.name == clean_val))
+        found = result.scalar_one_or_none()
+        if not found:
+            result = await self.session.execute(
+                select(Client).where(Client.name.ilike(f"%{clean_val}%"))
+            )
+            found = result.scalars().first()
+        return found
+
     async def search(self, query: str, limit: int = 50) -> Sequence[Client]:
         pattern = f"%{query}%"
         result = await self.session.execute(

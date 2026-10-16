@@ -128,7 +128,7 @@ export default function App() {
   });
 
   // Fee Note Builder State
-  const [selectedFeeClient, setSelectedFeeClient] = useState<string>("cli_1");
+  const [selectedFeeClient, setSelectedFeeClient] = useState<string>("");
   const [feeTaskPrices, setFeeTaskPrices] = useState<Record<string, number>>({
     tsk_4: 250.0,
     tsk_1: 85.0,
@@ -311,7 +311,7 @@ export default function App() {
   // New Task Form
   const [taskFormTitle, setTaskFormTitle] = useState("");
   const [taskFormDescription, setTaskFormDescription] = useState("");
-  const [taskFormClientId, setTaskFormClientId] = useState("cli_1");
+  const [taskFormClientId, setTaskFormClientId] = useState("");
   const [taskFormTypeId, setTaskFormTypeId] = useState("tp_2");
   const [taskFormAssignee, setTaskFormAssignee] = useState("usr_patricia");
   const [taskFormDueDate, setTaskFormDueDate] = useState("2026-10-25");
@@ -327,6 +327,20 @@ export default function App() {
   const [clientFormPhone, setClientFormPhone] = useState("");
   const [clientFormNotes, setClientFormNotes] = useState("");
   const [isSubmittingClient, setIsSubmittingClient] = useState(false);
+
+  // Garante que o cliente selecionado para novas tarefas ou notas é sempre válido
+  useEffect(() => {
+    if (clients.length > 0) {
+      setTaskFormClientId((prev) => {
+        const exists = clients.some((c) => c.id === prev);
+        return exists && prev ? prev : clients[0].id;
+      });
+      setSelectedFeeClient((prev) => {
+        const exists = clients.some((c) => c.id === prev);
+        return exists && prev ? prev : clients[0].id;
+      });
+    }
+  }, [clients]);
 
   // ── AUTENTICAÇÃO E SESSÃO SEGURA (30 MINUTOS) ──
   const [loginEmail, setLoginEmail] = useState("patricia@pcnadvogadas.pt");
@@ -367,6 +381,16 @@ export default function App() {
         const apiClients = await getClientsApi(token);
         if (apiClients) {
           setClients(apiClients);
+          if (apiClients.length > 0) {
+            setTaskFormClientId((prev) => {
+              const exists = apiClients.some((c: any) => c.id === prev);
+              return exists ? prev : apiClients[0].id;
+            });
+            setSelectedFeeClient((prev) => {
+              const exists = apiClients.some((c: any) => c.id === prev);
+              return exists ? prev : apiClients[0].id;
+            });
+          }
         }
       } catch (e) {
         console.warn("Aviso ao carregar clientes:", e);
@@ -901,6 +925,12 @@ PCN Advogadas · Plataforma Forense`;
     e.preventDefault();
     if (!taskFormTitle.trim()) return;
 
+    const effectiveClientId = taskFormClientId || (clients.length > 0 ? clients[0].id : "");
+    if (!effectiveClientId) {
+      alert("Por favor, registe um cliente antes de criar tarefas.");
+      return;
+    }
+
     setIsSubmittingTask(true);
     try {
       const typeMap: Record<string, string> = {
@@ -914,13 +944,13 @@ PCN Advogadas · Plataforma Forense`;
         usr_ines: "Dr.ª Inês",
         usr_sofia: "Dr.ª Sofia",
       };
-      const selectedClient = clients.find((c) => c.id === taskFormClientId);
+      const selectedClient = clients.find((c) => c.id === effectiveClientId);
 
       if (authToken && apiConnected) {
         const created = await createTaskApi(authToken, {
           title: taskFormTitle.trim(),
           description: taskFormDescription.trim() || undefined,
-          client_id: taskFormClientId,
+          client_id: effectiveClientId,
           task_type_id: taskFormTypeId,
           assigned_to: taskFormPublishToPool ? null : taskFormAssignee,
           due_date: taskFormDueDate ? `${taskFormDueDate}T18:00:00` : null,
@@ -933,7 +963,7 @@ PCN Advogadas · Plataforma Forense`;
           title: created.title,
           description: created.description || "",
           client_id: created.client_id,
-          client_name: selectedClient?.name || "Cliente",
+          client_name: selectedClient?.name || created.client?.name || "Cliente",
           task_type: typeMap[taskFormTypeId] || "Geral",
           status: taskFormPublishToPool ? "pool" : "assigned",
           assigned_to: taskFormPublishToPool ? undefined : taskFormAssignee,
@@ -948,7 +978,7 @@ PCN Advogadas · Plataforma Forense`;
           id: `tsk_${Date.now()}`,
           title: taskFormTitle.trim(),
           description: taskFormDescription.trim(),
-          client_id: taskFormClientId,
+          client_id: effectiveClientId,
           client_name: selectedClient?.name || "Cliente",
           task_type: typeMap[taskFormTypeId] || "Peças Processuais",
           status: taskFormPublishToPool ? "pool" : "assigned",
@@ -997,6 +1027,8 @@ PCN Advogadas · Plataforma Forense`;
           phone: created.phone,
         };
         setClients((prev) => [...prev, newClient]);
+        setTaskFormClientId((prev) => prev || newClient.id);
+        setSelectedFeeClient((prev) => prev || newClient.id);
       } else {
         const newClient: Client = {
           id: `cli_${Date.now()}`,
@@ -1007,6 +1039,8 @@ PCN Advogadas · Plataforma Forense`;
           phone: clientFormPhone.trim(),
         };
         setClients((prev) => [...prev, newClient]);
+        setTaskFormClientId((prev) => prev || newClient.id);
+        setSelectedFeeClient((prev) => prev || newClient.id);
       }
 
       setModalFeedback("Novo cliente registado com sucesso!");
@@ -1912,7 +1946,12 @@ PCN Advogadas · Plataforma Forense`;
 
               {currentUser.role === "admin_lawyer" && (
                 <button
-                  onClick={() => setIsNewTaskModalOpen(true)}
+                  onClick={() => {
+                    if (!taskFormClientId && clients.length > 0) {
+                      setTaskFormClientId(clients[0].id);
+                    }
+                    setIsNewTaskModalOpen(true);
+                  }}
                   className="bg-[#92006F] hover:bg-[#7E0060] text-white text-xs font-semibold px-4 py-2 rounded-md shadow-xs flex items-center justify-center gap-2 transition-colors cursor-pointer w-full sm:w-auto"
                 >
                   <Plus className="w-4 h-4" />
@@ -2962,15 +3001,28 @@ PCN Advogadas · Plataforma Forense`;
                     <span className="text-[#888]">
                       {tasks.filter((t) => t.client_id === c.id).length} tarefas registadas
                     </span>
-                    <button
-                      onClick={() => {
-                        setSelectedFeeClient(c.id);
-                        setActiveTab("feenotes");
-                      }}
-                      className="text-xs font-semibold text-[#92006F] hover:underline cursor-pointer"
-                    >
-                      Criar Nota de Honorários →
-                    </button>
+                    <div className="flex items-center gap-2">
+                      <button
+                        onClick={() => {
+                          setTaskFormClientId(c.id);
+                          setIsNewTaskModalOpen(true);
+                        }}
+                        className="text-xs font-semibold text-[#141414] hover:text-[#92006F] hover:underline cursor-pointer"
+                        title="Criar tarefa para este cliente"
+                      >
+                        + Nova Tarefa
+                      </button>
+                      <span className="text-[#CCC]">·</span>
+                      <button
+                        onClick={() => {
+                          setSelectedFeeClient(c.id);
+                          setActiveTab("feenotes");
+                        }}
+                        className="text-xs font-semibold text-[#92006F] hover:underline cursor-pointer"
+                      >
+                        Criar Nota de Honorários →
+                      </button>
+                    </div>
                   </div>
                 </div>
               ))}
@@ -3297,15 +3349,19 @@ PCN Advogadas · Plataforma Forense`;
                   <div>
                     <label className="font-bold text-[#333] block mb-1">Cliente Forense *</label>
                     <select
-                      value={taskFormClientId}
+                      value={taskFormClientId || (clients.length > 0 ? clients[0].id : "")}
                       onChange={(e) => setTaskFormClientId(e.target.value)}
                       className="w-full bg-[#FAF8F5] border border-[#D9D1C5] rounded-md px-3 py-2 text-xs focus:ring-1 focus:ring-[#92006F] outline-none text-[#141414]"
                     >
-                      {clients.map((c) => (
-                        <option key={c.id} value={c.id}>
-                          {c.name}
-                        </option>
-                      ))}
+                      {clients.length === 0 ? (
+                        <option value="">Nenhum cliente registado</option>
+                      ) : (
+                        clients.map((c) => (
+                          <option key={c.id} value={c.id}>
+                            {c.name} {c.process_reference ? `(${c.process_reference})` : ""}
+                          </option>
+                        ))
+                      )}
                     </select>
                   </div>
 

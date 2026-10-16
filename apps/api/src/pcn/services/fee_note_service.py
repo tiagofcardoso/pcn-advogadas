@@ -67,7 +67,7 @@ class FeeNoteService:
     async def create_draft(self, user: User, data: FeeNoteCreate) -> FeeNote:
         """Creates a fee note draft with selected unbilled tasks."""
         self._verify_admin(user)
-        client = await self.client_repo.get_by_id(data.client_id)
+        client = await self.client_repo.get_by_id_or_name(data.client_id)
         if not client:
             raise NotFound("Cliente não encontrado.")
 
