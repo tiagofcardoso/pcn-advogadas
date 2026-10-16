@@ -54,6 +54,7 @@ import {
   getDirectionBoard,
   getClientsApi,
   createClientApi,
+  getActiveTimerApi,
   startTimerApi,
   pauseTimerApi,
   completeTaskApi,
@@ -66,6 +67,9 @@ import {
   deleteTaskApi,
   calculateDeadlineApi,
   getMetricsSummaryApi,
+  getFeeNotesApi,
+  createFeeNoteDraftApi,
+  updateFeeNotePriceApi,
   getExcelExportUrl,
   downloadFeeNoteExcelApi,
   clearDemoDataApi,
@@ -101,8 +105,8 @@ export default function App() {
   });
   const [isSubmittingUser, setIsSubmittingUser] = useState<boolean>(false);
 
-  const [tasks, setTasks] = useState<Task[]>(INITIAL_TASKS);
-  const [clients, setClients] = useState<Client[]>(INITIAL_CLIENTS);
+  const [tasks, setTasks] = useState<Task[]>([]);
+  const [clients, setClients] = useState<Client[]>([]);
   const [isLoadingApi, setIsLoadingApi] = useState<boolean>(false);
   const [apiConnected, setApiConnected] = useState<boolean>(false);
 
@@ -131,10 +135,10 @@ export default function App() {
 
   // Fee Note Builder State
   const [selectedFeeClient, setSelectedFeeClient] = useState<string>("");
-  const [feeTaskPrices, setFeeTaskPrices] = useState<Record<string, number>>({
-    tsk_4: 250.0,
-    tsk_1: 85.0,
-  });
+  const [feeTaskPrices, setFeeTaskPrices] = useState<Record<string, number>>({});
+  const [feeNotesByClient, setFeeNotesByClient] = useState<Record<string, any>>({});
+  const [applyWithholdingByClient, setApplyWithholdingByClient] = useState<Record<string, boolean>>({});
+  const [isSavingFeeNote, setIsSavingFeeNote] = useState<boolean>(false);
 
   // Modal & Form States
   const [isMobileMenuOpen, setIsMobileMenuOpen] = useState<boolean>(false);
@@ -362,12 +366,18 @@ export default function App() {
   const loadAllData = async (token: string, userRole?: string) => {
     setIsLoadingApi(true);
     try {
+      const dbPrices: Record<string, number> = {};
+
       // 1. Tarefas
       try {
         const apiTasks = await getDirectionBoard(token);
         if (apiTasks) {
-          setTasks(
-            apiTasks.map((t: any) => ({
+          const mappedTasks = apiTasks.map((t: any) => {
+            const parsedFee = t.fee_amount !== null && t.fee_amount !== undefined ? parseFloat(t.fee_amount) : undefined;
+            if (parsedFee !== undefined && !isNaN(parsedFee)) {
+              dbPrices[t.id] = parsedFee;
+            }
+            return {
               id: t.id,
               title: t.title,
               description: t.description,
@@ -379,12 +389,25 @@ export default function App() {
               lawyer_name: t.assignee?.name || "—",
               due_date: t.due_date ? t.due_date.split("T")[0] : undefined,
               total_duration_seconds: t.total_duration_seconds || 0,
-              fee_amount: t.fee_amount ? parseFloat(t.fee_amount) : undefined,
-            }))
-          );
+              fee_amount: parsedFee,
+            };
+          });
+          setTasks(mappedTasks);
         }
       } catch (e) {
         console.warn("Aviso ao carregar tarefas:", e);
+      }
+
+      // 1.b Cronómetro Ativo
+      try {
+        const activeTimer = await getActiveTimerApi(token);
+        if (activeTimer && activeTimer.is_active && activeTimer.task_id) {
+          setActiveTaskId(activeTimer.task_id);
+          setTimerSeconds(activeTimer.total_accumulated_seconds || 0);
+          setIsTimerRunning(true);
+        }
+      } catch (e) {
+        console.warn("Aviso ao verificar cronómetro ativo:", e);
       }
 
       // 2. Clientes
@@ -407,9 +430,34 @@ export default function App() {
         console.warn("Aviso ao carregar clientes:", e);
       }
 
-      // 3. Utilizadores (se Direção / Admin)
+      // 3. Utilizadores e Notas de Honorários (se Direção / Admin)
       const roleToCheck = userRole || currentUser?.role;
       if (roleToCheck === "admin_lawyer") {
+        try {
+          const savedNotes = await getFeeNotesApi(token);
+          if (savedNotes && savedNotes.length > 0) {
+            const notesMap: Record<string, any> = {};
+            const withholdingMap: Record<string, boolean> = {};
+            for (const note of savedNotes) {
+              if (!notesMap[note.client_id]) {
+                notesMap[note.client_id] = note;
+                withholdingMap[note.client_id] = parseFloat(note.withholding_rate ?? "0.23") > 0;
+              }
+              if (Array.isArray(note.items)) {
+                for (const item of note.items) {
+                  if (item.task_id && item.amount !== undefined && item.amount !== null) {
+                    dbPrices[item.task_id] = parseFloat(item.amount);
+                  }
+                }
+              }
+            }
+            setFeeNotesByClient(notesMap);
+            setApplyWithholdingByClient((prev) => ({ ...withholdingMap, ...prev }));
+          }
+        } catch (e) {
+          console.warn("Aviso ao carregar notas de honorários:", e);
+        }
+
         try {
           setIsLoadingUsers(true);
           const apiUsers = await getUsersApi(token);
@@ -422,6 +470,8 @@ export default function App() {
           setIsLoadingUsers(false);
         }
       }
+
+      setFeeTaskPrices(dbPrices);
     } finally {
       setIsLoadingApi(false);
     }
@@ -669,9 +719,13 @@ export default function App() {
   };
 
   const handleStartTimer = async (task: Task) => {
+    let serverDuration = task.total_duration_seconds;
     if (authToken && apiConnected) {
       try {
-        await startTimerApi(task.id, authToken);
+        const updated = await startTimerApi(task.id, authToken);
+        if (updated && typeof updated.total_duration_seconds === "number") {
+          serverDuration = updated.total_duration_seconds;
+        }
       } catch (e) {
         console.error(e);
       }
@@ -686,27 +740,39 @@ export default function App() {
       );
     }
     setActiveTaskId(task.id);
-    setTimerSeconds(task.total_duration_seconds);
+    setTimerSeconds(serverDuration);
     setIsTimerRunning(true);
     setTasks((prev) =>
-      prev.map((t) => (t.id === task.id ? { ...t, status: "in_progress" } : t))
+      prev.map((t) =>
+        t.id === task.id
+          ? { ...t, status: "in_progress", total_duration_seconds: serverDuration }
+          : t
+      )
     );
   };
 
-  const handlePauseTimer = async () => {
+  const handlePauseTimer = async (taskToPause?: Task) => {
+    const targetId = taskToPause?.id || activeTaskId;
     setIsTimerRunning(false);
-    if (activeTaskId) {
+    if (targetId) {
+      let finalSeconds = targetId === activeTaskId ? timerSeconds : (taskToPause?.total_duration_seconds || 0);
       if (authToken && apiConnected) {
         try {
-          await pauseTimerApi(activeTaskId, authToken);
+          const updated = await pauseTimerApi(targetId, authToken);
+          if (updated && typeof updated.total_duration_seconds === "number") {
+            finalSeconds = updated.total_duration_seconds;
+          }
         } catch (e) {
           console.error(e);
         }
       }
+      if (targetId === activeTaskId) {
+        setTimerSeconds(finalSeconds);
+      }
       setTasks((prev) =>
         prev.map((t) =>
-          t.id === activeTaskId
-            ? { ...t, status: "paused", total_duration_seconds: timerSeconds }
+          t.id === targetId
+            ? { ...t, status: "paused", total_duration_seconds: finalSeconds }
             : t
         )
       );
@@ -714,9 +780,13 @@ export default function App() {
   };
 
   const handleCompleteTask = async (task: Task) => {
+    let finalSeconds = activeTaskId === task.id ? timerSeconds : task.total_duration_seconds;
     if (authToken && apiConnected) {
       try {
-        await completeTaskApi(task.id, authToken);
+        const updated = await completeTaskApi(task.id, authToken);
+        if (updated && typeof updated.total_duration_seconds === "number") {
+          finalSeconds = updated.total_duration_seconds;
+        }
       } catch (e) {
         console.error(e);
       }
@@ -731,8 +801,7 @@ export default function App() {
           ? {
               ...t,
               status: "completed",
-              total_duration_seconds:
-                activeTaskId === task.id ? timerSeconds : t.total_duration_seconds,
+              total_duration_seconds: finalSeconds,
             }
           : t
       )
@@ -840,10 +909,12 @@ export default function App() {
 
       if (authToken && apiConnected) {
         if (isPool) {
+          await assignTaskApi(selectedTaskForDetails.id, null, authToken);
           await updateTaskApi(selectedTaskForDetails.id, authToken, {
             title: detailsForm.title,
             description: detailsForm.description,
             due_date: detailsForm.due_date ? `${detailsForm.due_date}T18:00:00` : null,
+            status: finalStatus,
           });
         } else {
           await assignTaskApi(selectedTaskForDetails.id, detailsForm.assigned_to, authToken);
@@ -851,6 +922,7 @@ export default function App() {
             title: detailsForm.title,
             description: detailsForm.description,
             due_date: detailsForm.due_date ? `${detailsForm.due_date}T18:00:00` : null,
+            status: finalStatus,
           });
         }
       }
@@ -1140,15 +1212,90 @@ PCN Advogadas · Plataforma Forense`;
     }
   };
 
+  const saveFeeNoteToDb = async (
+    clientId?: string,
+    overridePrices?: Record<string, number>,
+    overrideWithholding?: boolean,
+    silent: boolean = false
+  ) => {
+    const targetClientId = clientId || selectedFeeClient || (clients.length > 0 ? clients[0].id : "");
+    if (!authToken || !targetClientId) return null;
+
+    const pricesSource = overridePrices || feeTaskPrices;
+    const useWithholding =
+      overrideWithholding !== undefined
+        ? overrideWithholding
+        : (applyWithholdingByClient[targetClientId] ?? true);
+
+    const clientTasks = tasks.filter((t) => t.client_id === targetClientId);
+    const taskIds = clientTasks.map((t) => t.id);
+    const taskPricesPayload: Record<string, number> = {};
+    for (const t of clientTasks) {
+      const val = pricesSource[t.id] ?? (t.fee_amount || 0);
+      taskPricesPayload[t.id] = Number.isFinite(val) ? Math.round(val * 100) / 100 : 0;
+    }
+
+    setIsSavingFeeNote(true);
+    try {
+      const savedNote = await createFeeNoteDraftApi(authToken, {
+        client_id: targetClientId,
+        task_ids: taskIds,
+        task_prices: taskPricesPayload,
+        vat_rate: 0.23,
+        withholding_rate: useWithholding ? 0.23 : 0.0,
+      });
+
+      if (savedNote) {
+        setFeeNotesByClient((prev) => ({
+          ...prev,
+          [targetClientId]: savedNote,
+        }));
+        setTasks((prev) =>
+          prev.map((t) =>
+            t.client_id === targetClientId && taskPricesPayload[t.id] !== undefined
+              ? { ...t, fee_amount: taskPricesPayload[t.id] }
+              : t
+          )
+        );
+        if (!silent) {
+          setModalFeedback(
+            `Nota de Honorários (${savedNote.reference_code}) calculada e guardada no PostgreSQL!`
+          );
+          setTimeout(() => setModalFeedback(null), 3500);
+        }
+      }
+      return savedNote;
+    } catch (err: any) {
+      if (!silent) {
+        alert("Erro ao guardar Nota de Honorários na base de dados: " + err.message);
+      } else {
+        throw err;
+      }
+      return null;
+    } finally {
+      setIsSavingFeeNote(false);
+    }
+  };
+
   const handleExportExcel = async (internal: boolean) => {
     setIsExportingExcel(true);
     try {
       if (authToken) {
-        await downloadFeeNoteExcelApi(authToken, "NH-2026-0001", internal);
+        const savedNote = await saveFeeNoteToDb(selectedFeeClient, undefined, undefined, true);
+        const noteIdToExport =
+          savedNote?.id ||
+          feeNotesByClient[selectedFeeClient]?.id ||
+          selectedFeeClient ||
+          "NH-2026-0001";
+        const refCode =
+          savedNote?.reference_code ||
+          feeNotesByClient[selectedFeeClient]?.reference_code ||
+          "NH-2026-0001";
+        await downloadFeeNoteExcelApi(authToken, noteIdToExport, internal, refCode);
         setModalFeedback(
           internal
-            ? "Excel interno descarregado com sucesso!"
-            : "Nota de Honorários Excel descarregada com sucesso!"
+            ? `Excel interno (${refCode}) guardado e descarregado com sucesso!`
+            : `Nota de Honorários Excel (${refCode}) guardada e descarregada com sucesso!`
         );
         setTimeout(() => setModalFeedback(null), 3500);
       } else {
@@ -2267,9 +2414,9 @@ PCN Advogadas · Plataforma Forense`;
                             </div>
 
                             <div className="pt-2 border-t border-[#F2ECE1] flex items-center justify-between gap-2">
-                              {task.id === activeTaskId && isTimerRunning ? (
+                              {(task.id === activeTaskId && isTimerRunning) || task.status === "in_progress" ? (
                                 <button
-                                  onClick={handlePauseTimer}
+                                  onClick={() => handlePauseTimer(task)}
                                   className="w-full bg-amber-500 hover:bg-amber-600 text-white text-[11px] font-semibold py-1.5 rounded flex items-center justify-center gap-1 cursor-pointer transition-colors"
                                 >
                                   <Pause className="w-3 h-3" /> Pausar
@@ -2488,7 +2635,7 @@ PCN Advogadas · Plataforma Forense`;
                           {task.status === "in_progress" && (
                             <>
                               <button
-                                onClick={handlePauseTimer}
+                                onClick={() => handlePauseTimer(task)}
                                 className="flex-1 bg-amber-500 hover:bg-amber-600 text-white text-xs font-semibold py-1.5 rounded-md flex items-center justify-center gap-1 cursor-pointer transition-colors"
                               >
                                 <Pause className="w-3.5 h-3.5" /> Pausar
@@ -2662,151 +2809,226 @@ PCN Advogadas · Plataforma Forense`;
         )}
 
         {/* ── CONTEÚDO DA TAB: NOTAS DE HONORÁRIOS (PATRÍCIA EXCLUSIVE) ── */}
-        {activeTab === "feenotes" && (
-          <div className="p-4 sm:p-6 lg:p-8 space-y-4 sm:space-y-6 max-w-7xl w-full mx-auto">
-            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
-              <div>
-                <h2 className="text-base sm:text-lg font-bold text-[#141414]">Notas de Honorários PCN</h2>
-                <p className="text-xs text-[#736B5E]">
-                  Área financeira reservada à Dr.ª Patrícia. Atribua o preço com base no tempo gasto e exporte o ficheiro Excel oficial.
-                </p>
-              </div>
+        {activeTab === "feenotes" &&
+          (() => {
+            const clientTasks = tasks.filter((t) => t.client_id === selectedFeeClient);
+            const subtotal = clientTasks.reduce((acc, t) => {
+              const val = feeTaskPrices[t.id] ?? (t.fee_amount || 0);
+              return acc + (Number.isFinite(val) ? val : 0);
+            }, 0);
+            const useWithholding = applyWithholdingByClient[selectedFeeClient] ?? true;
+            const vatAmount = Math.round(subtotal * 0.23 * 100) / 100;
+            const withholdingAmount = useWithholding
+              ? Math.round(subtotal * 0.23 * 100) / 100
+              : 0;
+            const totalToPay = Math.round((subtotal + vatAmount - withholdingAmount) * 100) / 100;
+            const savedClientNote = feeNotesByClient[selectedFeeClient];
+            const currentRefCode = savedClientNote?.reference_code || "NH-2026-0001";
 
-              <div className="flex items-center gap-2 flex-wrap">
-                <button
-                  onClick={() => handleExportExcel(false)}
-                  disabled={isExportingExcel}
-                  className="bg-[#92006F] hover:bg-[#7A005D] text-white text-xs font-semibold px-3 sm:px-4 py-2 rounded-md shadow-xs flex items-center gap-1.5 sm:gap-2 transition-colors cursor-pointer disabled:opacity-50"
-                >
-                  <FileSpreadsheet className="w-4 h-4 shrink-0" />
-                  <span>{isExportingExcel ? "A descarregar..." : "Exportar Excel (Cliente)"}</span>
-                </button>
+            return (
+              <div className="p-4 sm:p-6 lg:p-8 space-y-4 sm:space-y-6 max-w-7xl w-full mx-auto">
+                <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+                  <div>
+                    <h2 className="text-base sm:text-lg font-bold text-[#141414]">
+                      Notas de Honorários PCN
+                    </h2>
+                    <p className="text-xs text-[#736B5E]">
+                      Área financeira reservada à Dr.ª Patrícia. Atribua o preço com base no tempo gasto, guarde na base de dados e exporte o ficheiro Excel oficial.
+                    </p>
+                  </div>
 
-                <button
-                  onClick={() => handleExportExcel(true)}
-                  disabled={isExportingExcel}
-                  className="bg-[#BA9448] hover:bg-[#A88238] text-white text-xs font-semibold px-3 py-2 rounded-md shadow-xs flex items-center gap-1.5 transition-colors cursor-pointer disabled:opacity-50"
-                >
-                  <span>{isExportingExcel ? "..." : "Versão Interna"}</span>
-                </button>
-              </div>
-            </div>
+                  <div className="flex items-center gap-2 flex-wrap">
+                    <button
+                      onClick={() => saveFeeNoteToDb(selectedFeeClient)}
+                      disabled={isSavingFeeNote || clientTasks.length === 0}
+                      className="bg-emerald-700 hover:bg-emerald-800 text-white text-xs font-semibold px-3 sm:px-4 py-2 rounded-md shadow-xs flex items-center gap-1.5 sm:gap-2 transition-colors cursor-pointer disabled:opacity-50"
+                    >
+                      {isSavingFeeNote ? (
+                        <RefreshCw className="w-4 h-4 shrink-0 animate-spin" />
+                      ) : (
+                        <Database className="w-4 h-4 shrink-0" />
+                      )}
+                      <span>
+                        {isSavingFeeNote ? "A guardar..." : "Guardar na Base de Dados"}
+                      </span>
+                    </button>
 
-            {/* Seletor de Cliente */}
-            <div className="pcn-card p-4 sm:p-5">
-              <label className="text-xs font-bold text-[#444] block mb-2">
-                Selecione o Cliente para Faturação:
-              </label>
-              <select
-                value={selectedFeeClient}
-                onChange={(e) => setSelectedFeeClient(e.target.value)}
-                className="w-full sm:w-96 text-xs text-[#222] bg-[#FAF8F5] border border-[#D9D1C5] rounded-md px-3 py-2 focus:ring-1 focus:ring-[#92006F] outline-none"
-              >
-                {clients.map((c) => (
-                  <option key={c.id} value={c.id}>
-                    {c.name} ({c.nif || "Sem NIF"} — {c.process_reference || "Geral"})
-                  </option>
-                ))}
-              </select>
-            </div>
+                    <button
+                      onClick={() => handleExportExcel(false)}
+                      disabled={isExportingExcel || clientTasks.length === 0}
+                      className="bg-[#92006F] hover:bg-[#7A005D] text-white text-xs font-semibold px-3 sm:px-4 py-2 rounded-md shadow-xs flex items-center gap-1.5 sm:gap-2 transition-colors cursor-pointer disabled:opacity-50"
+                    >
+                      <FileSpreadsheet className="w-4 h-4 shrink-0" />
+                      <span>
+                        {isExportingExcel ? "A descarregar..." : "Exportar Excel (Cliente)"}
+                      </span>
+                    </button>
 
-            {/* Tabela de Tarefas para Definição de Preço */}
-            <div className="pcn-card overflow-hidden">
-              <div className="p-3.5 sm:p-4 bg-[#FAF7F2] border-b border-[#ECE6DB] flex flex-col sm:flex-row sm:items-center justify-between gap-1">
-                <h3 className="text-xs font-bold text-[#141414] uppercase tracking-wider">
-                  Tarefas Concluídas Prontas para Inclusão na Nota
-                </h3>
-                <span className="text-xs text-[#666]">
-                  Ref.ª Provisória: <strong>NH-2026-0001</strong>
-                </span>
-              </div>
+                    <button
+                      onClick={() => handleExportExcel(true)}
+                      disabled={isExportingExcel || clientTasks.length === 0}
+                      className="bg-[#BA9448] hover:bg-[#A88238] text-white text-xs font-semibold px-3 py-2 rounded-md shadow-xs flex items-center gap-1.5 transition-colors cursor-pointer disabled:opacity-50"
+                    >
+                      <span>{isExportingExcel ? "..." : "Versão Interna"}</span>
+                    </button>
+                  </div>
+                </div>
 
-              <div className="overflow-x-auto w-full">
-                <table className="min-w-[620px] w-full text-left text-xs border-collapse">
-                  <thead>
-                    <tr className="bg-[#92006F] text-white">
-                      <th className="p-3">Data</th>
-                      <th className="p-3">Descrição do Ato / Tarefa</th>
-                      <th className="p-3">Advogada</th>
-                      <th className="p-3">Tempo Gasto</th>
-                      <th className="p-3 text-right">Honorários (€)</th>
-                    </tr>
-                  </thead>
-                  <tbody className="divide-y divide-[#EFE9DE]">
-                    {tasks
-                      .filter((t) => t.client_id === selectedFeeClient)
-                      .map((t) => (
-                        <tr key={t.id} className="hover:bg-[#FAF8F5]">
-                          <td className="p-3 text-[#555]">{t.due_date || "16/10/2026"}</td>
-                          <td className="p-3 font-medium text-[#111]">{t.title}</td>
-                          <td className="p-3 text-[#555]">{t.lawyer_name || "—"}</td>
-                          <td className="p-3 font-mono font-semibold text-[#92006F]">
-                            {formatSeconds(t.total_duration_seconds)}
-                          </td>
-                          <td className="p-3 text-right">
-                            <input
-                              type="number"
-                              value={feeTaskPrices[t.id] ?? (t.fee_amount || 0)}
-                              onChange={(e) =>
-                                setFeeTaskPrices({
-                                  ...feeTaskPrices,
-                                  [t.id]: parseFloat(e.target.value) || 0,
-                                })
-                              }
-                              className="w-24 sm:w-28 text-right font-semibold text-xs border border-[#D9D1C5] rounded px-2 py-1 focus:ring-1 focus:ring-[#92006F] bg-white"
-                            />
-                          </td>
-                        </tr>
+                {/* Seletor de Cliente */}
+                <div className="pcn-card p-4 sm:p-5 flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+                  <div>
+                    <label className="text-xs font-bold text-[#444] block mb-2">
+                      Selecione o Cliente para Faturação:
+                    </label>
+                    <select
+                      value={selectedFeeClient}
+                      onChange={(e) => setSelectedFeeClient(e.target.value)}
+                      className="w-full sm:w-96 text-xs text-[#222] bg-[#FAF8F5] border border-[#D9D1C5] rounded-md px-3 py-2 focus:ring-1 focus:ring-[#92006F] outline-none"
+                    >
+                      {clients.map((c) => (
+                        <option key={c.id} value={c.id}>
+                          {c.name} ({c.nif || "Sem NIF"} — {c.process_reference || "Geral"})
+                        </option>
                       ))}
-                  </tbody>
-                </table>
-              </div>
+                    </select>
+                  </div>
 
-              {/* Quadro de Totais Fiscais */}
-              <div className="p-4 sm:p-5 bg-[#FAF8F5] border-t border-[#ECE6DB] flex justify-end">
-                <div className="w-full sm:w-72 space-y-2 text-xs">
-                  <div className="flex justify-between text-[#555]">
-                    <span>Subtotal (Honorários):</span>
-                    <span className="font-semibold text-[#141414]">
-                      {Object.values(feeTaskPrices)
-                        .reduce((acc, curr) => acc + curr, 0)
-                        .toFixed(2)}{" "}
-                      €
-                    </span>
+                  <div className="flex items-center gap-2 pt-1 sm:pt-5">
+                    <input
+                      type="checkbox"
+                      id="withholdingCheck"
+                      checked={useWithholding}
+                      onChange={(e) => {
+                        const checked = e.target.checked;
+                        setApplyWithholdingByClient((prev) => ({
+                          ...prev,
+                          [selectedFeeClient]: checked,
+                        }));
+                        saveFeeNoteToDb(selectedFeeClient, undefined, checked, false);
+                      }}
+                      className="rounded border-[#D9D1C5] text-[#92006F] focus:ring-[#92006F] cursor-pointer"
+                    />
+                    <label
+                      htmlFor="withholdingCheck"
+                      className="text-xs font-semibold text-[#444] cursor-pointer"
+                    >
+                      Aplicar Retenção na Fonte IRS (23%)
+                    </label>
                   </div>
-                  <div className="flex justify-between text-[#555]">
-                    <span>IVA (23%):</span>
-                    <span className="font-semibold text-[#141414]">
-                      {(
-                        Object.values(feeTaskPrices).reduce((acc, curr) => acc + curr, 0) * 0.23
-                      ).toFixed(2)}{" "}
-                      €
-                    </span>
+                </div>
+
+                {/* Tabela de Tarefas para Definição de Preço */}
+                <div className="pcn-card overflow-hidden">
+                  <div className="p-3.5 sm:p-4 bg-[#FAF7F2] border-b border-[#ECE6DB] flex flex-col sm:flex-row sm:items-center justify-between gap-1">
+                    <h3 className="text-xs font-bold text-[#141414] uppercase tracking-wider">
+                      Tarefas do Cliente para Inclusão na Nota ({clientTasks.length})
+                    </h3>
+                    <div className="flex items-center gap-2">
+                      {savedClientNote && (
+                        <span className="text-[10px] bg-emerald-100 text-emerald-800 px-2 py-0.5 rounded-full font-semibold flex items-center gap-1">
+                          <Check className="w-3 h-3" /> Guardada no PostgreSQL
+                        </span>
+                      )}
+                      <span className="text-xs text-[#666]">
+                        Ref.ª: <strong>{currentRefCode}</strong>
+                      </span>
+                    </div>
                   </div>
-                  <div className="flex justify-between text-[#555]">
-                    <span>Retenção IRS (23%):</span>
-                    <span className="font-semibold text-rose-700">
-                      -
-                      {(
-                        Object.values(feeTaskPrices).reduce((acc, curr) => acc + curr, 0) * 0.23
-                      ).toFixed(2)}{" "}
-                      €
-                    </span>
+
+                  <div className="overflow-x-auto w-full">
+                    <table className="min-w-[620px] w-full text-left text-xs border-collapse">
+                      <thead>
+                        <tr className="bg-[#92006F] text-white">
+                          <th className="p-3">Data</th>
+                          <th className="p-3">Descrição do Ato / Tarefa</th>
+                          <th className="p-3">Advogada</th>
+                          <th className="p-3">Tempo Gasto</th>
+                          <th className="p-3 text-right">Honorários (€)</th>
+                        </tr>
+                      </thead>
+                      <tbody className="divide-y divide-[#EFE9DE]">
+                        {clientTasks.map((t) => (
+                          <tr key={t.id} className="hover:bg-[#FAF8F5]">
+                            <td className="p-3 text-[#555]">{t.due_date || "16/10/2026"}</td>
+                            <td className="p-3 font-medium text-[#111]">{t.title}</td>
+                            <td className="p-3 text-[#555]">{t.lawyer_name || "—"}</td>
+                            <td className="p-3 font-mono font-semibold text-[#92006F]">
+                              {formatSeconds(t.total_duration_seconds)}
+                            </td>
+                            <td className="p-3 text-right">
+                              <input
+                                type="number"
+                                step="0.01"
+                                min="0"
+                                value={
+                                  feeTaskPrices[t.id] !== undefined
+                                    ? feeTaskPrices[t.id]
+                                    : (t.fee_amount ?? 0)
+                                }
+                                onChange={(e) => {
+                                  const raw = e.target.value;
+                                  const parsed = raw === "" ? 0 : parseFloat(raw);
+                                  setFeeTaskPrices((prev) => ({
+                                    ...prev,
+                                    [t.id]: isNaN(parsed) ? 0 : parsed,
+                                  }));
+                                }}
+                                onBlur={(e) => {
+                                  const parsed = parseFloat(e.target.value) || 0;
+                                  const updatedPrices = {
+                                    ...feeTaskPrices,
+                                    [t.id]: parsed,
+                                  };
+                                  setFeeTaskPrices(updatedPrices);
+                                  saveFeeNoteToDb(selectedFeeClient, updatedPrices, useWithholding, false);
+                                }}
+                                className="w-24 sm:w-28 text-right font-semibold text-xs border border-[#D9D1C5] rounded px-2 py-1 focus:ring-1 focus:ring-[#92006F] bg-white"
+                              />
+                            </td>
+                          </tr>
+                        ))}
+                        {clientTasks.length === 0 && (
+                          <tr>
+                            <td colSpan={5} className="p-6 text-center text-xs text-[#888] italic">
+                              Nenhuma tarefa registada para este cliente.
+                            </td>
+                          </tr>
+                        )}
+                      </tbody>
+                    </table>
                   </div>
-                  <div className="pt-2 border-t border-[#D9D1C5] flex justify-between text-sm font-bold text-[#92006F]">
-                    <span>Total a Pagar:</span>
-                    <span>
-                      {Object.values(feeTaskPrices)
-                        .reduce((acc, curr) => acc + curr, 0)
-                        .toFixed(2)}{" "}
-                      €
-                    </span>
+
+                  {/* Quadro de Totais Fiscais */}
+                  <div className="p-4 sm:p-5 bg-[#FAF8F5] border-t border-[#ECE6DB] flex justify-end">
+                    <div className="w-full sm:w-72 space-y-2 text-xs">
+                      <div className="flex justify-between text-[#555]">
+                        <span>Subtotal (Honorários):</span>
+                        <span className="font-semibold text-[#141414]">
+                          {subtotal.toFixed(2)} €
+                        </span>
+                      </div>
+                      <div className="flex justify-between text-[#555]">
+                        <span>IVA (23%):</span>
+                        <span className="font-semibold text-[#141414]">
+                          {vatAmount.toFixed(2)} €
+                        </span>
+                      </div>
+                      <div className="flex justify-between text-[#555]">
+                        <span>Retenção IRS ({useWithholding ? "23%" : "Isento / 0%"}):</span>
+                        <span className="font-semibold text-rose-700">
+                          -{withholdingAmount.toFixed(2)} €
+                        </span>
+                      </div>
+                      <div className="pt-2 border-t border-[#D9D1C5] flex justify-between text-sm font-bold text-[#92006F]">
+                        <span>Total a Pagar:</span>
+                        <span>{totalToPay.toFixed(2)} €</span>
+                      </div>
+                    </div>
                   </div>
                 </div>
               </div>
-            </div>
-          </div>
-        )}
+            );
+          })()}
 
         {/* ── CONTEÚDO DA TAB: AGENDAS E PRAZOS (CALCULADORA ART. 138/139 CPC) ── */}
         {activeTab === "calendar" && (
@@ -2981,82 +3203,101 @@ PCN Advogadas · Plataforma Forense`;
         )}
 
         {/* ── CONTEÚDO DA TAB: RELATÓRIO PCN & MÉTRICAS ── */}
-        {activeTab === "reports" && (
-          <div className="p-4 sm:p-6 lg:p-8 space-y-4 sm:space-y-6 max-w-7xl w-full mx-auto">
-            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
-              <div>
-                <h2 className="text-base sm:text-lg font-bold text-[#141414]">Relatório PCN & Métricas</h2>
-                <p className="text-xs text-[#736B5E]">
-                  Pesquisa por palavra-chave e agrupamento de horas por tipo de tarefa jurídica.
-                </p>
-              </div>
+        {activeTab === "reports" &&
+          (() => {
+            const q = searchQuery.trim().toLowerCase();
+            const filteredTasks = tasks.filter(
+              (t) =>
+                !q ||
+                t.title.toLowerCase().includes(q) ||
+                (t.description || "").toLowerCase().includes(q) ||
+                t.client_name.toLowerCase().includes(q) ||
+                t.task_type.toLowerCase().includes(q)
+            );
+            const grouped: Record<string, { count: number; totalSec: number }> = {};
+            for (const t of filteredTasks) {
+              const typeName = t.task_type || "Geral";
+              if (!grouped[typeName]) {
+                grouped[typeName] = { count: 0, totalSec: 0 };
+              }
+              grouped[typeName].count += 1;
+              grouped[typeName].totalSec += t.total_duration_seconds || 0;
+            }
+            const groupEntries = Object.entries(grouped);
 
-              {/* Barra de Pesquisa inteligente */}
-              <div className="relative w-full sm:w-80">
-                <Search className="w-4 h-4 text-[#888] absolute left-3 top-2.5" />
-                <input
-                  type="text"
-                  placeholder="Pesquisar (ex: 'negativa', 'predial')..."
-                  value={searchQuery}
-                  onChange={(e) => setSearchQuery(e.target.value)}
-                  className="w-full text-xs pl-9 pr-3 py-2 border border-[#D9D1C5] rounded-md bg-white focus:outline-none focus:ring-1 focus:ring-[#92006F]"
-                />
-              </div>
-            </div>
+            return (
+              <div className="p-4 sm:p-6 lg:p-8 space-y-4 sm:space-y-6 max-w-7xl w-full mx-auto">
+                <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+                  <div>
+                    <h2 className="text-base sm:text-lg font-bold text-[#141414]">
+                      Relatório PCN & Métricas
+                    </h2>
+                    <p className="text-xs text-[#736B5E]">
+                      Pesquisa por palavra-chave e agrupamento de horas por tipo de tarefa jurídica.
+                    </p>
+                  </div>
 
-            {/* Tabela de Resultados Agrupados */}
-            <div className="pcn-card overflow-hidden">
-              <div className="overflow-x-auto w-full">
-                <table className="min-w-[540px] w-full text-left text-xs border-collapse">
-                  <thead>
-                    <tr className="bg-[#FAF7F2] text-[#555] border-b border-[#ECE6DB]">
-                      <th className="p-3">Tipo de Tarefa</th>
-                      <th className="p-3">Qtd. Tarefas</th>
-                      <th className="p-3">Tempo Total</th>
-                      <th className="p-3">Tempo Médio</th>
-                      <th className="p-3 text-right">Ação</th>
-                    </tr>
-                  </thead>
-                  <tbody className="divide-y divide-[#EFE9DE]">
-                    <tr className="hover:bg-[#FAF8F5]">
-                      <td className="p-3 font-bold text-[#92006F]">Certidões e Registos</td>
-                      <td className="p-3">2</td>
-                      <td className="p-3 font-mono">00h 45m</td>
-                      <td className="p-3 font-mono">22.5 min</td>
-                      <td className="p-3 text-right">
-                        <button className="text-xs font-semibold text-[#AA820A] hover:underline cursor-pointer">
-                          Ver Detalhe
-                        </button>
-                      </td>
-                    </tr>
-                    <tr className="hover:bg-[#FAF8F5]">
-                      <td className="p-3 font-bold text-[#92006F]">Peças Processuais</td>
-                      <td className="p-3">1</td>
-                      <td className="p-3 font-mono">01h 20m</td>
-                      <td className="p-3 font-mono">80.0 min</td>
-                      <td className="p-3 text-right">
-                        <button className="text-xs font-semibold text-[#AA820A] hover:underline cursor-pointer">
-                          Ver Detalhe
-                        </button>
-                      </td>
-                    </tr>
-                    <tr className="hover:bg-[#FAF8F5]">
-                      <td className="p-3 font-bold text-[#92006F]">Consultoria e Reuniões</td>
-                      <td className="p-3">1</td>
-                      <td className="p-3 font-mono">02h 30m</td>
-                      <td className="p-3 font-mono">150.0 min</td>
-                      <td className="p-3 text-right">
-                        <button className="text-xs font-semibold text-[#AA820A] hover:underline cursor-pointer">
-                          Ver Detalhe
-                        </button>
-                      </td>
-                    </tr>
-                  </tbody>
-                </table>
+                  {/* Barra de Pesquisa inteligente */}
+                  <div className="relative w-full sm:w-80">
+                    <Search className="w-4 h-4 text-[#888] absolute left-3 top-2.5" />
+                    <input
+                      type="text"
+                      placeholder="Pesquisar (ex: 'negativa', 'predial')..."
+                      value={searchQuery}
+                      onChange={(e) => setSearchQuery(e.target.value)}
+                      className="w-full text-xs pl-9 pr-3 py-2 border border-[#D9D1C5] rounded-md bg-white focus:outline-none focus:ring-1 focus:ring-[#92006F]"
+                    />
+                  </div>
+                </div>
+
+                {/* Tabela de Resultados Agrupados */}
+                <div className="pcn-card overflow-hidden">
+                  <div className="overflow-x-auto w-full">
+                    <table className="min-w-[540px] w-full text-left text-xs border-collapse">
+                      <thead>
+                        <tr className="bg-[#FAF7F2] text-[#555] border-b border-[#ECE6DB]">
+                          <th className="p-3">Tipo de Tarefa</th>
+                          <th className="p-3">Qtd. Tarefas</th>
+                          <th className="p-3">Tempo Total</th>
+                          <th className="p-3">Tempo Médio</th>
+                          <th className="p-3 text-right">Ação</th>
+                        </tr>
+                      </thead>
+                      <tbody className="divide-y divide-[#EFE9DE]">
+                        {groupEntries.map(([typeName, stats]) => {
+                          const avgMin =
+                            stats.count > 0 ? (stats.totalSec / 60 / stats.count).toFixed(1) : "0.0";
+                          return (
+                            <tr key={typeName} className="hover:bg-[#FAF8F5]">
+                              <td className="p-3 font-bold text-[#92006F]">{typeName}</td>
+                              <td className="p-3">{stats.count}</td>
+                              <td className="p-3 font-mono">{formatSeconds(stats.totalSec)}</td>
+                              <td className="p-3 font-mono">{avgMin} min</td>
+                              <td className="p-3 text-right">
+                                <button
+                                  onClick={() => switchTab("tasks")}
+                                  className="text-xs font-semibold text-[#AA820A] hover:underline cursor-pointer"
+                                >
+                                  Ver no Quadro
+                                </button>
+                              </td>
+                            </tr>
+                          );
+                        })}
+                        {groupEntries.length === 0 && (
+                          <tr>
+                            <td colSpan={5} className="p-6 text-center text-xs text-[#888] italic">
+                              Nenhuma tarefa encontrada para os critérios pesquisados.
+                            </td>
+                          </tr>
+                        )}
+                      </tbody>
+                    </table>
+                  </div>
+                </div>
               </div>
-            </div>
-          </div>
-        )}
+            );
+          })()}
 
         {/* ── CONTEÚDO DA TAB: CLIENTES PCN ── */}
         {activeTab === "clients" && (

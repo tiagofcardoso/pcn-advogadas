@@ -28,13 +28,13 @@ router = APIRouter(prefix="/tasks", tags=["Tarefas e Quadros Kanban"])
 
 @router.get("/boards/direction", response_model=list[TaskRead])
 async def get_direction_board(
-    admin: Annotated[User, Depends(require_admin)],
+    user: Annotated[User, Depends(require_full_access)],
     session: Annotated[AsyncSession, Depends(get_session)],
     status: TaskStatus | None = None,
     lawyer_id: str | None = None,
     client_id: str | None = None,
 ) -> list[TaskRead]:
-    """Painel de Direção (Visão 360 exclusiva da Patrícia)."""
+    """Painel de Direção / Quadro Geral de Tarefas."""
     repo = TaskRepository(session)
     tasks = await repo.list_direction_tasks(status=status, lawyer_id=lawyer_id, client_id=client_id)
     return [TaskRead.model_validate(t) for t in tasks]

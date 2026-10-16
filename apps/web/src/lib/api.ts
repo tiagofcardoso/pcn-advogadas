@@ -136,6 +136,7 @@ export async function updateTaskApi(
     due_date?: string | null;
     is_urgent_deadline?: boolean;
     fee_amount?: number;
+    status?: string;
   }
 ) {
   return apiFetch<any>(`/tasks/${taskId}`, {
@@ -229,6 +230,11 @@ export async function calculateDeadlineApi(token: string, startDate: string, day
 }
 
 // ── Notas de Honorários ──
+export async function getFeeNotesApi(token: string, clientId?: string) {
+  const q = clientId ? `?client_id=${encodeURIComponent(clientId)}` : "";
+  return apiFetch<any[]>(`/fee-notes${q}`, { token });
+}
+
 export async function getUnbilledTasksApi(token: string, clientId: string) {
   return apiFetch<any[]>(`/fee-notes/unbilled-tasks?client_id=${clientId}`, { token });
 }
@@ -238,6 +244,9 @@ export async function createFeeNoteDraftApi(
   payload: {
     client_id: string;
     task_ids: string[];
+    task_prices?: Record<string, number>;
+    vat_rate?: number;
+    withholding_rate?: number;
     notes?: string;
   }
 ) {
@@ -275,7 +284,8 @@ export function getExcelExportUrl(feeNoteId: string, internal: boolean = false) 
 export async function downloadFeeNoteExcelApi(
   token: string,
   feeNoteId: string,
-  internal: boolean = false
+  internal: boolean = false,
+  referenceCode?: string
 ): Promise<void> {
   const url = getExcelExportUrl(feeNoteId, internal);
   const res = await fetch(url, {
@@ -286,14 +296,15 @@ export async function downloadFeeNoteExcelApi(
 
   if (!res.ok) {
     const errorBody = await res.json().catch(() => ({}));
-    throw new Error(errorBody.message || `Erro ao transferir Excel (${res.status})`);
+    throw new Error(errorBody.message || errorBody.detail || `Erro ao transferir Excel (${res.status})`);
   }
 
   const blob = await res.blob();
   const blobUrl = window.URL.createObjectURL(blob);
   const anchor = document.createElement("a");
   anchor.href = blobUrl;
-  anchor.download = `PCN_Nota_Honorarios_${feeNoteId}${internal ? "_Interna" : ""}.xlsx`;
+  const label = referenceCode || feeNoteId;
+  anchor.download = `PCN_Nota_Honorarios_${label}${internal ? "_Interna" : ""}.xlsx`;
   document.body.appendChild(anchor);
   anchor.click();
   anchor.remove();

@@ -20,6 +20,18 @@ from pcn.services.fee_note_service import FeeNoteService
 router = APIRouter(prefix="/fee-notes", tags=["Notas de Honorários (Direção)"])
 
 
+@router.get("", response_model=list[FeeNoteRead])
+async def list_fee_notes(
+    admin: Annotated[User, Depends(require_admin)],
+    session: Annotated[AsyncSession, Depends(get_session)],
+    client_id: str | None = None,
+) -> list[FeeNoteRead]:
+    """Lista as Notas de Honorários guardadas na base de dados (opcionalmente filtradas por cliente)."""
+    fee_svc = FeeNoteService(session)
+    notes = await fee_svc.list_fee_notes(admin, client_id)
+    return [FeeNoteRead.model_validate(n) for n in notes]
+
+
 @router.get("/unbilled-tasks", response_model=list[UnbilledTaskItem])
 async def list_unbilled_tasks(
     client_id: str,
@@ -37,7 +49,7 @@ async def create_draft(
     admin: Annotated[User, Depends(require_admin)],
     session: Annotated[AsyncSession, Depends(get_session)],
 ) -> FeeNoteRead:
-    """Cria um rascunho de Nota de Honorários a partir das tarefas selecionadas."""
+    """Cria ou atualiza um rascunho de Nota de Honorários a partir das tarefas e valores do cliente."""
     fee_svc = FeeNoteService(session)
     note = await fee_svc.create_draft(admin, body)
     return FeeNoteRead.model_validate(note)

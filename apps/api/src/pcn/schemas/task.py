@@ -29,6 +29,7 @@ class TaskUpdate(BaseModel):
     due_date: datetime | None = None
     is_urgent_deadline: bool | None = None
     fee_amount: Decimal | None = None
+    status: TaskStatus | None = None
 
 
 class TaskAssignRequest(BaseModel):

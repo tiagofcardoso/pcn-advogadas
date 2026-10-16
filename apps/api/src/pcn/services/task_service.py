@@ -121,6 +121,10 @@ class TaskService:
             task.due_date = data.due_date
         if data.is_urgent_deadline is not None:
             task.is_urgent_deadline = data.is_urgent_deadline
+        if data.status is not None:
+            task.status = data.status
+            if data.status == TaskStatus.COMPLETED and not task.completed_at:
+                task.completed_at = system_clock.now()
 
         # Fee amount can only be edited by Admin/Patrícia
         if data.fee_amount is not None and user.role == UserRole.ADMIN:
@@ -178,13 +182,19 @@ class TaskService:
         await self.session.commit()
         return await self.task_repo.get_by_id_with_relations(task.id)  # type: ignore[return-value]
 
+    @staticmethod
+    def _calc_seconds(now: datetime, started_at: datetime) -> int:
+        from datetime import UTC
+
+        n = now if now.tzinfo else now.replace(tzinfo=UTC)
+        s = started_at if started_at.tzinfo else started_at.replace(tzinfo=UTC)
+        return max(0, int((n - s).total_seconds()))
+
     async def _pause_active_session_if_any(self, user_id: str, now: datetime) -> None:
         """Automatically closes any active session for this user to ensure single concurrent timer."""
         active_session = await self.session_repo.get_active_session_for_user(user_id)
         if active_session:
-            duration = int((now - active_session.started_at).total_seconds())
-            if duration < 0:
-                duration = 0
+            duration = self._calc_seconds(now, active_session.started_at)
             active_session.ended_at = now
             active_session.duration_seconds = duration
             active_session.active_marker = None
@@ -208,7 +218,8 @@ class TaskService:
             )
 
         # State machine transition
-        task.status = next_status(task.status, TaskAction.START)
+        if task.status != TaskStatus.IN_PROGRESS:
+            task.status = next_status(task.status, TaskAction.START)
 
         # 1. Close any running timer for this user
         await self._pause_active_session_if_any(user.id, now)
@@ -236,13 +247,15 @@ class TaskService:
         if user.role != UserRole.ADMIN and task.assigned_to != user.id:
             raise PermissionDenied("Não tem permissão para pausar esta tarefa.")
 
-        task.status = next_status(task.status, TaskAction.PAUSE)
+        if task.status == TaskStatus.IN_PROGRESS:
+            task.status = next_status(task.status, TaskAction.PAUSE)
 
         active_session = await self.session_repo.get_active_session_for_user(user.id)
+        if not active_session or active_session.task_id != task.id:
+            active_session = await self.session_repo.get_active_session_for_task(task.id)
+
         if active_session and active_session.task_id == task.id:
-            duration = int((now - active_session.started_at).total_seconds())
-            if duration < 0:
-                duration = 0
+            duration = self._calc_seconds(now, active_session.started_at)
             active_session.ended_at = now
             active_session.duration_seconds = duration
             active_session.active_marker = None
@@ -262,15 +275,17 @@ class TaskService:
         if user.role != UserRole.ADMIN and task.assigned_to != user.id:
             raise PermissionDenied("Não tem permissão para concluir esta tarefa.")
 
-        task.status = next_status(task.status, TaskAction.COMPLETE)
+        if task.status != TaskStatus.COMPLETED:
+            task.status = next_status(task.status, TaskAction.COMPLETE)
         task.completed_at = now
 
         # Close session if active
         active_session = await self.session_repo.get_active_session_for_user(user.id)
+        if not active_session or active_session.task_id != task.id:
+            active_session = await self.session_repo.get_active_session_for_task(task.id)
+
         if active_session and active_session.task_id == task.id:
-            duration = int((now - active_session.started_at).total_seconds())
-            if duration < 0:
-                duration = 0
+            duration = self._calc_seconds(now, active_session.started_at)
             active_session.ended_at = now
             active_session.duration_seconds = duration
             active_session.active_marker = None

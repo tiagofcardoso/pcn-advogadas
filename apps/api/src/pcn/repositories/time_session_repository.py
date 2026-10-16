@@ -26,6 +26,18 @@ class TimeSessionRepository(BaseRepository[TaskTimeSession]):
         )
         return result.scalar_one_or_none()
 
+    async def get_active_session_for_task(self, task_id: str) -> TaskTimeSession | None:
+        """Returns the currently running session for a given task, if any."""
+        result = await self.session.execute(
+            select(TaskTimeSession)
+            .where(
+                TaskTimeSession.task_id == task_id,
+                TaskTimeSession.active_marker == 1,
+            )
+            .options(selectinload(TaskTimeSession.task))
+        )
+        return result.scalars().first()
+
     async def list_by_task(self, task_id: str) -> Sequence[TaskTimeSession]:
         result = await self.session.execute(
             select(TaskTimeSession)
