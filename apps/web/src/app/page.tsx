@@ -60,6 +60,7 @@ import {
   getMetricsSummaryApi,
   getExcelExportUrl,
   downloadFeeNoteExcelApi,
+  clearDemoDataApi,
 } from "@/lib/api";
 
 export default function App() {
@@ -75,9 +76,9 @@ export default function App() {
   const [apiConnected, setApiConnected] = useState<boolean>(false);
 
   // Active Timer State
-  const [activeTaskId, setActiveTaskId] = useState<string | null>("tsk_3");
-  const [timerSeconds, setTimerSeconds] = useState<number>(4800);
-  const [isTimerRunning, setIsTimerRunning] = useState<boolean>(true);
+  const [activeTaskId, setActiveTaskId] = useState<string | null>(null);
+  const [timerSeconds, setTimerSeconds] = useState<number>(0);
+  const [isTimerRunning, setIsTimerRunning] = useState<boolean>(false);
 
   // Search in Reports
   const [searchQuery, setSearchQuery] = useState<string>("");

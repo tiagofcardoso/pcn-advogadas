@@ -6,7 +6,11 @@ export const INITIAL_USERS: UserProfile[] = [
   { id: "usr_sofia", name: "Sofia", role: "lawyer", email: "sofia@pcnadvogadas.pt" },
 ];
 
-export const INITIAL_CLIENTS: Client[] = [
+export const INITIAL_CLIENTS: Client[] = [];
+
+export const INITIAL_TASKS: Task[] = [];
+
+export const DEMO_CLIENTS: Client[] = [
   {
     id: "cli_1",
     name: "Cliente A",
@@ -25,7 +29,7 @@ export const INITIAL_CLIENTS: Client[] = [
   },
 ];
 
-export const INITIAL_TASKS: Task[] = [
+export const DEMO_TASKS: Task[] = [
   {
     id: "tsk_1",
     title: "Registo predial",

@@ -264,3 +264,10 @@ export async function downloadFeeNoteExcelApi(
   window.URL.revokeObjectURL(blobUrl);
 }
 
+export async function clearDemoDataApi(token: string) {
+  return apiFetch<{ status: string; message: string }>("/system/clear-demo-data", {
+    method: "POST",
+    token,
+  });
+}
+
