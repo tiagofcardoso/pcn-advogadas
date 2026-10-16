@@ -13,7 +13,7 @@ function getApiBase(): string {
   return raw;
 }
 
-const API_BASE = getApiBase();
+export const API_BASE = getApiBase();
 
 interface RequestOptions extends RequestInit {
   token?: string;

@@ -132,6 +132,7 @@ def create_app() -> FastAPI:
 
         return {
             "status": "online",
+            "version": "1.1.0",
             "app": settings.PROJECT_NAME,
             "environment": settings.ENVIRONMENT,
             "database": db_info,
