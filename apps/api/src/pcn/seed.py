@@ -6,15 +6,23 @@ from decimal import Decimal
 
 from sqlalchemy import delete, select
 
+import pcn.models
 from pcn.core.database import get_session_factory
 from pcn.core.security import hash_password
 from pcn.domain.enums import FeeNoteStatus, TaskStatus, UserRole
-from pcn.models.base import Base
-from pcn.models.client import Client, TaskType
-from pcn.models.fee_note import FeeNote, FeeNoteItem
-from pcn.models.task import Task
-from pcn.models.task_time_session import TaskTimeSession
-from pcn.models.user import User
+from pcn.models import (
+    AuditLog,
+    Base,
+    Client,
+    Event,
+    FeeNote,
+    FeeNoteItem,
+    RefreshToken,
+    Task,
+    TaskTimeSession,
+    TaskType,
+    User,
+)
 
 
 async def clear_demo_data() -> None:

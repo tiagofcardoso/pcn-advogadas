@@ -2,6 +2,7 @@
 
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
+from typing import Any
 
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
@@ -26,8 +27,8 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         from pcn.seed import run_seed
         await run_seed()
     except Exception as exc:
-        import logging
-        logging.getLogger("pcn").warning(f"Aviso na inicialização da base de dados: {exc}")
+        import logging, traceback
+        logging.getLogger("pcn").error(f"Erro na inicialização da base de dados: {exc}\n{traceback.format_exc()}")
     yield
     await dispose_engine()
 
@@ -61,6 +62,20 @@ def create_app() -> FastAPI:
             },
         )
 
+    @app.exception_handler(Exception)
+    async def global_exception_handler(request: Request, exc: Exception) -> JSONResponse:
+        import logging, traceback
+        logging.getLogger("pcn").exception(f"Erro não tratado na API: {exc}")
+        return JSONResponse(
+            status_code=500,
+            content={
+                "code": "INTERNAL_SERVER_ERROR",
+                "message": str(exc),
+                "type": type(exc).__name__,
+                "traceback": traceback.format_exc(),
+            },
+        )
+
     # Middlewares (Pure ASGI order: outer to inner)
     app.add_middleware(RequestIdMiddleware)
     app.add_middleware(SecurityHeadersMiddleware)
@@ -89,11 +104,25 @@ def create_app() -> FastAPI:
     app.include_router(api_v1_router, prefix=settings.API_V1_PREFIX)
 
     @app.get("/healthz", tags=["Saúde do Sistema"])
-    async def healthcheck() -> dict[str, str]:
+    async def healthcheck() -> dict[str, Any]:
+        db_info: dict[str, Any] = {}
+        try:
+            from pcn.core.database import get_session_factory
+            from sqlalchemy import text
+            session_factory = get_session_factory()
+            async with session_factory() as session:
+                res = await session.execute(text("SELECT count(*) FROM users"))
+                count = res.scalar()
+                db_info = {"status": "connected", "users_count": count}
+        except Exception as e:
+            import traceback
+            db_info = {"status": "error", "error": str(e), "traceback": traceback.format_exc()}
+
         return {
             "status": "online",
             "app": settings.PROJECT_NAME,
             "environment": settings.ENVIRONMENT,
+            "database": db_info,
         }
 
     return app
