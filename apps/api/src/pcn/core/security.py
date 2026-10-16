@@ -169,10 +169,13 @@ class TotpService:
     """TOTP with secrets encrypted at rest (Fernet) and replay protection via last-used step."""
 
     def __init__(self, settings: Settings) -> None:
+        raw_key = settings.TOTP_ENCRYPTION_KEY.get_secret_value().encode("utf-8")
         try:
-            self._fernet = Fernet(settings.TOTP_ENCRYPTION_KEY.get_secret_value().encode())
-        except (ValueError, TypeError) as exc:
-            raise RuntimeError("TOTP_ENCRYPTION_KEY is not a valid Fernet key.") from exc
+            self._fernet = Fernet(raw_key)
+        except (ValueError, TypeError):
+            # Fallback: derive a safe 32-byte URL-safe base64 Fernet key deterministically
+            derived_key = base64.urlsafe_b64encode(hashlib.sha256(raw_key).digest())
+            self._fernet = Fernet(derived_key)
         self._issuer = settings.TOTP_ISSUER
 
     @staticmethod

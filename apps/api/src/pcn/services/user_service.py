@@ -39,7 +39,7 @@ class UserService:
                 "Já existe uma utilizadora registada com este endereço de correio eletrónico."
             )
 
-        temp_password = generate_temporary_password()
+        temp_password = data.password.strip() if data.password else generate_temporary_password()
         hashed = hash_password(temp_password)
 
         new_user = User(
@@ -47,7 +47,7 @@ class UserService:
             email=data.email.strip().lower(),
             password_hash=hashed,
             role=data.role,
-            must_change_password=True,
+            must_change_password=data.must_change_password,
             is_totp_enabled=False,
             is_active=True,
         )

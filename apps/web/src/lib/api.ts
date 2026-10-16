@@ -279,3 +279,41 @@ export async function clearDemoDataApi(token: string) {
   });
 }
 
+// ── Gestão de Utilizadores (Portal Admin) ──
+export async function getUsersApi(token: string) {
+  return apiFetch<any[]>("/users", { token });
+}
+
+export async function createUserApi(
+  token: string,
+  payload: {
+    name: string;
+    email: string;
+    role: string;
+    password?: string;
+  }
+) {
+  return apiFetch<any>("/users", {
+    method: "POST",
+    token,
+    body: JSON.stringify(payload),
+  });
+}
+
+export async function updateUserApi(
+  token: string,
+  userId: string,
+  payload: {
+    name?: string;
+    role?: string;
+    is_active?: boolean;
+  }
+) {
+  return apiFetch<any>(`/users/${userId}`, {
+    method: "PATCH",
+    token,
+    body: JSON.stringify(payload),
+  });
+}
+
+

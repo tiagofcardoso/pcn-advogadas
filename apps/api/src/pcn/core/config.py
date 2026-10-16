@@ -32,10 +32,10 @@ class Settings(BaseSettings):
 
     # ── Crypto / auth ──
     SECRET_KEY: SecretStr = Field(default=SecretStr("pcn-advogadas-production-secret-key-change-in-env-2026"))
-    TOTP_ENCRYPTION_KEY: SecretStr = Field(default=SecretStr("pcn-advogadas-totp-encryption-key-32chars-min"))
+    TOTP_ENCRYPTION_KEY: SecretStr = Field(default=SecretStr("NDYZDO9Io4twjlkZpCtwH35G18sTELmwdb_CcasI7Kc="))
     JWT_ALGORITHM: Literal["HS256", "HS384", "HS512"] = "HS256"
     JWT_ISSUER: str = "pcn-advogadas-api"
-    ACCESS_TOKEN_EXPIRE_MINUTES: int = Field(default=15, ge=1, le=60)
+    ACCESS_TOKEN_EXPIRE_MINUTES: int = Field(default=30, ge=1, le=60)
     REFRESH_TOKEN_EXPIRE_DAYS: int = Field(default=7, ge=1, le=30)
     MFA_TOKEN_EXPIRE_MINUTES: int = Field(default=5, ge=1, le=10)
     TOTP_ISSUER: str = "PCN Advogadas"

@@ -11,6 +11,8 @@ class UserCreate(BaseModel):
     name: str = Field(min_length=2, max_length=150)
     email: EmailStr
     role: UserRole = UserRole.LAWYER
+    password: str | None = None
+    must_change_password: bool = False
 
 
 class UserCreateResponse(BaseModel):
