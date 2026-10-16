@@ -16,6 +16,13 @@ from pcn.core.config import Settings, get_settings
 
 def build_engine(settings: Settings) -> AsyncEngine:
     url = settings.DATABASE_URL.get_secret_value()
+    if url.startswith("postgresql://"):
+        url = url.replace("postgresql://", "postgresql+asyncpg://", 1)
+    elif url.startswith("postgres://"):
+        url = url.replace("postgres://", "postgresql+asyncpg://", 1)
+    elif url.startswith("mysql://"):
+        url = url.replace("mysql://", "mysql+asyncmy://", 1)
+
     kwargs: dict[str, Any] = {"echo": settings.DB_ECHO, "pool_pre_ping": True}
     if not url.startswith("sqlite"):
         kwargs |= {

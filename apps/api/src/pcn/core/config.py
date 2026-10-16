@@ -24,15 +24,15 @@ class Settings(BaseSettings):
     API_V1_PREFIX: str = "/api/v1"
 
     # ── Database ──
-    DATABASE_URL: SecretStr
+    DATABASE_URL: SecretStr = Field(default=SecretStr("sqlite+aiosqlite:///./pcn_data.db"))
     DB_POOL_SIZE: int = Field(default=10, ge=1, le=50)
     DB_MAX_OVERFLOW: int = Field(default=20, ge=0, le=100)
     DB_POOL_RECYCLE_SECONDS: int = 280  # below typical shared-hosting wait_timeout
     DB_ECHO: bool = False
 
     # ── Crypto / auth ──
-    SECRET_KEY: SecretStr
-    TOTP_ENCRYPTION_KEY: SecretStr
+    SECRET_KEY: SecretStr = Field(default=SecretStr("pcn-advogadas-production-secret-key-change-in-env-2026"))
+    TOTP_ENCRYPTION_KEY: SecretStr = Field(default=SecretStr("pcn-advogadas-totp-encryption-key-32chars-min"))
     JWT_ALGORITHM: Literal["HS256", "HS384", "HS512"] = "HS256"
     JWT_ISSUER: str = "pcn-advogadas-api"
     ACCESS_TOKEN_EXPIRE_MINUTES: int = Field(default=15, ge=1, le=60)
