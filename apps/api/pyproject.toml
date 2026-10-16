@@ -1,0 +1,73 @@
+[project]
+name = "pcn-api"
+version = "1.0.0"
+description = "PCN Advogadas — legal Kanban, time tracking, metrics and fee notes API"
+requires-python = ">=3.12"
+dependencies = [
+    "fastapi>=0.115.0",
+    "uvicorn[standard]>=0.32.0",
+    "sqlalchemy[asyncio]>=2.0.36",
+    "asyncmy>=0.2.9",
+    "alembic>=1.14.0",
+    "pydantic[email]>=2.9.0",
+    "pydantic-settings>=2.7.0",
+    "pwdlib[argon2]>=0.2.1",
+    "pyjwt>=2.10.0",
+    "pyotp>=2.9.0",
+    "qrcode>=8.0",
+    "cryptography>=43.0.0",
+    "slowapi>=0.1.9",
+    "openpyxl>=3.1.5",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.3.0",
+    "pytest-asyncio>=0.24.0",
+    "pytest-cov>=6.0.0",
+    "httpx>=0.28.0",
+    "aiosqlite>=0.20.0",
+    "ruff>=0.8.0",
+    "mypy>=1.13.0",
+    "types-openpyxl",
+    "pip-audit>=2.7.0",
+]
+
+[project.scripts]
+pcn = "pcn.cli:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/pcn"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "function"
+testpaths = ["tests"]
+addopts = "-q"
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+src = ["src", "tests"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "B", "UP", "S", "ASYNC", "SIM", "RUF", "N"]
+ignore = ["B008", "E501"]  # FastAPI Depends() in defaults; allow legal text line lengths
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**" = ["S101", "S105", "S106"]
+"alembic/**" = ["N999"]
+
+[tool.mypy]
+python_version = "3.12"
+strict = true
+plugins = ["pydantic.mypy"]
+mypy_path = "src"
+
+[[tool.mypy.overrides]]
+module = ["pyotp.*", "qrcode.*", "slowapi.*", "asyncmy.*"]
+ignore_missing_imports = true

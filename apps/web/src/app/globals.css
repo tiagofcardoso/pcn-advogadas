@@ -1,0 +1,71 @@
+@import "tailwindcss";
+
+@layer base {
+  :root {
+    --pcn-purple: #92006F;
+    --pcn-purple-dark: #5E0047;
+    --pcn-purple-light: #FDF2F8;
+    --pcn-gold: #D4AF37;
+    --pcn-gold-dark: #A58014;
+    --pcn-gold-light: #FBF8EE;
+    --pcn-bg: #FAF8F5;
+    --pcn-card-bg: #FFFFFF;
+    --pcn-border: #EFE9DE;
+    --pcn-text-dark: #1F1F1F;
+    --pcn-text-muted: #6B7280;
+  }
+
+  body {
+    background-color: var(--pcn-bg);
+    color: var(--pcn-text-dark);
+    font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+    -webkit-font-smoothing: antialiased;
+    overscroll-behavior-y: contain;
+    -webkit-tap-highlight-color: transparent;
+  }
+}
+
+/* Friso dourado institucional decorativo */
+.gold-divider-ribbon {
+  height: 2px;
+  background: linear-gradient(90deg, #D4AF37 0%, #EEDB98 50%, rgba(212, 175, 55, 0) 100%);
+}
+
+.gold-accent-line {
+  height: 3px;
+  background: linear-gradient(90deg, #AA820A 0%, #D4AF37 40%, #F5DE9B 100%);
+  border-radius: 9999px;
+}
+
+/* Cartões com sombra suave e borda dourada subtil */
+.pcn-card {
+  background-color: #FFFFFF;
+  border: 1px solid #ECE6DB;
+  border-radius: 12px;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.03), 0 4px 12px rgba(146, 0, 111, 0.02);
+  transition: all 0.2s ease;
+}
+
+.pcn-card:hover {
+  border-color: #E0D3C1;
+  box-shadow: 0 4px 16px rgba(146, 0, 111, 0.05);
+}
+
+/* Custom Scrollbar */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+  background: #D9D2C5;
+  border-radius: 4px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: #92006F;
+}

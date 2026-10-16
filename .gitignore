@@ -1,0 +1,47 @@
+# ── Secrets & environments (NEVER commit) ──
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.crt
+*.p12
+secrets/
+
+# ── Python ──
+__pycache__/
+*.py[cod]
+*$py.class
+.venv/
+venv/
+dist/
+build/
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# ── Node / Next.js ──
+node_modules/
+.next/
+out/
+*.tsbuildinfo
+next-env.d.ts
+public/sw.js
+public/sw.js.map
+public/swe-worker-*.js
+
+# ── IDE & OS ──
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+*.swp
+
+# ── Local data / logs ──
+*.sqlite3
+*.db
+*.log
+backups/

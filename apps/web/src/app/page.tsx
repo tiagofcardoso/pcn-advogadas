@@ -1,0 +1,3021 @@
+"use client";
+
+import React, { useState, useEffect } from "react";
+import Image from "next/image";
+import {
+  LayoutDashboard,
+  Kanban,
+  Users,
+  Calendar,
+  CreditCard,
+  Clock,
+  Play,
+  Pause,
+  CheckCircle2,
+  Plus,
+  Search,
+  ChevronDown,
+  FileSpreadsheet,
+  Scale,
+  RefreshCw,
+  X,
+  Check,
+  AlertCircle,
+  Menu,
+  PanelLeftClose,
+  PanelLeftOpen,
+  Smartphone,
+  Sparkles,
+  Archive,
+  ArchiveRestore,
+  Trash2,
+  UserCheck,
+  CalendarPlus,
+  Share2,
+  Download,
+  ExternalLink,
+  ArrowRight,
+  Eye,
+  SlidersHorizontal,
+} from "lucide-react";
+import { INITIAL_USERS, INITIAL_CLIENTS, INITIAL_TASKS } from "@/lib/mockData";
+import { Task, Client, UserProfile } from "@/lib/types";
+import { detectPlatform, PlatformInfo } from "@/lib/platform";
+import {
+  loginApi,
+  getDirectionBoard,
+  getClientsApi,
+  createClientApi,
+  startTimerApi,
+  pauseTimerApi,
+  completeTaskApi,
+  claimTaskApi,
+  createTaskApi,
+  assignTaskApi,
+  updateTaskApi,
+  archiveTaskApi,
+  restoreTaskApi,
+  deleteTaskApi,
+  calculateDeadlineApi,
+  getMetricsSummaryApi,
+  getExcelExportUrl,
+  downloadFeeNoteExcelApi,
+} from "@/lib/api";
+
+export default function App() {
+  const [currentUser, setCurrentUser] = useState<UserProfile>(INITIAL_USERS[0]);
+  const [authToken, setAuthToken] = useState<string | null>(null);
+  const [activeTab, setActiveTab] = useState<
+    "dashboard" | "tasks" | "archived" | "clients" | "calendar" | "feenotes" | "reports"
+  >("dashboard");
+
+  const [tasks, setTasks] = useState<Task[]>(INITIAL_TASKS);
+  const [clients, setClients] = useState<Client[]>(INITIAL_CLIENTS);
+  const [isLoadingApi, setIsLoadingApi] = useState<boolean>(false);
+  const [apiConnected, setApiConnected] = useState<boolean>(false);
+
+  // Active Timer State
+  const [activeTaskId, setActiveTaskId] = useState<string | null>("tsk_3");
+  const [timerSeconds, setTimerSeconds] = useState<number>(4800);
+  const [isTimerRunning, setIsTimerRunning] = useState<boolean>(true);
+
+  // Search in Reports
+  const [searchQuery, setSearchQuery] = useState<string>("");
+  const [reportsData, setReportsData] = useState<any>(null);
+
+  // Judicial Deadline Calculator State (Art. 138/139 CPC)
+  const [calcStartDate, setCalcStartDate] = useState<string>("2026-07-10");
+  const [calcDays, setCalcDays] = useState<number>(10);
+  const [calcIsUrgent, setCalcIsUrgent] = useState<boolean>(false);
+  const [calcResult, setCalcResult] = useState<{
+    finalDate: string;
+    suspendedDays: number;
+    penaltyDays: string[];
+  } | null>({
+    finalDate: "07/09/2026",
+    suspendedDays: 47,
+    penaltyDays: ["08/09/2026", "09/09/2026", "10/09/2026"],
+  });
+
+  // Fee Note Builder State
+  const [selectedFeeClient, setSelectedFeeClient] = useState<string>("cli_1");
+  const [feeTaskPrices, setFeeTaskPrices] = useState<Record<string, number>>({
+    tsk_4: 250.0,
+    tsk_1: 85.0,
+  });
+
+  // Modal & Form States
+  const [isMobileMenuOpen, setIsMobileMenuOpen] = useState<boolean>(false);
+  const [isNewTaskModalOpen, setIsNewTaskModalOpen] = useState<boolean>(false);
+  const [isNewClientModalOpen, setIsNewClientModalOpen] = useState<boolean>(false);
+  const [modalFeedback, setModalFeedback] = useState<string | null>(null);
+  const [isExportingExcel, setIsExportingExcel] = useState<boolean>(false);
+
+  // PWA Standalone & Responsiveness State
+  const [isStandalone, setIsStandalone] = useState<boolean>(false);
+  const [deferredPrompt, setDeferredPrompt] = useState<any>(null);
+  const [isSidebarCollapsed, setIsSidebarCollapsed] = useState<boolean>(false);
+
+  // Quick Filters for Task Board (Pool, Abertas, Em Andamento, Pausadas, Concluídas)
+  const [taskStatusFilter, setTaskStatusFilter] = useState<
+    "all" | "pool" | "assigned" | "in_progress" | "paused" | "completed"
+  >("all");
+
+  // Task Details & Reassign Modal State
+  const [selectedTaskForDetails, setSelectedTaskForDetails] = useState<Task | null>(null);
+  const [detailsForm, setDetailsForm] = useState<{
+    title: string;
+    description: string;
+    assigned_to: string;
+    due_date: string;
+    status: Task["status"];
+  }>({
+    title: "",
+    description: "",
+    assigned_to: "pool",
+    due_date: "",
+    status: "assigned",
+  });
+  const [isSubmittingDetails, setIsSubmittingDetails] = useState<boolean>(false);
+
+  // Task Delete Confirmation Dialog State
+  const [taskToDelete, setTaskToDelete] = useState<Task | null>(null);
+  const [isDeletingTask, setIsDeletingTask] = useState<boolean>(false);
+
+  // Calendar Export Menu State
+  const [showCalendarMenu, setShowCalendarMenu] = useState<boolean>(false);
+  const [platformInfo, setPlatformInfo] = useState<PlatformInfo | null>(null);
+
+  // Navigation with native mobile back gesture/popstate support
+  const switchTab = (
+    tab: "dashboard" | "tasks" | "archived" | "clients" | "calendar" | "feenotes" | "reports"
+  ) => {
+    if (typeof window !== "undefined") {
+      window.history.pushState({ tab }, "");
+    }
+    setActiveTab(tab);
+    setIsMobileMenuOpen(false);
+  };
+
+  const openTaskDetails = (task: Task) => {
+    if (typeof window !== "undefined") {
+      window.history.pushState({ modal: "taskDetails" }, "");
+    }
+    setSelectedTaskForDetails(task);
+    setDetailsForm({
+      title: task.title,
+      description: task.description || "",
+      assigned_to: task.assigned_to || (task.status === "pool" ? "pool" : "usr_patricia"),
+      due_date: task.due_date || "",
+      status: task.status,
+    });
+  };
+
+  const confirmDeleteTask = (task: Task) => {
+    if (typeof window !== "undefined") {
+      window.history.pushState({ modal: "deleteConfirm" }, "");
+    }
+    setTaskToDelete(task);
+  };
+
+  // Intercept browser back button / gestures on mobile so app doesn't close abruptly
+  useEffect(() => {
+    const handlePopState = (e: PopStateEvent) => {
+      if (isMobileMenuOpen) {
+        setIsMobileMenuOpen(false);
+        return;
+      }
+      if (isNewTaskModalOpen) {
+        setIsNewTaskModalOpen(false);
+        return;
+      }
+      if (isNewClientModalOpen) {
+        setIsNewClientModalOpen(false);
+        return;
+      }
+      if (selectedTaskForDetails) {
+        setSelectedTaskForDetails(null);
+        return;
+      }
+      if (taskToDelete) {
+        setTaskToDelete(null);
+        return;
+      }
+      if (showCalendarMenu) {
+        setShowCalendarMenu(false);
+        return;
+      }
+      if (e.state?.tab) {
+        setActiveTab(e.state.tab);
+      } else if (activeTab !== "dashboard") {
+        setActiveTab("dashboard");
+      }
+    };
+
+    window.addEventListener("popstate", handlePopState);
+    return () => window.removeEventListener("popstate", handlePopState);
+  }, [
+    isMobileMenuOpen,
+    isNewTaskModalOpen,
+    isNewClientModalOpen,
+    selectedTaskForDetails,
+    taskToDelete,
+    showCalendarMenu,
+    activeTab,
+  ]);
+
+  // PWA Standalone Detection & Install Listener
+  useEffect(() => {
+    const checkPwaMode = () => {
+      const isPwa =
+        window.matchMedia("(display-mode: standalone)").matches ||
+        (window.navigator as any).standalone === true ||
+        document.referrer.includes("android-app://");
+      setIsStandalone(isPwa);
+      if (isPwa) {
+        setIsSidebarCollapsed(true);
+      }
+    };
+    checkPwaMode();
+    setPlatformInfo(detectPlatform());
+
+    const mq = window.matchMedia("(display-mode: standalone)");
+    const handler = (e: MediaQueryListEvent) => {
+      setIsStandalone(e.matches);
+      if (e.matches) setIsSidebarCollapsed(true);
+    };
+    try {
+      mq.addEventListener("change", handler);
+    } catch {}
+
+    const beforeInstallHandler = (e: Event) => {
+      e.preventDefault();
+      setDeferredPrompt(e);
+    };
+    window.addEventListener("beforeinstallprompt", beforeInstallHandler);
+
+    return () => {
+      try {
+        mq.removeEventListener("change", handler);
+      } catch {}
+      window.removeEventListener("beforeinstallprompt", beforeInstallHandler);
+    };
+  }, []);
+
+  const handleInstallPwa = async () => {
+    if (!deferredPrompt) {
+      alert(
+        "Para instalar a PCN Advogadas no seu telemóvel ou tablet:\n\n1. Toque no ícone de Opções/Partilhar do navegador.\n2. Escolha 'Adicionar ao ecrã principal' ou 'Instalar aplicação'."
+      );
+      return;
+    }
+    deferredPrompt.prompt();
+    const { outcome } = await deferredPrompt.userChoice;
+    if (outcome === "accepted") {
+      setDeferredPrompt(null);
+      setModalFeedback("Aplicação PCN instalada com sucesso como PWA!");
+      setTimeout(() => setModalFeedback(null), 3500);
+    }
+  };
+
+  // New Task Form
+  const [taskFormTitle, setTaskFormTitle] = useState("");
+  const [taskFormDescription, setTaskFormDescription] = useState("");
+  const [taskFormClientId, setTaskFormClientId] = useState("cli_1");
+  const [taskFormTypeId, setTaskFormTypeId] = useState("tp_2");
+  const [taskFormAssignee, setTaskFormAssignee] = useState("usr_patricia");
+  const [taskFormDueDate, setTaskFormDueDate] = useState("2026-10-25");
+  const [taskFormIsUrgent, setTaskFormIsUrgent] = useState(false);
+  const [taskFormPublishToPool, setTaskFormPublishToPool] = useState(false);
+  const [isSubmittingTask, setIsSubmittingTask] = useState(false);
+
+  // New Client Form
+  const [clientFormName, setClientFormName] = useState("");
+  const [clientFormNif, setClientFormNif] = useState("");
+  const [clientFormProcess, setClientFormProcess] = useState("");
+  const [clientFormEmail, setClientFormEmail] = useState("");
+  const [clientFormPhone, setClientFormPhone] = useState("");
+  const [clientFormNotes, setClientFormNotes] = useState("");
+  const [isSubmittingClient, setIsSubmittingClient] = useState(false);
+
+  // 1. Initial Login & Database Sync on mount
+  useEffect(() => {
+    async function initAuthAndData() {
+      try {
+        setIsLoadingApi(true);
+        // Login as Patrícia to obtain JWT access token
+        const loginRes = await loginApi("patricia@pcnadvogadas.pt", "Advogada2026!");
+        if (loginRes.access_token) {
+          setAuthToken(loginRes.access_token);
+          setApiConnected(true);
+
+          // Fetch real tasks from backend
+          const apiTasks = await getDirectionBoard(loginRes.access_token);
+          if (apiTasks && apiTasks.length > 0) {
+            setTasks(
+              apiTasks.map((t: any) => ({
+                id: t.id,
+                title: t.title,
+                description: t.description,
+                client_id: t.client_id,
+                client_name: t.client?.name || "Cliente",
+                task_type: t.task_type?.name || "Geral",
+                status: t.status,
+                assigned_to: t.assigned_to,
+                lawyer_name: t.assignee?.name || "—",
+                due_date: t.due_date ? t.due_date.split("T")[0] : undefined,
+                total_duration_seconds: t.total_duration_seconds,
+                fee_amount: t.fee_amount ? parseFloat(t.fee_amount) : undefined,
+              }))
+            );
+          }
+
+          // Fetch real clients
+          const apiClients = await getClientsApi(loginRes.access_token);
+          if (apiClients && apiClients.length > 0) {
+            setClients(apiClients);
+          }
+        }
+      } catch (err) {
+        console.warn("Backend local a utilizar cache/dados de demonstração:", err);
+      } finally {
+        setIsLoadingApi(false);
+      }
+    }
+
+    initAuthAndData();
+  }, []);
+
+  // 2. Live timer interval
+  useEffect(() => {
+    let interval: NodeJS.Timeout | null = null;
+    if (isTimerRunning && activeTaskId) {
+      interval = setInterval(() => {
+        setTimerSeconds((prev) => prev + 1);
+      }, 1000);
+    }
+    return () => {
+      if (interval) clearInterval(interval);
+    };
+  }, [isTimerRunning, activeTaskId]);
+
+  const formatSeconds = (sec: number) => {
+    const h = Math.floor(sec / 3600);
+    const m = Math.floor((sec % 3600) / 60);
+    const s = sec % 60;
+    return `${h.toString().padStart(2, "0")}:${m.toString().padStart(2, "0")}:${s.toString().padStart(2, "0")}`;
+  };
+
+  const handleStartTimer = async (task: Task) => {
+    if (authToken && apiConnected) {
+      try {
+        await startTimerApi(task.id, authToken);
+      } catch (e) {
+        console.error(e);
+      }
+    }
+    if (activeTaskId && activeTaskId !== task.id) {
+      setTasks((prev) =>
+        prev.map((t) =>
+          t.id === activeTaskId
+            ? { ...t, status: "paused", total_duration_seconds: timerSeconds }
+            : t
+        )
+      );
+    }
+    setActiveTaskId(task.id);
+    setTimerSeconds(task.total_duration_seconds);
+    setIsTimerRunning(true);
+    setTasks((prev) =>
+      prev.map((t) => (t.id === task.id ? { ...t, status: "in_progress" } : t))
+    );
+  };
+
+  const handlePauseTimer = async () => {
+    setIsTimerRunning(false);
+    if (activeTaskId) {
+      if (authToken && apiConnected) {
+        try {
+          await pauseTimerApi(activeTaskId, authToken);
+        } catch (e) {
+          console.error(e);
+        }
+      }
+      setTasks((prev) =>
+        prev.map((t) =>
+          t.id === activeTaskId
+            ? { ...t, status: "paused", total_duration_seconds: timerSeconds }
+            : t
+        )
+      );
+    }
+  };
+
+  const handleCompleteTask = async (task: Task) => {
+    if (authToken && apiConnected) {
+      try {
+        await completeTaskApi(task.id, authToken);
+      } catch (e) {
+        console.error(e);
+      }
+    }
+    if (activeTaskId === task.id) {
+      setIsTimerRunning(false);
+      setActiveTaskId(null);
+    }
+    setTasks((prev) =>
+      prev.map((t) =>
+        t.id === task.id
+          ? {
+              ...t,
+              status: "completed",
+              total_duration_seconds:
+                activeTaskId === task.id ? timerSeconds : t.total_duration_seconds,
+            }
+          : t
+      )
+    );
+  };
+
+  const handleClaimTask = async (task: Task) => {
+    if (authToken && apiConnected) {
+      try {
+        await claimTaskApi(task.id, authToken);
+      } catch (e) {
+        console.error(e);
+      }
+    }
+    setTasks((prev) =>
+      prev.map((t) =>
+        t.id === task.id
+          ? {
+              ...t,
+              status: "assigned",
+              assigned_to: currentUser.id,
+              lawyer_name: currentUser.name,
+            }
+          : t
+      )
+    );
+  };
+
+  const handleArchiveTask = async (task: Task) => {
+    if (authToken && apiConnected) {
+      try {
+        await archiveTaskApi(task.id, authToken);
+      } catch (e) {
+        console.error("Erro ao arquivar na API:", e);
+      }
+    }
+    if (activeTaskId === task.id) {
+      setIsTimerRunning(false);
+      setActiveTaskId(null);
+    }
+    setTasks((prev) =>
+      prev.map((t) => (t.id === task.id ? { ...t, status: "archived" } : t))
+    );
+    setModalFeedback("Tarefa movida para o repositório de Tarefas Arquivadas.");
+    setTimeout(() => setModalFeedback(null), 3500);
+  };
+
+  const handleRestoreTask = async (task: Task) => {
+    if (authToken && apiConnected) {
+      try {
+        await restoreTaskApi(task.id, authToken);
+      } catch (e) {
+        console.error("Erro ao restaurar na API:", e);
+      }
+    }
+    setTasks((prev) =>
+      prev.map((t) => (t.id === task.id ? { ...t, status: "completed" } : t))
+    );
+    setModalFeedback("Tarefa restaurada com sucesso para o Quadro de Tarefas!");
+    setTimeout(() => setModalFeedback(null), 3500);
+  };
+
+  const handleDeleteTask = async () => {
+    if (!taskToDelete) return;
+    setIsDeletingTask(true);
+    try {
+      if (authToken && apiConnected) {
+        await deleteTaskApi(taskToDelete.id, authToken);
+      }
+      if (activeTaskId === taskToDelete.id) {
+        setIsTimerRunning(false);
+        setActiveTaskId(null);
+      }
+      setTasks((prev) => prev.filter((t) => t.id !== taskToDelete.id));
+      if (selectedTaskForDetails?.id === taskToDelete.id) {
+        setSelectedTaskForDetails(null);
+      }
+      setTaskToDelete(null);
+      setModalFeedback("Tarefa eliminada permanentemente.");
+      setTimeout(() => setModalFeedback(null), 3500);
+    } catch (e: any) {
+      alert("Erro ao eliminar tarefa: " + e.message);
+    } finally {
+      setIsDeletingTask(false);
+    }
+  };
+
+  const handleSaveTaskDetails = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!selectedTaskForDetails) return;
+    setIsSubmittingDetails(true);
+    try {
+      const isPool = detailsForm.assigned_to === "pool";
+      const lawyerMap: Record<string, string> = {
+        usr_patricia: "Dr.ª Patrícia",
+        usr_ines: "Dr.ª Inês",
+        usr_sofia: "Dr.ª Sofia",
+      };
+
+      const finalStatus: Task["status"] = isPool
+        ? "pool"
+        : detailsForm.status === "pool"
+        ? "assigned"
+        : detailsForm.status;
+
+      if (authToken && apiConnected) {
+        if (isPool) {
+          await updateTaskApi(selectedTaskForDetails.id, authToken, {
+            title: detailsForm.title,
+            description: detailsForm.description,
+            due_date: detailsForm.due_date ? `${detailsForm.due_date}T18:00:00` : null,
+          });
+        } else {
+          await assignTaskApi(selectedTaskForDetails.id, detailsForm.assigned_to, authToken);
+          await updateTaskApi(selectedTaskForDetails.id, authToken, {
+            title: detailsForm.title,
+            description: detailsForm.description,
+            due_date: detailsForm.due_date ? `${detailsForm.due_date}T18:00:00` : null,
+          });
+        }
+      }
+
+      setTasks((prev) =>
+        prev.map((t) =>
+          t.id === selectedTaskForDetails.id
+            ? {
+                ...t,
+                title: detailsForm.title,
+                description: detailsForm.description,
+                status: finalStatus,
+                assigned_to: isPool ? undefined : detailsForm.assigned_to,
+                lawyer_name: isPool ? undefined : lawyerMap[detailsForm.assigned_to] || "Advogada",
+                due_date: detailsForm.due_date || t.due_date,
+              }
+            : t
+        )
+      );
+
+      setSelectedTaskForDetails(null);
+      setModalFeedback("Detalhes e atribuição da tarefa guardados com sucesso!");
+      setTimeout(() => setModalFeedback(null), 3500);
+    } catch (err: any) {
+      alert("Erro ao atualizar tarefa: " + err.message);
+    } finally {
+      setIsSubmittingDetails(false);
+    }
+  };
+
+  const handleExportToCalendar = (type: "google" | "outlook" | "ics") => {
+    if (!calcResult) return;
+    const title = "Termo de Prazo Processual - Art. 138.º CPC";
+    const details = `Cálculo automático de prazo processual com suspensão de férias judiciais (Art. 138.º CPC).
+Início / Notificação: ${calcStartDate}
+Prazo: ${calcDays} dias
+Data Limite sem Multa: ${calcResult.finalDate}
+Dias Suspensos por Férias: ${calcResult.suspendedDays} dias
+Prática com Multa (Art. 139.º CPC):
+- 1.º dia: ${calcResult.penaltyDays[0]}
+- 2.º dia: ${calcResult.penaltyDays[1]}
+- 3.º dia: ${calcResult.penaltyDays[2]}
+PCN Advogadas · Plataforma Forense`;
+
+    let isoDate = "";
+    if (/^\d{4}-\d{2}-\d{2}$/.test(calcResult.finalDate)) {
+      isoDate = calcResult.finalDate.replace(/-/g, "");
+    } else {
+      const parts = calcResult.finalDate.split("/");
+      if (parts.length === 3) {
+        isoDate = `${parts[2]}${parts[1].padStart(2, "0")}${parts[0].padStart(2, "0")}`;
+      } else {
+        isoDate = new Date().toISOString().slice(0, 10).replace(/-/g, "");
+      }
+    }
+
+    if (type === "google") {
+      const gUrl = `https://calendar.google.com/calendar/render?action=TEMPLATE&text=${encodeURIComponent(
+        title
+      )}&dates=${isoDate}/${isoDate}&details=${encodeURIComponent(
+        details
+      )}&location=${encodeURIComponent("Tribunal / Plataforma PCN")}`;
+      window.open(gUrl, "_blank");
+      setShowCalendarMenu(false);
+      return;
+    }
+
+    if (type === "outlook") {
+      const outDate = `${isoDate.slice(0, 4)}-${isoDate.slice(4, 6)}-${isoDate.slice(6, 8)}`;
+      const oUrl = `https://outlook.live.com/calendar/0/deeplink/compose?path=/calendar/action/compose&rru=addevent&subject=${encodeURIComponent(
+        title
+      )}&startdt=${outDate}T09:00:00&enddt=${outDate}T18:00:00&body=${encodeURIComponent(
+        details
+      )}&location=${encodeURIComponent("Tribunal")}`;
+      window.open(oUrl, "_blank");
+      setShowCalendarMenu(false);
+      return;
+    }
+
+    if (type === "ics") {
+      const icsContent = [
+        "BEGIN:VCALENDAR",
+        "VERSION:2.0",
+        "PRODID:-//PCN Advogadas//Plataforma Forense//PT",
+        "CALSCALE:GREGORIAN",
+        "METHOD:PUBLISH",
+        "BEGIN:VEVENT",
+        `UID:${Date.now()}@pcnadvogadas.pt`,
+        `DTSTAMP:${new Date().toISOString().replace(/[-:]/g, "").slice(0, 15)}Z`,
+        `DTSTART;VALUE=DATE:${isoDate}`,
+        `DTEND;VALUE=DATE:${isoDate}`,
+        `SUMMARY:${title}`,
+        `DESCRIPTION:${details.replace(/\n/g, "\\n")}`,
+        "LOCATION:Tribunal",
+        "STATUS:CONFIRMED",
+        "BEGIN:VALARM",
+        "TRIGGER:-P1D",
+        "ACTION:DISPLAY",
+        "DESCRIPTION:Lembrete de Prazo Judicial Amanhã - PCN Advogadas",
+        "END:VALARM",
+        "END:VEVENT",
+        "END:VCALENDAR",
+      ].join("\r\n");
+
+      const blob = new Blob([icsContent], { type: "text/calendar;charset=utf-8" });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = `prazo-judicial-${isoDate}.ics`;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      URL.revokeObjectURL(url);
+      setShowCalendarMenu(false);
+      setModalFeedback("Ficheiro .ics descarregado! Toque para adicionar à agenda do iPhone/Outlook.");
+      setTimeout(() => setModalFeedback(null), 4000);
+    }
+  };
+
+  const handleSmartExportToCalendar = () => {
+    const p = platformInfo || detectPlatform();
+    handleExportToCalendar(p.defaultCalendarType);
+  };
+
+  const handleCalculateDeadline = async () => {
+    if (authToken && apiConnected) {
+      try {
+        const res = await calculateDeadlineApi(
+          authToken,
+          calcStartDate,
+          calcDays,
+          calcIsUrgent
+        );
+        setCalcResult({
+          finalDate: res.final_deadline,
+          suspendedDays: res.suspended_vacation_days,
+          penaltyDays: [res.penalty_day_1, res.penalty_day_2, res.penalty_day_3],
+        });
+        return;
+      } catch (e) {
+        console.error(e);
+      }
+    }
+    // Fallback display
+    setCalcResult({
+      finalDate: "07/09/2026",
+      suspendedDays: calcIsUrgent ? 0 : 47,
+      penaltyDays: ["08/09/2026", "09/09/2026", "10/09/2026"],
+    });
+  };
+
+  const handleCreateTask = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!taskFormTitle.trim()) return;
+
+    setIsSubmittingTask(true);
+    try {
+      const typeMap: Record<string, string> = {
+        tp_1: "Certidões e Registos",
+        tp_2: "Peças Processuais",
+        tp_3: "Consultoria e Reuniões",
+        tp_4: "Audiências e Julgamentos",
+      };
+      const lawyerMap: Record<string, string> = {
+        usr_patricia: "Dr.ª Patrícia",
+        usr_ines: "Dr.ª Inês",
+        usr_sofia: "Dr.ª Sofia",
+      };
+      const selectedClient = clients.find((c) => c.id === taskFormClientId);
+
+      if (authToken && apiConnected) {
+        const created = await createTaskApi(authToken, {
+          title: taskFormTitle.trim(),
+          description: taskFormDescription.trim() || undefined,
+          client_id: taskFormClientId,
+          task_type_id: taskFormTypeId,
+          assigned_to: taskFormPublishToPool ? null : taskFormAssignee,
+          due_date: taskFormDueDate ? `${taskFormDueDate}T18:00:00` : null,
+          is_urgent_deadline: taskFormIsUrgent,
+          publish_to_pool: taskFormPublishToPool,
+        });
+
+        const newTask: Task = {
+          id: created.id,
+          title: created.title,
+          description: created.description || "",
+          client_id: created.client_id,
+          client_name: selectedClient?.name || "Cliente",
+          task_type: typeMap[taskFormTypeId] || "Geral",
+          status: taskFormPublishToPool ? "pool" : "assigned",
+          assigned_to: taskFormPublishToPool ? undefined : taskFormAssignee,
+          lawyer_name: taskFormPublishToPool ? undefined : lawyerMap[taskFormAssignee],
+          due_date: taskFormDueDate,
+          total_duration_seconds: 0,
+        };
+
+        setTasks((prev) => [newTask, ...prev]);
+      } else {
+        const newTask: Task = {
+          id: `tsk_${Date.now()}`,
+          title: taskFormTitle.trim(),
+          description: taskFormDescription.trim(),
+          client_id: taskFormClientId,
+          client_name: selectedClient?.name || "Cliente",
+          task_type: typeMap[taskFormTypeId] || "Peças Processuais",
+          status: taskFormPublishToPool ? "pool" : "assigned",
+          assigned_to: taskFormPublishToPool ? undefined : taskFormAssignee,
+          lawyer_name: taskFormPublishToPool ? undefined : lawyerMap[taskFormAssignee],
+          due_date: taskFormDueDate,
+          total_duration_seconds: 0,
+        };
+        setTasks((prev) => [newTask, ...prev]);
+      }
+
+      setModalFeedback("Tarefa jurídica criada com sucesso!");
+      setTimeout(() => setModalFeedback(null), 3500);
+      setIsNewTaskModalOpen(false);
+      setTaskFormTitle("");
+      setTaskFormDescription("");
+    } catch (err: any) {
+      alert("Erro ao criar tarefa: " + err.message);
+    } finally {
+      setIsSubmittingTask(false);
+    }
+  };
+
+  const handleCreateClient = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!clientFormName.trim()) return;
+
+    setIsSubmittingClient(true);
+    try {
+      if (authToken && apiConnected) {
+        const created = await createClientApi(authToken, {
+          name: clientFormName.trim(),
+          nif: clientFormNif.trim() || undefined,
+          process_reference: clientFormProcess.trim() || undefined,
+          email: clientFormEmail.trim() || undefined,
+          phone: clientFormPhone.trim() || undefined,
+          notes: clientFormNotes.trim() || undefined,
+        });
+
+        const newClient: Client = {
+          id: created.id,
+          name: created.name,
+          nif: created.nif,
+          process_reference: created.process_reference,
+          email: created.email,
+          phone: created.phone,
+        };
+        setClients((prev) => [...prev, newClient]);
+      } else {
+        const newClient: Client = {
+          id: `cli_${Date.now()}`,
+          name: clientFormName.trim(),
+          nif: clientFormNif.trim(),
+          process_reference: clientFormProcess.trim(),
+          email: clientFormEmail.trim(),
+          phone: clientFormPhone.trim(),
+        };
+        setClients((prev) => [...prev, newClient]);
+      }
+
+      setModalFeedback("Novo cliente registado com sucesso!");
+      setTimeout(() => setModalFeedback(null), 3500);
+      setIsNewClientModalOpen(false);
+      setClientFormName("");
+      setClientFormNif("");
+      setClientFormProcess("");
+      setClientFormEmail("");
+      setClientFormPhone("");
+      setClientFormNotes("");
+    } catch (err: any) {
+      alert("Erro ao registar cliente: " + err.message);
+    } finally {
+      setIsSubmittingClient(false);
+    }
+  };
+
+  const handleExportExcel = async (internal: boolean) => {
+    setIsExportingExcel(true);
+    try {
+      if (authToken) {
+        await downloadFeeNoteExcelApi(authToken, "NH-2026-0001", internal);
+        setModalFeedback(
+          internal
+            ? "Excel interno descarregado com sucesso!"
+            : "Nota de Honorários Excel descarregada com sucesso!"
+        );
+        setTimeout(() => setModalFeedback(null), 3500);
+      } else {
+        window.open(getExcelExportUrl("NH-2026-0001", internal), "_blank");
+      }
+    } catch (err: any) {
+      alert("Erro ao transferir Excel: " + err.message);
+    } finally {
+      setIsExportingExcel(false);
+    }
+  };
+
+  // Metrics calculations
+  const archivedTasksCount = tasks.filter((t) => t.status === "archived").length;
+  const openTasksCount = tasks.filter((t) => t.status !== "completed" && t.status !== "archived").length;
+  const completedTasksCount = tasks.filter((t) => t.status === "completed").length;
+  const poolTasksCount = tasks.filter((t) => t.status === "pool").length;
+
+  return (
+    <div className="flex min-h-screen bg-[#FAF8F5]">
+      {/* ── GAVETA LATERAL MOBILE / TABLET / PWA (DRAWER) ── */}
+      {isMobileMenuOpen && (
+        <div className="fixed inset-0 z-50 flex">
+          {/* Fundo escuro com blur */}
+          <div
+            className="fixed inset-0 bg-black/60 backdrop-blur-xs transition-opacity animate-in fade-in duration-200"
+            onClick={() => setIsMobileMenuOpen(false)}
+          />
+
+          {/* Gaveta do menu */}
+          <aside className="relative w-72 max-w-[85vw] bg-white h-full shadow-2xl flex flex-col justify-between z-10 animate-in slide-in-from-left duration-250 select-none">
+            <div>
+              {/* Brand Header Mobile com botão Fechar */}
+              <div className="p-5 pb-3 flex items-center justify-between border-b border-[#F4EFE6]">
+                <div className="flex flex-col items-start">
+                  <div className="relative w-36 h-12">
+                    <Image
+                      src="/logo_pcn.svg"
+                      alt="PCN Advogadas"
+                      fill
+                      className="object-contain"
+                      priority
+                    />
+                  </div>
+                  <span className="text-[9px] font-bold tracking-[0.2em] text-[#8C7D6B] uppercase mt-1">
+                    Gestão do Escritório
+                  </span>
+                </div>
+                <button
+                  onClick={() => setIsMobileMenuOpen(false)}
+                  className="p-1.5 rounded-lg text-[#777] hover:bg-[#FAF8F5] hover:text-[#111] transition-colors"
+                  aria-label="Fechar menu"
+                >
+                  <X className="w-5 h-5" />
+                </button>
+              </div>
+
+              {/* Navigation Links Mobile */}
+              <nav className="p-3 space-y-1 mt-1">
+                <button
+                  onClick={() => switchTab("dashboard")}
+                  className={`w-full flex items-center gap-3 px-3.5 py-2.5 rounded-lg text-sm font-medium transition-all ${
+                    activeTab === "dashboard"
+                      ? "bg-[#FDF2F8] text-[#92006F] font-semibold border border-[#FBCFE8]"
+                      : "text-[#555] hover:bg-[#F9F6F0]"
+                  }`}
+                >
+                  <span className="text-[#92006F] text-base">✦</span>
+                  <span>Painel de Direção</span>
+                </button>
+
+                <button
+                  onClick={() => switchTab("tasks")}
+                  className={`w-full flex items-center gap-3 px-3.5 py-2.5 rounded-lg text-sm font-medium transition-all ${
+                    activeTab === "tasks"
+                      ? "bg-[#FDF2F8] text-[#92006F] font-semibold border border-[#FBCFE8]"
+                      : "text-[#555] hover:bg-[#F9F6F0]"
+                  }`}
+                >
+                  <Kanban className="w-4 h-4 text-[#888]" />
+                  <span>Gestão de Tarefas</span>
+                </button>
+
+                <button
+                  onClick={() => switchTab("archived")}
+                  className={`w-full flex items-center justify-between px-3.5 py-2.5 rounded-lg text-sm font-medium transition-all ${
+                    activeTab === "archived"
+                      ? "bg-[#FDF2F8] text-[#92006F] font-semibold border border-[#FBCFE8]"
+                      : "text-[#555] hover:bg-[#F9F6F0]"
+                  }`}
+                >
+                  <div className="flex items-center gap-3">
+                    <Archive className="w-4 h-4 text-[#888]" />
+                    <span>Tarefas Arquivadas</span>
+                  </div>
+                  {archivedTasksCount > 0 && (
+                    <span className="text-[10px] bg-[#92006F]/10 text-[#92006F] font-bold px-2 py-0.5 rounded-full">
+                      {archivedTasksCount}
+                    </span>
+                  )}
+                </button>
+
+                <button
+                  onClick={() => switchTab("clients")}
+                  className={`w-full flex items-center gap-3 px-3.5 py-2.5 rounded-lg text-sm font-medium transition-all ${
+                    activeTab === "clients"
+                      ? "bg-[#FDF2F8] text-[#92006F] font-semibold border border-[#FBCFE8]"
+                      : "text-[#555] hover:bg-[#F9F6F0]"
+                  }`}
+                >
+                  <Users className="w-4 h-4 text-[#888]" />
+                  <span>Clientes PCN</span>
+                </button>
+
+                <button
+                  onClick={() => switchTab("calendar")}
+                  className={`w-full flex items-center gap-3 px-3.5 py-2.5 rounded-lg text-sm font-medium transition-all ${
+                    activeTab === "calendar"
+                      ? "bg-[#FDF2F8] text-[#92006F] font-semibold border border-[#FBCFE8]"
+                      : "text-[#555] hover:bg-[#F9F6F0]"
+                  }`}
+                >
+                  <Scale className="w-4 h-4 text-[#888]" />
+                  <span>Agendas e Prazos</span>
+                </button>
+
+                <button
+                  onClick={() => switchTab("feenotes")}
+                  className={`w-full flex items-center gap-3 px-3.5 py-2.5 rounded-lg text-sm font-medium transition-all ${
+                    activeTab === "feenotes"
+                      ? "bg-[#FDF2F8] text-[#92006F] font-semibold border border-[#FBCFE8]"
+                      : "text-[#555] hover:bg-[#F9F6F0]"
+                  }`}
+                >
+                  <CreditCard className="w-4 h-4 text-[#888]" />
+                  <span>Notas de Honorários</span>
+                </button>
+
+                <button
+                  onClick={() => switchTab("reports")}
+                  className={`w-full flex items-center gap-3 px-3.5 py-2.5 rounded-lg text-sm font-medium transition-all ${
+                    activeTab === "reports"
+                      ? "bg-[#FDF2F8] text-[#92006F] font-semibold border border-[#FBCFE8]"
+                      : "text-[#555] hover:bg-[#F9F6F0]"
+                  }`}
+                >
+                  <Clock className="w-4 h-4 text-[#888]" />
+                  <span>Relatório PCN</span>
+                </button>
+              </nav>
+            </div>
+
+            {/* Rodapé da Gaveta Mobile */}
+            <div className="p-4 space-y-2.5 border-t border-[#F4EFE6] bg-[#FAF8F5]/50">
+              {deferredPrompt && (
+                <button
+                  onClick={handleInstallPwa}
+                  className="w-full flex items-center justify-center gap-2 bg-[#92006F] text-white px-3 py-2 rounded-lg text-xs font-semibold shadow-xs hover:bg-[#7E0060] transition-colors cursor-pointer"
+                >
+                  <Smartphone className="w-4 h-4" />
+                  <span>Instalar Aplicação PWA</span>
+                </button>
+              )}
+
+              <div className="flex items-center gap-2 px-1 py-1 text-xs text-[#666]">
+                <span
+                  className={`w-2 h-2 rounded-full ${
+                    apiConnected ? "bg-emerald-500" : "bg-amber-400"
+                  }`}
+                />
+                <span className="font-medium">
+                  {apiConnected ? "Base de Dados Conectada" : "Modo Local / Offline"}
+                </span>
+              </div>
+              <div className="pt-1 text-[10px] text-[#888] leading-tight">
+                <p className="font-bold text-[#666]">PCN ADVOGADAS · PWA</p>
+                <p>Plataforma Forense Interna v1.0</p>
+              </div>
+            </div>
+          </aside>
+        </div>
+      )}
+
+      {/* ── BARRA LATERAL ESQUERDA DESKTOP (SIDEBAR) ── */}
+      <aside
+        className={`${
+          isStandalone || isSidebarCollapsed ? "hidden" : "hidden lg:flex"
+        } w-64 bg-white border-r border-[#ECE6DB] flex-col justify-between select-none shadow-[1px_0_10px_rgba(0,0,0,0.02)] shrink-0 transition-all`}
+      >
+        <div>
+          {/* Brand Header */}
+          <div className="p-5 pb-3 flex items-center justify-between border-b border-[#F4EFE6]">
+            <div className="flex flex-col items-center flex-1">
+              <div className="relative w-40 h-14">
+                <Image
+                  src="/logo_pcn.svg"
+                  alt="PCN Advogadas"
+                  fill
+                  className="object-contain"
+                  priority
+                />
+              </div>
+              <span className="text-[9px] font-bold tracking-[0.2em] text-[#8C7D6B] uppercase mt-1">
+                Gestão do Escritório
+              </span>
+            </div>
+            <button
+              onClick={() => setIsSidebarCollapsed(true)}
+              className="p-1 rounded text-[#888] hover:text-[#111] hover:bg-[#FAF8F5] transition-colors"
+              title="Recolher menu lateral"
+              aria-label="Recolher menu lateral"
+            >
+              <PanelLeftClose className="w-4 h-4" />
+            </button>
+          </div>
+
+          {/* Navigation Links Desktop */}
+          <nav className="p-3 space-y-1.5 mt-2">
+            <button
+              onClick={() => switchTab("dashboard")}
+              className={`w-full flex items-center gap-3 px-3.5 py-2.5 rounded-lg text-sm font-medium transition-all ${
+                activeTab === "dashboard"
+                  ? "bg-[#FDF2F8] text-[#92006F] font-semibold shadow-xs border border-[#FBCFE8]"
+                  : "text-[#555] hover:bg-[#F9F6F0] hover:text-[#111]"
+              }`}
+            >
+              <span className="text-[#92006F] text-base">✦</span>
+              <span>Painel de Direção</span>
+            </button>
+
+            <button
+              onClick={() => switchTab("tasks")}
+              className={`w-full flex items-center gap-3 px-3.5 py-2.5 rounded-lg text-sm font-medium transition-all ${
+                activeTab === "tasks"
+                  ? "bg-[#FDF2F8] text-[#92006F] font-semibold shadow-xs border border-[#FBCFE8]"
+                  : "text-[#555] hover:bg-[#F9F6F0] hover:text-[#111]"
+              }`}
+            >
+              <Kanban className="w-4 h-4 text-[#888]" />
+              <span>Gestão de Tarefas</span>
+            </button>
+
+            <button
+              onClick={() => switchTab("archived")}
+              className={`w-full flex items-center justify-between px-3.5 py-2.5 rounded-lg text-sm font-medium transition-all ${
+                activeTab === "archived"
+                  ? "bg-[#FDF2F8] text-[#92006F] font-semibold shadow-xs border border-[#FBCFE8]"
+                  : "text-[#555] hover:bg-[#F9F6F0] hover:text-[#111]"
+              }`}
+            >
+              <div className="flex items-center gap-3">
+                <Archive className="w-4 h-4 text-[#888]" />
+                <span>Tarefas Arquivadas</span>
+              </div>
+              {archivedTasksCount > 0 && (
+                <span className="text-[10px] bg-[#92006F]/10 text-[#92006F] font-bold px-2 py-0.5 rounded-full">
+                  {archivedTasksCount}
+                </span>
+              )}
+            </button>
+
+            <button
+              onClick={() => switchTab("clients")}
+              className={`w-full flex items-center gap-3 px-3.5 py-2.5 rounded-lg text-sm font-medium transition-all ${
+                activeTab === "clients"
+                  ? "bg-[#FDF2F8] text-[#92006F] font-semibold shadow-xs border border-[#FBCFE8]"
+                  : "text-[#555] hover:bg-[#F9F6F0] hover:text-[#111]"
+              }`}
+            >
+              <Users className="w-4 h-4 text-[#888]" />
+              <span>Clientes PCN</span>
+            </button>
+
+            <button
+              onClick={() => switchTab("calendar")}
+              className={`w-full flex items-center gap-3 px-3.5 py-2.5 rounded-lg text-sm font-medium transition-all ${
+                activeTab === "calendar"
+                  ? "bg-[#FDF2F8] text-[#92006F] font-semibold shadow-xs border border-[#FBCFE8]"
+                  : "text-[#555] hover:bg-[#F9F6F0] hover:text-[#111]"
+              }`}
+            >
+              <Scale className="w-4 h-4 text-[#888]" />
+              <span>Agendas e Prazos</span>
+            </button>
+
+            <button
+              onClick={() => switchTab("feenotes")}
+              className={`w-full flex items-center gap-3 px-3.5 py-2.5 rounded-lg text-sm font-medium transition-all ${
+                activeTab === "feenotes"
+                  ? "bg-[#FDF2F8] text-[#92006F] font-semibold shadow-xs border border-[#FBCFE8]"
+                  : "text-[#555] hover:bg-[#F9F6F0] hover:text-[#111]"
+              }`}
+            >
+              <CreditCard className="w-4 h-4 text-[#888]" />
+              <span>Notas de Honorários</span>
+            </button>
+
+            <button
+              onClick={() => switchTab("reports")}
+              className={`w-full flex items-center gap-3 px-3.5 py-2.5 rounded-lg text-sm font-medium transition-all ${
+                activeTab === "reports"
+                  ? "bg-[#FDF2F8] text-[#92006F] font-semibold shadow-xs border border-[#FBCFE8]"
+                  : "text-[#555] hover:bg-[#F9F6F0] hover:text-[#111]"
+              }`}
+            >
+              <Clock className="w-4 h-4 text-[#888]" />
+              <span>Relatório PCN</span>
+            </button>
+          </nav>
+        </div>
+
+        {/* Sidebar Footer Desktop */}
+        <div className="p-4 space-y-2 border-t border-[#F4EFE6]">
+          {deferredPrompt && (
+            <button
+              onClick={handleInstallPwa}
+              className="w-full mb-2 flex items-center justify-center gap-2 bg-[#92006F] text-white px-3 py-1.5 rounded-lg text-xs font-semibold shadow-xs hover:bg-[#7E0060] transition-colors cursor-pointer"
+            >
+              <Smartphone className="w-3.5 h-3.5" />
+              <span>Instalar PCN App</span>
+            </button>
+          )}
+
+          <div className="flex items-center gap-1.5 px-1 py-1 text-[11px] text-[#666]">
+            <span
+              className={`w-2 h-2 rounded-full ${
+                apiConnected ? "bg-emerald-500" : "bg-amber-400"
+              }`}
+            />
+            <span>
+              {apiConnected ? "Base de Dados Conectada" : "Modo Local / Offline"}
+            </span>
+          </div>
+
+          <div className="pt-2 text-[10px] text-[#999] leading-tight">
+            <p className="font-semibold text-[#666]">PCN ADVOGADAS</p>
+            <p>Plataforma Forense {isStandalone ? "· PWA Ativa" : "1.0"}</p>
+          </div>
+        </div>
+      </aside>
+
+      {/* ── ÁREA PRINCIPAL DE CONTEÚDO ── */}
+      <main className="flex-1 flex flex-col min-w-0 overflow-y-auto pb-16 lg:pb-0">
+        {/* Barra Superior Mobile / Tablet / PWA com Botão Hamburguer */}
+        <div
+          className={`${
+            isStandalone || isSidebarCollapsed ? "flex" : "flex lg:hidden"
+          } bg-white border-b border-[#ECE6DB] px-3 sm:px-4 py-2.5 items-center justify-between sticky top-0 z-30 shadow-xs`}
+        >
+          <div className="flex items-center gap-2 sm:gap-3">
+            <button
+              onClick={() => setIsMobileMenuOpen(true)}
+              className="p-1.5 -ml-1 text-[#92006F] hover:bg-[#FAF8F5] rounded-lg transition-colors cursor-pointer"
+              aria-label="Abrir menu de navegação"
+              title="Abrir menu"
+            >
+              <Menu className="w-6 h-6" />
+            </button>
+            <div className="relative w-28 sm:w-32 h-7 sm:h-8">
+              <Image
+                src="/logo_pcn.svg"
+                alt="PCN Advogadas"
+                fill
+                className="object-contain"
+                priority
+              />
+            </div>
+            {isStandalone ? (
+              <span className="hidden sm:inline-flex items-center gap-1 text-[10px] font-bold text-[#AA820A] bg-[#FCF8EE] border border-[#F1E5C7] px-2 py-0.5 rounded-full">
+                <Sparkles className="w-3 h-3 text-[#AA820A]" />
+                PWA Forense
+              </span>
+            ) : isSidebarCollapsed ? (
+              <button
+                onClick={() => setIsSidebarCollapsed(false)}
+                className="hidden lg:flex items-center gap-1 text-xs text-[#777] hover:text-[#92006F] px-2 py-1 rounded hover:bg-[#FAF8F5]"
+                title="Expandir barra lateral"
+              >
+                <PanelLeftOpen className="w-3.5 h-3.5" />
+                <span className="text-[11px]">Fixar Menu</span>
+              </button>
+            ) : null}
+          </div>
+
+          <div className="flex items-center gap-2">
+            {deferredPrompt && (
+              <button
+                onClick={handleInstallPwa}
+                className="flex items-center gap-1 bg-[#92006F] text-white text-[11px] font-semibold px-2.5 py-1 rounded-md shadow-xs hover:bg-[#7E0060] transition-colors cursor-pointer"
+              >
+                <Smartphone className="w-3.5 h-3.5" />
+                <span className="hidden sm:inline">Instalar App</span>
+              </button>
+            )}
+
+            <div className="relative">
+              <select
+                value={currentUser.id}
+                onChange={(e) => {
+                  const u = INITIAL_USERS.find((usr) => usr.id === e.target.value);
+                  if (u) setCurrentUser(u);
+                }}
+                className="text-[11px] sm:text-xs font-semibold text-[#222] bg-[#FAF8F5] border border-[#D9D1C5] rounded px-2 py-1 pr-5 appearance-none cursor-pointer focus:outline-none"
+              >
+                {INITIAL_USERS.map((u) => (
+                  <option key={u.id} value={u.id}>
+                    {u.name.replace("Dr.ª ", "")}
+                  </option>
+                ))}
+              </select>
+              <ChevronDown className="w-3 h-3 text-[#666] absolute right-1.5 top-2 pointer-events-none" />
+            </div>
+          </div>
+        </div>
+
+        {/* Cabeçalho Superior com Friso Dourado */}
+        <header className="bg-white border-b border-[#ECE6DB] px-4 sm:px-8 pt-4 sm:pt-6 pb-3 sm:pb-4 relative shadow-xs">
+          <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3">
+            <div>
+              <p className="text-[10px] sm:text-[11px] font-bold tracking-[0.2em] text-[#8C7D6B] uppercase mb-0.5">
+                PCN ADVOGADAS · PLATAFORMA INTERNA
+              </p>
+              <h1 className="text-xl sm:text-2xl font-bold text-[#141414] tracking-tight">
+                {activeTab === "dashboard" && "Painel de Direção"}
+                {activeTab === "tasks" && "Gestão de Tarefas & Cronómetro"}
+                {activeTab === "archived" && "Tarefas Arquivadas"}
+                {activeTab === "clients" && "Clientes PCN"}
+                {activeTab === "calendar" && "Agendas e Prazos Processuais"}
+                {activeTab === "feenotes" && "Notas de Honorários"}
+                {activeTab === "reports" && "Relatório PCN"}
+              </h1>
+              <p className="text-xs text-[#736B5E] mt-0.5 hidden sm:block">
+                Rigor jurídico, gestão integrada e identidade PCN.
+              </p>
+            </div>
+
+            {/* Alternador de Perfil no Desktop */}
+            <div className="hidden lg:flex items-center gap-3">
+              {deferredPrompt && (
+                <button
+                  onClick={handleInstallPwa}
+                  className="flex items-center gap-1.5 bg-[#92006F] text-white text-xs font-semibold px-3 py-1.5 rounded-md shadow-xs hover:bg-[#7E0060] transition-colors cursor-pointer"
+                >
+                  <Smartphone className="w-3.5 h-3.5" />
+                  <span>Instalar PWA</span>
+                </button>
+              )}
+
+              <span className="text-[11px] font-semibold text-[#AA820A] bg-[#FCF8EE] border border-[#F1E5C7] px-2.5 py-1 rounded-md">
+                {isStandalone ? "Modo PWA Forense" : "Protótipo 5.2"}
+              </span>
+
+              <div className="flex items-center gap-2">
+                <span className="text-xs text-[#666]">Visualizar como:</span>
+                <div className="relative">
+                  <select
+                    value={currentUser.id}
+                    onChange={(e) => {
+                      const u = INITIAL_USERS.find((usr) => usr.id === e.target.value);
+                      if (u) setCurrentUser(u);
+                    }}
+                    className="text-xs font-semibold text-[#222] bg-[#FAF8F5] border border-[#D9D1C5] rounded-md px-3 py-1.5 pr-7 appearance-none cursor-pointer focus:outline-none focus:ring-1 focus:ring-[#92006F]"
+                  >
+                    {INITIAL_USERS.map((u) => (
+                      <option key={u.id} value={u.id}>
+                        {u.name} {u.role === "admin_lawyer" ? "(Direção)" : "(Associada)"}
+                      </option>
+                    ))}
+                  </select>
+                  <ChevronDown className="w-3.5 h-3.5 text-[#666] absolute right-2 top-2.5 pointer-events-none" />
+                </div>
+              </div>
+            </div>
+          </div>
+
+          {/* Friso Dourado Decorativo */}
+          <div className="gold-divider-ribbon absolute bottom-0 left-0 right-0" />
+        </header>
+
+        {/* ── CONTEÚDO DA TAB: PAINEL DE DIREÇÃO (DESIGN EXATO DA IMAGEM) ── */}
+        {activeTab === "dashboard" && (
+          <div className="p-4 sm:p-6 lg:p-8 space-y-4 sm:space-y-6 max-w-7xl w-full mx-auto">
+            {/* 1. Fileira de 4 Cartões KPI */}
+            <div className="grid grid-cols-2 lg:grid-cols-4 gap-3 sm:gap-4">
+              <div className="pcn-card p-3.5 sm:p-5 bg-gradient-to-b from-white to-[#FAF6F8]">
+                <p className="text-[11px] sm:text-xs font-medium text-[#736B5E] mb-1">Tarefas em aberto</p>
+                <p className="text-2xl sm:text-4xl font-bold text-[#92006F]">{openTasksCount}</p>
+              </div>
+
+              <div className="pcn-card p-3.5 sm:p-5">
+                <p className="text-[11px] sm:text-xs font-medium text-[#736B5E] mb-1">Prazos ultrapassados</p>
+                <p className="text-2xl sm:text-4xl font-bold text-[#92006F]">0</p>
+              </div>
+
+              <div className="pcn-card p-3.5 sm:p-5">
+                <p className="text-[11px] sm:text-xs font-medium text-[#736B5E] mb-1">Por atribuir</p>
+                <p className="text-2xl sm:text-4xl font-bold text-[#92006F]">{poolTasksCount}</p>
+              </div>
+
+              <div className="pcn-card p-3.5 sm:p-5">
+                <p className="text-[11px] sm:text-xs font-medium text-[#736B5E] mb-1">Tarefas concluídas</p>
+                <p className="text-2xl sm:text-4xl font-bold text-[#141414]">{completedTasksCount}</p>
+              </div>
+            </div>
+
+            {/* 2. Grelha Central de Dois Cartões */}
+            <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
+              {/* Assuntos que exigem atenção */}
+              <div className="lg:col-span-7 pcn-card p-6 flex flex-col justify-between">
+                <div>
+                  <h2 className="text-base font-bold text-[#1F1F1F]">Assuntos que exigem atenção</h2>
+                  <div className="gold-accent-line w-full my-3" />
+
+                  <div className="py-2 divide-y divide-[#F2EDE4]">
+                    <div className="py-2 text-xs text-[#333] flex items-center justify-between hover:bg-[#FAF8F5] px-2 rounded transition-colors">
+                      <span className="font-medium">
+                        <strong>Cliente A</strong> · Registo predial — Inês · 21/10/2026
+                      </span>
+                      <span className="text-[10px] bg-amber-50 text-amber-800 border border-amber-200 px-2 py-0.5 rounded-full font-semibold">
+                        A vencer em 5 dias
+                      </span>
+                    </div>
+
+                    <div className="py-2 text-xs text-[#333] flex items-center justify-between hover:bg-[#FAF8F5] px-2 rounded transition-colors">
+                      <span className="font-medium">
+                        <strong>Cliente B</strong> · Certidão negativa de dívidas — Pool partilhada
+                      </span>
+                      <span className="text-[10px] bg-purple-50 text-[#92006F] border border-purple-200 px-2 py-0.5 rounded-full font-semibold">
+                        Disponível
+                      </span>
+                    </div>
+                  </div>
+                </div>
+
+                <div className="mt-4 pt-4 border-t border-[#F2EDE4] flex justify-end">
+                  <button
+                    onClick={() => setActiveTab("tasks")}
+                    className="text-xs font-semibold text-[#92006F] hover:underline cursor-pointer"
+                  >
+                    Ver todas as tarefas no quadro →
+                  </button>
+                </div>
+              </div>
+
+              {/* Resumo operacional */}
+              <div className="lg:col-span-5 pcn-card p-6 flex flex-col justify-between">
+                <div>
+                  <h2 className="text-base font-bold text-[#1F1F1F]">Resumo operacional</h2>
+                  <div className="gold-accent-line w-full my-3" />
+
+                  <ul className="space-y-2 text-xs text-[#444] py-1">
+                    <li className="flex items-center gap-2">
+                      <span className="w-1.5 h-1.5 rounded-full bg-[#AA820A]"></span>
+                      <span>
+                        <strong>1</strong> tarefas a aguardar cliente
+                      </span>
+                    </li>
+                    <li className="flex items-center gap-2">
+                      <span className="w-1.5 h-1.5 rounded-full bg-[#AA820A]"></span>
+                      <span>
+                        <strong>2</strong> clientes com assuntos ativos
+                      </span>
+                    </li>
+                    <li className="flex items-center gap-2">
+                      <span className="w-1.5 h-1.5 rounded-full bg-[#AA820A]"></span>
+                      <span>
+                        <strong>1</strong> serviços concluídos ainda não faturados
+                      </span>
+                    </li>
+                    <li className="flex items-center gap-2">
+                      <span className="w-1.5 h-1.5 rounded-full bg-[#AA820A]"></span>
+                      <span>
+                        <strong>2</strong> compromissos / prazos registados
+                      </span>
+                    </li>
+                  </ul>
+                </div>
+
+                <div className="mt-5">
+                  <button
+                    onClick={() => setActiveTab("reports")}
+                    className="w-full sm:w-auto bg-[#BA9448] hover:bg-[#A88238] text-white text-xs font-semibold px-5 py-2.5 rounded-md shadow-xs transition-colors cursor-pointer"
+                  >
+                    Consultar relatório das 9h00
+                  </button>
+                </div>
+              </div>
+            </div>
+
+            {/* 3. Bloco Inferior: Prioridades e Acompanhamento Externo */}
+            <div className="pcn-card p-6">
+              <h2 className="text-base font-bold text-[#1F1F1F]">
+                Prioridades e acompanhamento externo
+              </h2>
+              <div className="py-3 text-xs text-[#736B5E]">Sem alertas adicionais.</div>
+            </div>
+          </div>
+        )}
+
+        {/* ── CONTEÚDO DA TAB: GESTÃO DE TAREFAS ── */}
+        {activeTab === "tasks" && (
+          <div className="p-4 sm:p-6 lg:p-8 space-y-4 sm:space-y-6 max-w-7xl w-full mx-auto">
+            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+              <div>
+                <h2 className="text-base sm:text-lg font-bold text-[#141414]">Quadro Operacional de Tarefas</h2>
+                <p className="text-xs text-[#736B5E]">
+                  Inicie, pause e conclua tarefas. O cronómetro sincroniza com a base de dados.
+                </p>
+              </div>
+
+              {currentUser.role === "admin_lawyer" && (
+                <button
+                  onClick={() => setIsNewTaskModalOpen(true)}
+                  className="bg-[#92006F] hover:bg-[#7E0060] text-white text-xs font-semibold px-4 py-2 rounded-md shadow-xs flex items-center justify-center gap-2 transition-colors cursor-pointer w-full sm:w-auto"
+                >
+                  <Plus className="w-4 h-4" />
+                  <span>Criar Nova Tarefa</span>
+                </button>
+              )}
+            </div>
+
+            {/* Filtros Rápidos por Estado (Pool, Abertas, Em Andamento, Pausadas, Concluídas) */}
+            <div className="flex items-center gap-1.5 overflow-x-auto pb-2 border-b border-[#ECE6DB] -mx-1 px-1">
+              {[
+                { id: "all", label: "Todas", count: tasks.filter((t) => t.status !== "archived").length },
+                { id: "pool", label: "Pool", count: tasks.filter((t) => t.status === "pool").length },
+                { id: "assigned", label: "Abertas", count: tasks.filter((t) => t.status === "assigned").length },
+                { id: "in_progress", label: "Em Andamento", count: tasks.filter((t) => t.status === "in_progress").length },
+                { id: "paused", label: "Pausadas", count: tasks.filter((t) => t.status === "paused").length },
+                { id: "completed", label: "Concluídas", count: tasks.filter((t) => t.status === "completed").length },
+              ].map((f) => {
+                const isSelected = taskStatusFilter === f.id;
+                return (
+                  <button
+                    key={f.id}
+                    onClick={() => setTaskStatusFilter(f.id as any)}
+                    className={`px-3 py-1.5 rounded-full text-xs font-semibold whitespace-nowrap transition-all flex items-center gap-1.5 cursor-pointer ${
+                      isSelected
+                        ? "bg-[#92006F] text-white shadow-xs"
+                        : "bg-white text-[#666] border border-[#E5DECF] hover:border-[#AA820A] hover:text-[#111]"
+                    }`}
+                  >
+                    <span>{f.label}</span>
+                    <span
+                      className={`text-[10px] px-1.5 py-0.2 rounded-full font-bold ${
+                        isSelected
+                          ? "bg-white/20 text-white"
+                          : "bg-[#FAF7F2] text-[#888] border border-[#EFE8DD]"
+                      }`}
+                    >
+                      {f.count}
+                    </span>
+                  </button>
+                );
+              })}
+            </div>
+
+            {/* Visualização: Quando filtro é "all" -> Modo Kanban de 3 Colunas */}
+            {taskStatusFilter === "all" ? (
+              <div className="grid grid-cols-1 md:grid-cols-3 gap-4 sm:gap-6">
+                {/* Coluna 1: Pool Partilhada */}
+                <div className="pcn-card p-3.5 sm:p-4 bg-[#FDFCFB]">
+                  <div className="flex items-center justify-between pb-3 border-b border-[#ECE6DB]">
+                    <h3 className="text-xs font-bold text-[#141414] uppercase tracking-wider">
+                      Pool Partilhada ({tasks.filter((t) => t.status === "pool").length})
+                    </h3>
+                    <span className="text-[10px] bg-purple-100 text-[#92006F] px-2 py-0.5 rounded font-semibold">
+                      Livre
+                    </span>
+                  </div>
+
+                  <div className="space-y-3 mt-3">
+                    {tasks
+                      .filter((t) => t.status === "pool")
+                      .map((task) => (
+                        <div
+                          key={task.id}
+                          className="bg-white border border-[#E5DECF] p-3 sm:p-3.5 rounded-lg shadow-xs space-y-2 hover:border-[#D4AF37] transition-all"
+                        >
+                          <div className="flex items-center justify-between">
+                            <span className="text-[10px] font-bold text-[#92006F] uppercase">
+                              {task.task_type}
+                            </span>
+                            <div className="flex items-center gap-1">
+                              <button
+                                onClick={() => openTaskDetails(task)}
+                                className="text-[#888] hover:text-[#92006F] p-1 rounded cursor-pointer"
+                                title="Detalhes & Reatribuir"
+                              >
+                                <UserCheck className="w-3.5 h-3.5" />
+                              </button>
+                              <button
+                                onClick={() => confirmDeleteTask(task)}
+                                className="text-[#999] hover:text-rose-600 p-1 rounded cursor-pointer"
+                                title="Eliminar Tarefa"
+                              >
+                                <Trash2 className="w-3.5 h-3.5" />
+                              </button>
+                            </div>
+                          </div>
+                          <h4
+                            onClick={() => openTaskDetails(task)}
+                            className="text-xs font-bold text-[#141414] hover:text-[#92006F] cursor-pointer"
+                          >
+                            {task.title}
+                          </h4>
+                          <p className="text-[11px] text-[#666] line-clamp-2">{task.description}</p>
+                          <div className="pt-2 border-t border-[#F2ECE1] flex items-center justify-between text-[11px] text-[#888]">
+                            <span>{task.client_name}</span>
+                            <button
+                              onClick={() => handleClaimTask(task)}
+                              className="bg-[#92006F] text-white text-[10px] font-semibold px-2.5 py-1 rounded hover:bg-[#7E0060] transition-colors cursor-pointer"
+                            >
+                              Assumir Tarefa
+                            </button>
+                          </div>
+                        </div>
+                      ))}
+                    {tasks.filter((t) => t.status === "pool").length === 0 && (
+                      <p className="text-xs text-[#888] text-center py-6 italic">
+                        Nenhuma tarefa na Pool de momento.
+                      </p>
+                    )}
+                  </div>
+                </div>
+
+                {/* Coluna 2: Em Execução / Pausadas / Abertas */}
+                <div className="pcn-card p-3.5 sm:p-4 bg-[#FDFCFB]">
+                  <div className="flex items-center justify-between pb-3 border-b border-[#ECE6DB]">
+                    <h3 className="text-xs font-bold text-[#141414] uppercase tracking-wider">
+                      Em Execução / Pausadas (
+                      {
+                        tasks.filter(
+                          (t) =>
+                            (t.status === "assigned" ||
+                              t.status === "in_progress" ||
+                              t.status === "paused") &&
+                            (currentUser.role === "admin_lawyer" || t.assigned_to === currentUser.id)
+                        ).length
+                      }
+                      )
+                    </h3>
+                    <span className="text-[10px] bg-amber-100 text-[#AA820A] px-2 py-0.5 rounded font-semibold">
+                      Ativas
+                    </span>
+                  </div>
+
+                  <div className="space-y-3 mt-3">
+                    {tasks
+                      .filter(
+                        (t) =>
+                          t.status === "assigned" ||
+                          t.status === "in_progress" ||
+                          t.status === "paused"
+                      )
+                      .map((task) => {
+                        const isRunningThis = task.id === activeTaskId && isTimerRunning;
+                        return (
+                          <div
+                            key={task.id}
+                            className={`bg-white border ${
+                              isRunningThis ? "border-[#92006F] ring-1 ring-[#92006F]" : "border-[#E5DECF]"
+                            } p-3 sm:p-3.5 rounded-lg shadow-xs space-y-2.5 transition-all`}
+                          >
+                            <div className="flex items-center justify-between">
+                              <span className="text-[10px] font-bold text-[#92006F] uppercase">
+                                {task.task_type}
+                              </span>
+                              <div className="flex items-center gap-1.5">
+                                {task.status === "in_progress" && (
+                                  <span className="text-[10px] bg-emerald-100 text-emerald-800 font-bold px-1.5 py-0.5 rounded flex items-center gap-1">
+                                    <Play className="w-2.5 h-2.5 fill-current" /> Em Andamento
+                                  </span>
+                                )}
+                                {task.status === "paused" && (
+                                  <span className="text-[10px] bg-amber-100 text-[#AA820A] font-bold px-1.5 py-0.5 rounded flex items-center gap-1">
+                                    <Pause className="w-2.5 h-2.5" /> Pausada
+                                  </span>
+                                )}
+                                {task.status === "assigned" && (
+                                  <span className="text-[10px] bg-blue-100 text-blue-800 font-bold px-1.5 py-0.5 rounded">
+                                    Aberta
+                                  </span>
+                                )}
+                              </div>
+                            </div>
+
+                            <div className="flex items-start justify-between gap-2">
+                              <h4
+                                onClick={() => openTaskDetails(task)}
+                                className="text-xs font-bold text-[#141414] hover:text-[#92006F] cursor-pointer"
+                              >
+                                {task.title}
+                              </h4>
+                              <div className="flex items-center gap-1 shrink-0">
+                                <button
+                                  onClick={() => openTaskDetails(task)}
+                                  className="text-[#888] hover:text-[#92006F] p-1 rounded cursor-pointer"
+                                  title="Detalhes & Reatribuir"
+                                >
+                                  <UserCheck className="w-3.5 h-3.5" />
+                                </button>
+                                <button
+                                  onClick={() => confirmDeleteTask(task)}
+                                  className="text-[#999] hover:text-rose-600 p-1 rounded cursor-pointer"
+                                  title="Eliminar Tarefa"
+                                >
+                                  <Trash2 className="w-3.5 h-3.5" />
+                                </button>
+                              </div>
+                            </div>
+
+                            <div className="text-[11px] text-[#777] flex items-center justify-between">
+                              <span>Cliente: <strong>{task.client_name}</strong></span>
+                              <span>Resp: <strong>{task.lawyer_name || "—"}</strong></span>
+                            </div>
+
+                            <div className="bg-[#FAF7F2] p-2 rounded border border-[#EFE8DD] flex items-center justify-between text-xs font-mono">
+                              <span className="text-[#666]">Tempo acumulado:</span>
+                              <span className="font-bold text-[#141414]">
+                                {task.id === activeTaskId
+                                  ? formatSeconds(timerSeconds)
+                                  : formatSeconds(task.total_duration_seconds)}
+                              </span>
+                            </div>
+
+                            <div className="pt-2 border-t border-[#F2ECE1] flex items-center justify-between gap-2">
+                              {task.id === activeTaskId && isTimerRunning ? (
+                                <button
+                                  onClick={handlePauseTimer}
+                                  className="w-full bg-amber-500 hover:bg-amber-600 text-white text-[11px] font-semibold py-1.5 rounded flex items-center justify-center gap-1 cursor-pointer transition-colors"
+                                >
+                                  <Pause className="w-3 h-3" /> Pausar
+                                </button>
+                              ) : (
+                                <button
+                                  onClick={() => handleStartTimer(task)}
+                                  className="w-full bg-[#92006F] hover:bg-[#7E0060] text-white text-[11px] font-semibold py-1.5 rounded flex items-center justify-center gap-1 cursor-pointer transition-colors"
+                                >
+                                  <Play className="w-3 h-3 fill-current" /> Iniciar
+                                </button>
+                              )}
+
+                              <button
+                                onClick={() => handleCompleteTask(task)}
+                                className="bg-emerald-600 hover:bg-emerald-700 text-white text-[11px] font-semibold px-3 py-1.5 rounded cursor-pointer transition-colors"
+                              >
+                                Concluir
+                              </button>
+                            </div>
+                          </div>
+                        );
+                      })}
+                    {tasks.filter(
+                      (t) =>
+                        t.status === "assigned" ||
+                        t.status === "in_progress" ||
+                        t.status === "paused"
+                    ).length === 0 && (
+                      <p className="text-xs text-[#888] text-center py-6 italic">
+                        Nenhuma tarefa em andamento ou pausada.
+                      </p>
+                    )}
+                  </div>
+                </div>
+
+                {/* Coluna 3: Tarefas Concluídas */}
+                <div className="pcn-card p-3.5 sm:p-4 bg-[#FDFCFB]">
+                  <div className="flex items-center justify-between pb-3 border-b border-[#ECE6DB]">
+                    <h3 className="text-xs font-bold text-[#141414] uppercase tracking-wider">
+                      Concluídas ({tasks.filter((t) => t.status === "completed").length})
+                    </h3>
+                    <span className="text-[10px] bg-emerald-100 text-emerald-800 px-2 py-0.5 rounded font-semibold">
+                      Finalizadas
+                    </span>
+                  </div>
+
+                  <div className="space-y-3 mt-3">
+                    {tasks
+                      .filter((t) => t.status === "completed")
+                      .map((task) => (
+                        <div
+                          key={task.id}
+                          className="bg-white border border-[#E5DECF] p-3 sm:p-3.5 rounded-lg shadow-xs space-y-2 opacity-95 hover:border-[#D4AF37] transition-all"
+                        >
+                          <div className="flex items-center justify-between">
+                            <span className="text-[10px] font-bold text-emerald-700 uppercase">
+                              {task.task_type}
+                            </span>
+                            <div className="flex items-center gap-1">
+                              <button
+                                onClick={() => openTaskDetails(task)}
+                                className="text-[#888] hover:text-[#92006F] p-1 rounded cursor-pointer"
+                                title="Detalhes & Reatribuir"
+                              >
+                                <UserCheck className="w-3.5 h-3.5" />
+                              </button>
+                              <button
+                                onClick={() => confirmDeleteTask(task)}
+                                className="text-[#999] hover:text-rose-600 p-1 rounded cursor-pointer"
+                                title="Eliminar Tarefa"
+                              >
+                                <Trash2 className="w-3.5 h-3.5" />
+                              </button>
+                            </div>
+                          </div>
+
+                          <h4
+                            onClick={() => openTaskDetails(task)}
+                            className="text-xs font-bold text-[#141414] line-through text-[#666] hover:text-[#92006F] cursor-pointer"
+                          >
+                            {task.title}
+                          </h4>
+
+                          <div className="text-[11px] text-[#666] flex justify-between">
+                            <span>Tempo total:</span>
+                            <strong>{formatSeconds(task.total_duration_seconds)}</strong>
+                          </div>
+
+                          <div className="pt-2 border-t border-[#F2ECE1] flex items-center justify-between gap-2">
+                            <button
+                              onClick={() => handleArchiveTask(task)}
+                              className="w-full bg-[#5E0047] hover:bg-[#4A0038] text-white text-[11px] font-semibold py-1.5 px-2 rounded flex items-center justify-center gap-1 cursor-pointer transition-colors shadow-xs"
+                              title="Mover para Arquivadas (sai do quadro)"
+                            >
+                              <Archive className="w-3.5 h-3.5" />
+                              <span>Mover para Arquivadas</span>
+                            </button>
+                          </div>
+                        </div>
+                      ))}
+                    {tasks.filter((t) => t.status === "completed").length === 0 && (
+                      <p className="text-xs text-[#888] text-center py-6 italic">
+                        Nenhuma tarefa concluída no quadro ativo.
+                      </p>
+                    )}
+                  </div>
+                </div>
+              </div>
+            ) : (
+              /* Visualização Filtrada Específica */
+              <div className="space-y-3">
+                <div className="flex items-center justify-between">
+                  <h3 className="text-xs sm:text-sm font-bold text-[#141414] uppercase tracking-wider">
+                    {taskStatusFilter === "pool" && "Tarefas na Pool Partilhada"}
+                    {taskStatusFilter === "assigned" && "Tarefas Abertas / Atribuídas"}
+                    {taskStatusFilter === "in_progress" && "Tarefas Em Andamento"}
+                    {taskStatusFilter === "paused" && "Tarefas Pausadas"}
+                    {taskStatusFilter === "completed" && "Tarefas Concluídas"} (
+                    {tasks.filter((t) => t.status === taskStatusFilter).length})
+                  </h3>
+                  <button
+                    onClick={() => setTaskStatusFilter("all")}
+                    className="text-xs font-semibold text-[#92006F] hover:underline cursor-pointer"
+                  >
+                    Ver todas no Quadro
+                  </button>
+                </div>
+
+                <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+                  {tasks
+                    .filter((t) => t.status === taskStatusFilter)
+                    .map((task) => (
+                      <div
+                        key={task.id}
+                        className="bg-white border border-[#E5DECF] p-4 rounded-xl shadow-xs space-y-3 hover:border-[#D4AF37] transition-all"
+                      >
+                        <div className="flex items-center justify-between">
+                          <span className="text-[10px] font-bold text-[#92006F] uppercase">
+                            {task.task_type}
+                          </span>
+                          <div className="flex items-center gap-1">
+                            <button
+                              onClick={() => openTaskDetails(task)}
+                              className="text-[#888] hover:text-[#92006F] p-1 rounded cursor-pointer"
+                              title="Detalhes & Reatribuir"
+                            >
+                              <UserCheck className="w-3.5 h-3.5" />
+                            </button>
+                            <button
+                              onClick={() => confirmDeleteTask(task)}
+                              className="text-[#999] hover:text-rose-600 p-1 rounded cursor-pointer"
+                              title="Eliminar Tarefa"
+                            >
+                              <Trash2 className="w-3.5 h-3.5" />
+                            </button>
+                          </div>
+                        </div>
+
+                        <h4
+                          onClick={() => openTaskDetails(task)}
+                          className={`text-xs sm:text-sm font-bold text-[#141414] hover:text-[#92006F] cursor-pointer ${
+                            task.status === "completed" ? "line-through text-[#777]" : ""
+                          }`}
+                        >
+                          {task.title}
+                        </h4>
+
+                        <div className="bg-[#FAF7F2] p-2.5 rounded-lg border border-[#EFE8DD] text-xs space-y-1">
+                          <div className="flex justify-between text-[#666]">
+                            <span>Cliente:</span>
+                            <strong className="text-[#333]">{task.client_name}</strong>
+                          </div>
+                          <div className="flex justify-between text-[#666]">
+                            <span>Advogada:</span>
+                            <span className="text-[#333] font-medium">{task.lawyer_name || "—"}</span>
+                          </div>
+                          <div className="flex justify-between text-[#666]">
+                            <span>Tempo acumulado:</span>
+                            <strong className="font-mono text-[#141414]">
+                              {task.id === activeTaskId
+                                ? formatSeconds(timerSeconds)
+                                : formatSeconds(task.total_duration_seconds)}
+                            </strong>
+                          </div>
+                        </div>
+
+                        {/* Ações contextuais por estado */}
+                        <div className="pt-2 border-t border-[#F2ECE1] flex items-center justify-between gap-2">
+                          {task.status === "pool" && (
+                            <button
+                              onClick={() => handleClaimTask(task)}
+                              className="w-full bg-[#92006F] hover:bg-[#7E0060] text-white text-xs font-semibold py-1.5 rounded-md cursor-pointer transition-colors"
+                            >
+                              Assumir Tarefa
+                            </button>
+                          )}
+
+                          {task.status === "assigned" && (
+                            <>
+                              <button
+                                onClick={() => handleStartTimer(task)}
+                                className="flex-1 bg-[#92006F] hover:bg-[#7E0060] text-white text-xs font-semibold py-1.5 rounded-md flex items-center justify-center gap-1 cursor-pointer transition-colors"
+                              >
+                                <Play className="w-3.5 h-3.5 fill-current" /> Iniciar
+                              </button>
+                              <button
+                                onClick={() => handleCompleteTask(task)}
+                                className="bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-semibold py-1.5 px-3 rounded-md cursor-pointer transition-colors"
+                              >
+                                Concluir
+                              </button>
+                            </>
+                          )}
+
+                          {task.status === "in_progress" && (
+                            <>
+                              <button
+                                onClick={handlePauseTimer}
+                                className="flex-1 bg-amber-500 hover:bg-amber-600 text-white text-xs font-semibold py-1.5 rounded-md flex items-center justify-center gap-1 cursor-pointer transition-colors"
+                              >
+                                <Pause className="w-3.5 h-3.5" /> Pausar
+                              </button>
+                              <button
+                                onClick={() => handleCompleteTask(task)}
+                                className="bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-semibold py-1.5 px-3 rounded-md cursor-pointer transition-colors"
+                              >
+                                Concluir
+                              </button>
+                            </>
+                          )}
+
+                          {task.status === "paused" && (
+                            <>
+                              <button
+                                onClick={() => handleStartTimer(task)}
+                                className="flex-1 bg-[#92006F] hover:bg-[#7E0060] text-white text-xs font-semibold py-1.5 rounded-md flex items-center justify-center gap-1 cursor-pointer transition-colors"
+                              >
+                                <Play className="w-3.5 h-3.5 fill-current" /> Iniciar
+                              </button>
+                              <button
+                                onClick={() => handleCompleteTask(task)}
+                                className="bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-semibold py-1.5 px-3 rounded-md cursor-pointer transition-colors"
+                              >
+                                Concluir
+                              </button>
+                            </>
+                          )}
+
+                          {task.status === "completed" && (
+                            <button
+                              onClick={() => handleArchiveTask(task)}
+                              className="w-full bg-[#5E0047] hover:bg-[#4A0038] text-white text-xs font-semibold py-1.5 rounded-md flex items-center justify-center gap-1 cursor-pointer transition-colors shadow-xs"
+                              title="Mover para Arquivadas (sai do quadro)"
+                            >
+                              <Archive className="w-3.5 h-3.5" />
+                              <span>Mover para Arquivadas</span>
+                            </button>
+                          )}
+                        </div>
+                      </div>
+                    ))}
+                  {tasks.filter((t) => t.status === taskStatusFilter).length === 0 && (
+                    <div className="col-span-full p-8 text-center bg-white rounded-xl border border-dashed border-[#D9D1C5]">
+                      <p className="text-xs text-[#777]">
+                        Nenhuma tarefa encontrada com o estado selecionado.
+                      </p>
+                    </div>
+                  )}
+                </div>
+              </div>
+            )}
+          </div>
+        )}
+
+        {/* ── CONTEÚDO DA TAB: TAREFAS ARQUIVADAS ── */}
+        {activeTab === "archived" && (
+          <div className="p-4 sm:p-6 lg:p-8 space-y-4 sm:space-y-6 max-w-7xl w-full mx-auto">
+            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+              <div>
+                <div className="flex items-center gap-2">
+                  <Archive className="w-5 h-5 text-[#92006F]" />
+                  <h2 className="text-base sm:text-lg font-bold text-[#141414]">Tarefas Arquivadas</h2>
+                </div>
+                <p className="text-xs text-[#736B5E]">
+                  Repositório de tarefas finalizadas e arquivadas. Não constam no quadro ativo.
+                </p>
+              </div>
+
+              <div className="flex items-center gap-2">
+                <span className="text-xs font-semibold bg-[#FDF2F8] text-[#92006F] border border-[#FBCFE8] px-3 py-1.5 rounded-lg">
+                  {tasks.filter((t) => t.status === "archived").length} arquivada(s)
+                </span>
+              </div>
+            </div>
+
+            {tasks.filter((t) => t.status === "archived").length === 0 ? (
+              <div className="pcn-card p-10 text-center bg-white border border-dashed border-[#D9D1C5] rounded-xl space-y-3">
+                <div className="w-12 h-12 mx-auto rounded-full bg-[#FAF5EB] flex items-center justify-center text-[#AA820A]">
+                  <Archive className="w-6 h-6" />
+                </div>
+                <h3 className="text-sm font-bold text-[#333]">Nenhuma tarefa arquivada</h3>
+                <p className="text-xs text-[#777] max-w-md mx-auto">
+                  As tarefas concluídas no Quadro de Tarefas podem ser movidas para este arquivo através do botão "Mover para Arquivadas", mantendo o quadro limpo.
+                </p>
+                <button
+                  onClick={() => switchTab("tasks")}
+                  className="inline-flex items-center gap-1.5 text-xs font-semibold text-[#92006F] hover:underline cursor-pointer"
+                >
+                  <span>Ir para o Quadro de Tarefas</span>
+                  <ArrowRight className="w-3.5 h-3.5" />
+                </button>
+              </div>
+            ) : (
+              <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+                {tasks
+                  .filter((t) => t.status === "archived")
+                  .map((task) => (
+                    <div
+                      key={task.id}
+                      className="bg-white border border-[#E5DECF] p-4 rounded-xl shadow-xs space-y-3 hover:border-[#D4AF37] transition-all"
+                    >
+                      <div className="flex items-center justify-between">
+                        <span className="text-[10px] font-bold text-[#777] uppercase bg-[#FAF8F5] px-2 py-0.5 rounded border border-[#ECE6DB]">
+                          {task.task_type}
+                        </span>
+                        <span className="text-[10px] font-semibold bg-gray-100 text-gray-700 px-2 py-0.5 rounded flex items-center gap-1">
+                          <Archive className="w-3 h-3" /> Arquivada
+                        </span>
+                      </div>
+
+                      <h4
+                        onClick={() => openTaskDetails(task)}
+                        className="text-xs sm:text-sm font-bold text-[#141414] line-through text-[#666] hover:text-[#92006F] cursor-pointer"
+                      >
+                        {task.title}
+                      </h4>
+                      {task.description && (
+                        <p className="text-[11px] text-[#777] line-clamp-2">{task.description}</p>
+                      )}
+
+                      <div className="bg-[#FAF7F2] p-2.5 rounded-lg border border-[#EFE8DD] text-xs space-y-1">
+                        <div className="flex justify-between text-[#666]">
+                          <span>Cliente:</span>
+                          <strong className="text-[#333]">{task.client_name}</strong>
+                        </div>
+                        <div className="flex justify-between text-[#666]">
+                          <span>Advogada:</span>
+                          <span className="text-[#333] font-medium">{task.lawyer_name || "—"}</span>
+                        </div>
+                        <div className="flex justify-between text-[#666]">
+                          <span>Tempo final acumulado:</span>
+                          <strong className="font-mono text-[#141414]">
+                            {formatSeconds(task.total_duration_seconds)}
+                          </strong>
+                        </div>
+                      </div>
+
+                      <div className="pt-2 border-t border-[#F2ECE1] flex items-center justify-between gap-2">
+                        <button
+                          onClick={() => handleRestoreTask(task)}
+                          className="flex-1 bg-white hover:bg-[#FAF8F5] border border-[#D9D1C5] text-[#333] text-[11px] font-semibold py-1.5 px-2 rounded-md flex items-center justify-center gap-1 cursor-pointer transition-colors"
+                          title="Restaurar tarefa de volta ao Quadro"
+                        >
+                          <ArchiveRestore className="w-3.5 h-3.5 text-[#92006F]" />
+                          <span>Restaurar ao Quadro</span>
+                        </button>
+
+                        <button
+                          onClick={() => openTaskDetails(task)}
+                          className="bg-white hover:bg-[#FAF8F5] border border-[#D9D1C5] text-[#555] text-[11px] font-medium py-1.5 px-2.5 rounded-md flex items-center gap-1 cursor-pointer transition-colors"
+                          title="Ver detalhes da tarefa"
+                        >
+                          <Eye className="w-3.5 h-3.5" />
+                        </button>
+
+                        <button
+                          onClick={() => confirmDeleteTask(task)}
+                          className="text-[#999] hover:text-rose-600 hover:bg-rose-50 p-1.5 rounded-md cursor-pointer transition-colors"
+                          title="Eliminar permanentemente"
+                        >
+                          <Trash2 className="w-3.5 h-3.5" />
+                        </button>
+                      </div>
+                    </div>
+                  ))}
+              </div>
+            )}
+          </div>
+        )}
+
+        {/* ── CONTEÚDO DA TAB: NOTAS DE HONORÁRIOS (PATRÍCIA EXCLUSIVE) ── */}
+        {activeTab === "feenotes" && (
+          <div className="p-4 sm:p-6 lg:p-8 space-y-4 sm:space-y-6 max-w-7xl w-full mx-auto">
+            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+              <div>
+                <h2 className="text-base sm:text-lg font-bold text-[#141414]">Notas de Honorários PCN</h2>
+                <p className="text-xs text-[#736B5E]">
+                  Área financeira reservada à Dr.ª Patrícia. Atribua o preço com base no tempo gasto e exporte o ficheiro Excel oficial.
+                </p>
+              </div>
+
+              <div className="flex items-center gap-2 flex-wrap">
+                <button
+                  onClick={() => handleExportExcel(false)}
+                  disabled={isExportingExcel}
+                  className="bg-[#92006F] hover:bg-[#7A005D] text-white text-xs font-semibold px-3 sm:px-4 py-2 rounded-md shadow-xs flex items-center gap-1.5 sm:gap-2 transition-colors cursor-pointer disabled:opacity-50"
+                >
+                  <FileSpreadsheet className="w-4 h-4 shrink-0" />
+                  <span>{isExportingExcel ? "A descarregar..." : "Exportar Excel (Cliente)"}</span>
+                </button>
+
+                <button
+                  onClick={() => handleExportExcel(true)}
+                  disabled={isExportingExcel}
+                  className="bg-[#BA9448] hover:bg-[#A88238] text-white text-xs font-semibold px-3 py-2 rounded-md shadow-xs flex items-center gap-1.5 transition-colors cursor-pointer disabled:opacity-50"
+                >
+                  <span>{isExportingExcel ? "..." : "Versão Interna"}</span>
+                </button>
+              </div>
+            </div>
+
+            {/* Seletor de Cliente */}
+            <div className="pcn-card p-4 sm:p-5">
+              <label className="text-xs font-bold text-[#444] block mb-2">
+                Selecione o Cliente para Faturação:
+              </label>
+              <select
+                value={selectedFeeClient}
+                onChange={(e) => setSelectedFeeClient(e.target.value)}
+                className="w-full sm:w-96 text-xs text-[#222] bg-[#FAF8F5] border border-[#D9D1C5] rounded-md px-3 py-2 focus:ring-1 focus:ring-[#92006F] outline-none"
+              >
+                {clients.map((c) => (
+                  <option key={c.id} value={c.id}>
+                    {c.name} ({c.nif || "Sem NIF"} — {c.process_reference || "Geral"})
+                  </option>
+                ))}
+              </select>
+            </div>
+
+            {/* Tabela de Tarefas para Definição de Preço */}
+            <div className="pcn-card overflow-hidden">
+              <div className="p-3.5 sm:p-4 bg-[#FAF7F2] border-b border-[#ECE6DB] flex flex-col sm:flex-row sm:items-center justify-between gap-1">
+                <h3 className="text-xs font-bold text-[#141414] uppercase tracking-wider">
+                  Tarefas Concluídas Prontas para Inclusão na Nota
+                </h3>
+                <span className="text-xs text-[#666]">
+                  Ref.ª Provisória: <strong>NH-2026-0001</strong>
+                </span>
+              </div>
+
+              <div className="overflow-x-auto w-full">
+                <table className="min-w-[620px] w-full text-left text-xs border-collapse">
+                  <thead>
+                    <tr className="bg-[#92006F] text-white">
+                      <th className="p-3">Data</th>
+                      <th className="p-3">Descrição do Ato / Tarefa</th>
+                      <th className="p-3">Advogada</th>
+                      <th className="p-3">Tempo Gasto</th>
+                      <th className="p-3 text-right">Honorários (€)</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-[#EFE9DE]">
+                    {tasks
+                      .filter((t) => t.client_id === selectedFeeClient)
+                      .map((t) => (
+                        <tr key={t.id} className="hover:bg-[#FAF8F5]">
+                          <td className="p-3 text-[#555]">{t.due_date || "16/10/2026"}</td>
+                          <td className="p-3 font-medium text-[#111]">{t.title}</td>
+                          <td className="p-3 text-[#555]">{t.lawyer_name || "—"}</td>
+                          <td className="p-3 font-mono font-semibold text-[#92006F]">
+                            {formatSeconds(t.total_duration_seconds)}
+                          </td>
+                          <td className="p-3 text-right">
+                            <input
+                              type="number"
+                              value={feeTaskPrices[t.id] ?? (t.fee_amount || 0)}
+                              onChange={(e) =>
+                                setFeeTaskPrices({
+                                  ...feeTaskPrices,
+                                  [t.id]: parseFloat(e.target.value) || 0,
+                                })
+                              }
+                              className="w-24 sm:w-28 text-right font-semibold text-xs border border-[#D9D1C5] rounded px-2 py-1 focus:ring-1 focus:ring-[#92006F] bg-white"
+                            />
+                          </td>
+                        </tr>
+                      ))}
+                  </tbody>
+                </table>
+              </div>
+
+              {/* Quadro de Totais Fiscais */}
+              <div className="p-4 sm:p-5 bg-[#FAF8F5] border-t border-[#ECE6DB] flex justify-end">
+                <div className="w-full sm:w-72 space-y-2 text-xs">
+                  <div className="flex justify-between text-[#555]">
+                    <span>Subtotal (Honorários):</span>
+                    <span className="font-semibold text-[#141414]">
+                      {Object.values(feeTaskPrices)
+                        .reduce((acc, curr) => acc + curr, 0)
+                        .toFixed(2)}{" "}
+                      €
+                    </span>
+                  </div>
+                  <div className="flex justify-between text-[#555]">
+                    <span>IVA (23%):</span>
+                    <span className="font-semibold text-[#141414]">
+                      {(
+                        Object.values(feeTaskPrices).reduce((acc, curr) => acc + curr, 0) * 0.23
+                      ).toFixed(2)}{" "}
+                      €
+                    </span>
+                  </div>
+                  <div className="flex justify-between text-[#555]">
+                    <span>Retenção IRS (23%):</span>
+                    <span className="font-semibold text-rose-700">
+                      -
+                      {(
+                        Object.values(feeTaskPrices).reduce((acc, curr) => acc + curr, 0) * 0.23
+                      ).toFixed(2)}{" "}
+                      €
+                    </span>
+                  </div>
+                  <div className="pt-2 border-t border-[#D9D1C5] flex justify-between text-sm font-bold text-[#92006F]">
+                    <span>Total a Pagar:</span>
+                    <span>
+                      {Object.values(feeTaskPrices)
+                        .reduce((acc, curr) => acc + curr, 0)
+                        .toFixed(2)}{" "}
+                      €
+                    </span>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* ── CONTEÚDO DA TAB: AGENDAS E PRAZOS (CALCULADORA ART. 138/139 CPC) ── */}
+        {activeTab === "calendar" && (
+          <div className="p-4 sm:p-6 lg:p-8 space-y-4 sm:space-y-6 max-w-7xl w-full mx-auto">
+            <div>
+              <h2 className="text-base sm:text-lg font-bold text-[#141414]">Agendas e Prazos Judiciais</h2>
+              <p className="text-xs text-[#736B5E]">
+                Compromissos forenses e motor de cálculo automático com suspensão de férias judiciais (Art. 138.º CPC).
+              </p>
+            </div>
+
+            <div className="pcn-card p-4 sm:p-6 bg-gradient-to-b from-white to-[#FDFBF7]">
+              <div className="flex items-center gap-2 mb-2">
+                <Scale className="w-5 h-5 text-[#AA820A]" />
+                <h3 className="text-sm font-bold text-[#141414]">
+                  Calculadora de Prazos Processuais Judiciais (Art. 138.º e 139.º CPC)
+                </h3>
+              </div>
+              <p className="text-xs text-[#666] mb-4">
+                Aplica a suspensão em férias judiciais (Verão: 16 jul a 31 ago; Natal: 22 dez a 3 jan; Páscoa) e a passagem para o 1.º dia útil.
+              </p>
+
+              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3 sm:gap-4 items-end">
+                <div>
+                  <label className="text-[11px] font-bold text-[#555] block mb-1">
+                    Data da Notificação / Citação:
+                  </label>
+                  <input
+                    type="date"
+                    value={calcStartDate}
+                    onChange={(e) => setCalcStartDate(e.target.value)}
+                    className="w-full text-xs border border-[#D9D1C5] rounded p-2 bg-white focus:ring-1 focus:ring-[#92006F] outline-none"
+                  />
+                </div>
+
+                <div>
+                  <label className="text-[11px] font-bold text-[#555] block mb-1">
+                    Prazo em Dias:
+                  </label>
+                  <input
+                    type="number"
+                    value={calcDays}
+                    onChange={(e) => setCalcDays(parseInt(e.target.value) || 10)}
+                    className="w-full text-xs border border-[#D9D1C5] rounded p-2 bg-white focus:ring-1 focus:ring-[#92006F] outline-none"
+                  />
+                </div>
+
+                <div className="flex items-center gap-2 pb-2">
+                  <input
+                    type="checkbox"
+                    id="urgentCheck"
+                    checked={calcIsUrgent}
+                    onChange={(e) => setCalcIsUrgent(e.target.checked)}
+                    className="rounded border-[#D9D1C5] text-[#92006F] focus:ring-[#92006F]"
+                  />
+                  <label htmlFor="urgentCheck" className="text-xs text-[#444] cursor-pointer">
+                    Processo Urgente (não suspende)
+                  </label>
+                </div>
+
+                <div>
+                  <button
+                    onClick={handleCalculateDeadline}
+                    className="w-full bg-[#AA820A] hover:bg-[#8F6D07] text-white text-xs font-semibold py-2 rounded transition-colors cursor-pointer"
+                  >
+                    Calcular Termo do Prazo
+                  </button>
+                </div>
+              </div>
+
+              {calcResult && (
+                <div className="mt-5 p-4 bg-[#FAF7EE] border border-[#EEDB98] rounded-xl text-xs space-y-3 shadow-xs">
+                  <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-1">
+                    <span className="text-[#666] font-medium">Data Limite sem Multa (Art. 138.º CPC):</span>
+                    <strong className="text-base font-bold text-[#92006F] bg-white px-3 py-1 rounded-md border border-[#EEDB98] shadow-xs">
+                      {calcResult.finalDate}
+                    </strong>
+                  </div>
+                  <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-1 text-[#777]">
+                    <span>Dias Suspensos por Férias Judiciais:</span>
+                    <span className="font-semibold text-[#AA820A]">{calcResult.suspendedDays} dias</span>
+                  </div>
+                  <div className="pt-2 border-t border-[#E5DECF] flex flex-col sm:flex-row sm:items-center justify-between gap-1 text-[#666]">
+                    <span>Prática com Multa (Art. 139.º n.º 5 CPC):</span>
+                    <span className="font-mono text-[11px] text-[#444] bg-white/70 px-2 py-0.5 rounded border border-[#ECE6DB]">
+                      1º dia: {calcResult.penaltyDays[0]} | 2º dia: {calcResult.penaltyDays[1]} | 3º dia: {calcResult.penaltyDays[2]}
+                    </span>
+                  </div>
+
+                  {/* Botão Único Inteligente com Deteção Automática do Sistema Operativo (iOS / Android / Mac / Windows) */}
+                  <div className="pt-3 border-t border-[#EEDB98] flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+                    <div className="flex flex-col">
+                      <span className="text-[11px] font-bold text-[#AA820A] flex items-center gap-1.5">
+                        <CalendarPlus className="w-4 h-4 text-[#AA820A]" />
+                        Sincronizar Prazo Processual:
+                      </span>
+                      <span className="text-[10px] text-[#736B5E] mt-0.5 flex items-center gap-1">
+                        <Sparkles className="w-3 h-3 text-[#AA820A]" />
+                        <span>
+                          Deteção automática de dispositivo:{" "}
+                          <strong className="text-[#141414] font-semibold">
+                            {platformInfo?.shortLabel || "A detetar..."}
+                          </strong>
+                        </span>
+                      </span>
+                    </div>
+
+                    <div className="relative inline-flex items-stretch shadow-xs rounded-lg">
+                      {/* Botão Principal Único (Automático para o SO detetado) */}
+                      <button
+                        onClick={handleSmartExportToCalendar}
+                        className="bg-[#92006F] hover:bg-[#7E0060] text-white text-xs font-semibold px-4 py-2 rounded-l-lg flex items-center gap-2 cursor-pointer transition-colors"
+                        title={platformInfo?.hint || "Adicionar à agenda do seu dispositivo"}
+                      >
+                        <CalendarPlus className="w-4 h-4 text-[#D4AF37]" />
+                        <span>{platformInfo?.label || "Adicionar à Agenda"}</span>
+                      </button>
+
+                      {/* Botão Secundário para abrir opções caso prefira outro fornecedor */}
+                      <button
+                        onClick={() => setShowCalendarMenu(!showCalendarMenu)}
+                        className="bg-[#7E0060] hover:bg-[#6A0051] text-white px-2.5 rounded-r-lg border-l border-white/20 cursor-pointer transition-colors flex items-center justify-center"
+                        title="Escolher outro formato (Google, Outlook, Apple .ics)"
+                        aria-label="Escolher outro fornecedor de agenda"
+                      >
+                        <ChevronDown className="w-3.5 h-3.5" />
+                      </button>
+
+                      {showCalendarMenu && (
+                        <div className="absolute right-0 bottom-full mb-2 sm:bottom-auto sm:top-full sm:mt-1.5 w-64 bg-white border border-[#D9D1C5] rounded-xl shadow-2xl z-30 p-1.5 space-y-1 animate-in fade-in duration-150">
+                          <div className="px-2 py-1 text-[10px] font-bold text-[#8C7D6B] uppercase tracking-wider border-b border-[#F4EFE6]">
+                            Outros Fornecedores de Agenda:
+                          </div>
+                          <button
+                            onClick={() => handleExportToCalendar("ics")}
+                            className="w-full text-left px-2.5 py-2 rounded-lg text-xs font-medium hover:bg-[#FAF8F5] flex items-center gap-2 text-[#333] transition-colors"
+                          >
+                            <Download className="w-3.5 h-3.5 text-[#92006F]" />
+                            <div>
+                              <p className="font-semibold">iPhone / iPad / Mac (.ics)</p>
+                              <p className="text-[10px] text-[#777]">Ficheiro universal iCalendar</p>
+                            </div>
+                          </button>
+                          <button
+                            onClick={() => handleExportToCalendar("google")}
+                            className="w-full text-left px-2.5 py-2 rounded-lg text-xs font-medium hover:bg-[#FAF8F5] flex items-center gap-2 text-[#333] transition-colors"
+                          >
+                            <ExternalLink className="w-3.5 h-3.5 text-[#AA820A]" />
+                            <div>
+                              <p className="font-semibold">Google Agenda</p>
+                              <p className="text-[10px] text-[#777]">Abre no navegador ou na app Google</p>
+                            </div>
+                          </button>
+                          <button
+                            onClick={() => handleExportToCalendar("outlook")}
+                            className="w-full text-left px-2.5 py-2 rounded-lg text-xs font-medium hover:bg-[#FAF8F5] flex items-center gap-2 text-[#333] transition-colors"
+                          >
+                            <ExternalLink className="w-3.5 h-3.5 text-blue-600" />
+                            <div>
+                              <p className="font-semibold">Outlook Web / 365</p>
+                              <p className="text-[10px] text-[#777]">Microsoft 365 Corporativo</p>
+                            </div>
+                          </button>
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                </div>
+              )}
+            </div>
+          </div>
+        )}
+
+        {/* ── CONTEÚDO DA TAB: RELATÓRIO PCN & MÉTRICAS ── */}
+        {activeTab === "reports" && (
+          <div className="p-4 sm:p-6 lg:p-8 space-y-4 sm:space-y-6 max-w-7xl w-full mx-auto">
+            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+              <div>
+                <h2 className="text-base sm:text-lg font-bold text-[#141414]">Relatório PCN & Métricas</h2>
+                <p className="text-xs text-[#736B5E]">
+                  Pesquisa por palavra-chave e agrupamento de horas por tipo de tarefa jurídica.
+                </p>
+              </div>
+
+              {/* Barra de Pesquisa inteligente */}
+              <div className="relative w-full sm:w-80">
+                <Search className="w-4 h-4 text-[#888] absolute left-3 top-2.5" />
+                <input
+                  type="text"
+                  placeholder="Pesquisar (ex: 'negativa', 'predial')..."
+                  value={searchQuery}
+                  onChange={(e) => setSearchQuery(e.target.value)}
+                  className="w-full text-xs pl-9 pr-3 py-2 border border-[#D9D1C5] rounded-md bg-white focus:outline-none focus:ring-1 focus:ring-[#92006F]"
+                />
+              </div>
+            </div>
+
+            {/* Tabela de Resultados Agrupados */}
+            <div className="pcn-card overflow-hidden">
+              <div className="overflow-x-auto w-full">
+                <table className="min-w-[540px] w-full text-left text-xs border-collapse">
+                  <thead>
+                    <tr className="bg-[#FAF7F2] text-[#555] border-b border-[#ECE6DB]">
+                      <th className="p-3">Tipo de Tarefa</th>
+                      <th className="p-3">Qtd. Tarefas</th>
+                      <th className="p-3">Tempo Total</th>
+                      <th className="p-3">Tempo Médio</th>
+                      <th className="p-3 text-right">Ação</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-[#EFE9DE]">
+                    <tr className="hover:bg-[#FAF8F5]">
+                      <td className="p-3 font-bold text-[#92006F]">Certidões e Registos</td>
+                      <td className="p-3">2</td>
+                      <td className="p-3 font-mono">00h 45m</td>
+                      <td className="p-3 font-mono">22.5 min</td>
+                      <td className="p-3 text-right">
+                        <button className="text-xs font-semibold text-[#AA820A] hover:underline cursor-pointer">
+                          Ver Detalhe
+                        </button>
+                      </td>
+                    </tr>
+                    <tr className="hover:bg-[#FAF8F5]">
+                      <td className="p-3 font-bold text-[#92006F]">Peças Processuais</td>
+                      <td className="p-3">1</td>
+                      <td className="p-3 font-mono">01h 20m</td>
+                      <td className="p-3 font-mono">80.0 min</td>
+                      <td className="p-3 text-right">
+                        <button className="text-xs font-semibold text-[#AA820A] hover:underline cursor-pointer">
+                          Ver Detalhe
+                        </button>
+                      </td>
+                    </tr>
+                    <tr className="hover:bg-[#FAF8F5]">
+                      <td className="p-3 font-bold text-[#92006F]">Consultoria e Reuniões</td>
+                      <td className="p-3">1</td>
+                      <td className="p-3 font-mono">02h 30m</td>
+                      <td className="p-3 font-mono">150.0 min</td>
+                      <td className="p-3 text-right">
+                        <button className="text-xs font-semibold text-[#AA820A] hover:underline cursor-pointer">
+                          Ver Detalhe
+                        </button>
+                      </td>
+                    </tr>
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* ── CONTEÚDO DA TAB: CLIENTES PCN ── */}
+        {activeTab === "clients" && (
+          <div className="p-4 sm:p-6 lg:p-8 space-y-4 sm:space-y-6 max-w-7xl w-full mx-auto">
+            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+              <div>
+                <h2 className="text-base sm:text-lg font-bold text-[#141414]">Diretório de Clientes PCN</h2>
+                <p className="text-xs text-[#736B5E]">
+                  Histórico cronológico de assuntos e processos judiciais por cliente.
+                </p>
+              </div>
+
+              <button
+                onClick={() => setIsNewClientModalOpen(true)}
+                className="bg-[#92006F] hover:bg-[#7E0060] text-white text-xs font-semibold px-4 py-2 rounded-md shadow-xs flex items-center justify-center gap-2 transition-colors cursor-pointer w-full sm:w-auto"
+              >
+                <Plus className="w-4 h-4" />
+                <span>Registar Cliente</span>
+              </button>
+            </div>
+
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-4 sm:gap-6">
+              {clients.map((c) => (
+                <div key={c.id} className="pcn-card p-4 sm:p-5 space-y-3">
+                  <div className="flex justify-between items-start">
+                    <div>
+                      <h3 className="text-sm font-bold text-[#141414]">{c.name}</h3>
+                      <p className="text-xs text-[#777]">
+                        NIF: {c.nif || "Não registado"} · {c.process_reference || "Assessoria Geral"}
+                      </p>
+                    </div>
+                    <span className="text-[10px] bg-emerald-100 text-emerald-800 px-2 py-0.5 rounded font-semibold">
+                      Ativo
+                    </span>
+                  </div>
+
+                  <div className="text-xs text-[#666] space-y-1">
+                    <p>Correio: {c.email || "—"}</p>
+                    <p>Contacto telefónico: {c.phone || "—"}</p>
+                  </div>
+
+                  <div className="pt-3 border-t border-[#F2EDE4] flex justify-between items-center text-xs">
+                    <span className="text-[#888]">
+                      {tasks.filter((t) => t.client_id === c.id).length} tarefas registadas
+                    </span>
+                    <button
+                      onClick={() => {
+                        setSelectedFeeClient(c.id);
+                        setActiveTab("feenotes");
+                      }}
+                      className="text-xs font-semibold text-[#92006F] hover:underline cursor-pointer"
+                    >
+                      Criar Nota de Honorários →
+                    </button>
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+
+        {/* Notificação Toast */}
+        {modalFeedback && (
+          <div className="fixed bottom-6 right-6 z-50 bg-[#92006F] text-white px-5 py-3 rounded-lg shadow-xl flex items-center gap-3 border border-[#D4AF37]/50 text-xs font-semibold animate-in slide-in-from-bottom duration-300">
+            <Check className="w-4 h-4 text-amber-300" />
+            <span>{modalFeedback}</span>
+          </div>
+        )}
+
+        {/* ── MODAL: NOVA TAREFA JURÍDICA ── */}
+        {isNewTaskModalOpen && (
+          <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-xs p-3 sm:p-4 overflow-y-auto animate-in fade-in duration-200">
+            <div className="bg-white border border-[#D4AF37]/40 rounded-xl shadow-2xl max-w-lg w-full max-h-[92vh] flex flex-col overflow-hidden my-auto">
+              <div className="bg-gradient-to-r from-[#92006F] to-[#5E0047] text-white px-5 sm:px-6 py-3.5 sm:py-4 flex items-center justify-between shrink-0">
+                <div>
+                  <h3 className="text-sm font-bold tracking-wide">Criar Nova Tarefa Jurídica</h3>
+                  <p className="text-[11px] text-white/80">Registo de ato processual ou diligência forense</p>
+                </div>
+                <button
+                  onClick={() => setIsNewTaskModalOpen(false)}
+                  className="text-white/70 hover:text-white transition-colors cursor-pointer"
+                >
+                  <X className="w-5 h-5" />
+                </button>
+              </div>
+
+              <form onSubmit={handleCreateTask} className="p-4 sm:p-6 space-y-3.5 sm:space-y-4 text-xs overflow-y-auto flex-1">
+                <div>
+                  <label className="font-bold text-[#333] block mb-1">Título do Assunto / Diligência *</label>
+                  <input
+                    type="text"
+                    required
+                    placeholder="ex: Redação de Petição Inicial de Divórcio"
+                    value={taskFormTitle}
+                    onChange={(e) => setTaskFormTitle(e.target.value)}
+                    className="w-full bg-[#FAF8F5] border border-[#D9D1C5] rounded-md px-3 py-2 text-xs focus:ring-1 focus:ring-[#92006F] outline-none text-[#141414]"
+                  />
+                </div>
+
+                <div>
+                  <label className="font-bold text-[#333] block mb-1">Descrição e Instruções</label>
+                  <textarea
+                    rows={3}
+                    placeholder="Instruções forenses, pontos essenciais e documentos a juntar..."
+                    value={taskFormDescription}
+                    onChange={(e) => setTaskFormDescription(e.target.value)}
+                    className="w-full bg-[#FAF8F5] border border-[#D9D1C5] rounded-md px-3 py-2 text-xs focus:ring-1 focus:ring-[#92006F] outline-none text-[#141414]"
+                  />
+                </div>
+
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                  <div>
+                    <label className="font-bold text-[#333] block mb-1">Cliente Forense *</label>
+                    <select
+                      value={taskFormClientId}
+                      onChange={(e) => setTaskFormClientId(e.target.value)}
+                      className="w-full bg-[#FAF8F5] border border-[#D9D1C5] rounded-md px-3 py-2 text-xs focus:ring-1 focus:ring-[#92006F] outline-none text-[#141414]"
+                    >
+                      {clients.map((c) => (
+                        <option key={c.id} value={c.id}>
+                          {c.name}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+
+                  <div>
+                    <label className="font-bold text-[#333] block mb-1">Tipo de Tarefa *</label>
+                    <select
+                      value={taskFormTypeId}
+                      onChange={(e) => setTaskFormTypeId(e.target.value)}
+                      className="w-full bg-[#FAF8F5] border border-[#D9D1C5] rounded-md px-3 py-2 text-xs focus:ring-1 focus:ring-[#92006F] outline-none text-[#141414]"
+                    >
+                      <option value="tp_1">Certidões e Registos</option>
+                      <option value="tp_2">Peças Processuais</option>
+                      <option value="tp_3">Consultoria e Reuniões</option>
+                      <option value="tp_4">Audiências e Julgamentos</option>
+                    </select>
+                  </div>
+                </div>
+
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 items-end">
+                  <div>
+                    <label className="font-bold text-[#333] block mb-1">Data Limite / Prazo</label>
+                    <input
+                      type="date"
+                      value={taskFormDueDate}
+                      onChange={(e) => setTaskFormDueDate(e.target.value)}
+                      className="w-full bg-[#FAF8F5] border border-[#D9D1C5] rounded-md px-3 py-2 text-xs focus:ring-1 focus:ring-[#92006F] outline-none text-[#141414]"
+                    />
+                  </div>
+
+                  <div>
+                    <label className="font-bold text-[#333] block mb-1">Destino da Tarefa</label>
+                    <div className="flex items-center gap-2 pt-1.5">
+                      <input
+                        type="checkbox"
+                        id="poolCheckbox"
+                        checked={taskFormPublishToPool}
+                        onChange={(e) => setTaskFormPublishToPool(e.target.checked)}
+                        className="rounded border-[#D9D1C5] text-[#92006F] focus:ring-[#92006F]"
+                      />
+                      <label htmlFor="poolCheckbox" className="text-xs text-[#555] cursor-pointer">
+                        Enviar para a <strong>Pool Partilhada</strong>
+                      </label>
+                    </div>
+                  </div>
+                </div>
+
+                {!taskFormPublishToPool && (
+                  <div>
+                    <label className="font-bold text-[#333] block mb-1">Atribuir a Advogada</label>
+                    <select
+                      value={taskFormAssignee}
+                      onChange={(e) => setTaskFormAssignee(e.target.value)}
+                      className="w-full bg-[#FAF8F5] border border-[#D9D1C5] rounded-md px-3 py-2 text-xs focus:ring-1 focus:ring-[#92006F] outline-none text-[#141414]"
+                    >
+                      <option value="usr_patricia">Dr.ª Patrícia (Direção)</option>
+                      <option value="usr_ines">Dr.ª Inês (Advogada)</option>
+                      <option value="usr_sofia">Dr.ª Sofia (Advogada)</option>
+                    </select>
+                  </div>
+                )}
+
+                <div className="flex items-center gap-2 p-2.5 bg-amber-50 rounded border border-amber-200">
+                  <input
+                    type="checkbox"
+                    id="urgentTaskCheckbox"
+                    checked={taskFormIsUrgent}
+                    onChange={(e) => setTaskFormIsUrgent(e.target.checked)}
+                    className="rounded border-[#D9D1C5] text-[#92006F] focus:ring-[#92006F]"
+                  />
+                  <label htmlFor="urgentTaskCheckbox" className="text-[11px] text-[#7A5B00] cursor-pointer">
+                    <strong>Processo Urgente (Art. 138.º n.º 1 CPC):</strong> Prazo corre em férias judiciais.
+                  </label>
+                </div>
+
+                <div className="pt-3 sm:pt-4 border-t border-[#EFE8DD] flex items-center justify-end gap-2 shrink-0">
+                  <button
+                    type="button"
+                    onClick={() => setIsNewTaskModalOpen(false)}
+                    className="px-4 py-2 border border-[#D9D1C5] rounded-md text-[#666] hover:bg-[#FAF8F5] transition-colors cursor-pointer"
+                  >
+                    Cancelar
+                  </button>
+                  <button
+                    type="submit"
+                    disabled={isSubmittingTask}
+                    className="bg-[#92006F] hover:bg-[#7E0060] text-white px-5 py-2 rounded-md font-semibold transition-colors cursor-pointer shadow-xs disabled:opacity-50"
+                  >
+                    {isSubmittingTask ? "A guardar..." : "Gravar e Publicar Tarefa"}
+                  </button>
+                </div>
+              </form>
+            </div>
+          </div>
+        )}
+
+        {/* ── MODAL: REGISTAR CLIENTE ── */}
+        {isNewClientModalOpen && (
+          <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-xs p-3 sm:p-4 overflow-y-auto animate-in fade-in duration-200">
+            <div className="bg-white border border-[#D4AF37]/40 rounded-xl shadow-2xl max-w-lg w-full max-h-[92vh] flex flex-col overflow-hidden my-auto">
+              <div className="bg-gradient-to-r from-[#92006F] to-[#5E0047] text-white px-5 sm:px-6 py-3.5 sm:py-4 flex items-center justify-between shrink-0">
+                <div>
+                  <h3 className="text-sm font-bold tracking-wide">Registar Novo Cliente</h3>
+                  <p className="text-[11px] text-white/80">Ficha cadastral de cliente e processo judicial</p>
+                </div>
+                <button
+                  onClick={() => setIsNewClientModalOpen(false)}
+                  className="text-white/70 hover:text-white transition-colors cursor-pointer"
+                >
+                  <X className="w-5 h-5" />
+                </button>
+              </div>
+
+              <form onSubmit={handleCreateClient} className="p-4 sm:p-6 space-y-3.5 sm:space-y-4 text-xs overflow-y-auto flex-1">
+                <div>
+                  <label className="font-bold text-[#333] block mb-1">Nome Completo / Firma Coletiva *</label>
+                  <input
+                    type="text"
+                    required
+                    placeholder="ex: Sociedade Agrícola do Norte, Lda."
+                    value={clientFormName}
+                    onChange={(e) => setClientFormName(e.target.value)}
+                    className="w-full bg-[#FAF8F5] border border-[#D9D1C5] rounded-md px-3 py-2 text-xs focus:ring-1 focus:ring-[#92006F] outline-none text-[#141414]"
+                  />
+                </div>
+
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                  <div>
+                    <label className="font-bold text-[#333] block mb-1">NIF Português</label>
+                    <input
+                      type="text"
+                      maxLength={9}
+                      placeholder="ex: 501234567"
+                      value={clientFormNif}
+                      onChange={(e) => setClientFormNif(e.target.value)}
+                      className="w-full bg-[#FAF8F5] border border-[#D9D1C5] rounded-md px-3 py-2 text-xs focus:ring-1 focus:ring-[#92006F] outline-none text-[#141414]"
+                    />
+                  </div>
+
+                  <div>
+                    <label className="font-bold text-[#333] block mb-1">Ref.ª do Processo Judicial</label>
+                    <input
+                      type="text"
+                      placeholder="ex: Proc. 512/26.4T8OVR"
+                      value={clientFormProcess}
+                      onChange={(e) => setClientFormProcess(e.target.value)}
+                      className="w-full bg-[#FAF8F5] border border-[#D9D1C5] rounded-md px-3 py-2 text-xs focus:ring-1 focus:ring-[#92006F] outline-none text-[#141414]"
+                    />
+                  </div>
+                </div>
+
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                  <div>
+                    <label className="font-bold text-[#333] block mb-1">Correio Eletrónico</label>
+                    <input
+                      type="email"
+                      placeholder="contacto@cliente.pt"
+                      value={clientFormEmail}
+                      onChange={(e) => setClientFormEmail(e.target.value)}
+                      className="w-full bg-[#FAF8F5] border border-[#D9D1C5] rounded-md px-3 py-2 text-xs focus:ring-1 focus:ring-[#92006F] outline-none text-[#141414]"
+                    />
+                  </div>
+
+                  <div>
+                    <label className="font-bold text-[#333] block mb-1">Telefone / Telemóvel</label>
+                    <input
+                      type="tel"
+                      placeholder="+351 912 345 678"
+                      value={clientFormPhone}
+                      onChange={(e) => setClientFormPhone(e.target.value)}
+                      className="w-full bg-[#FAF8F5] border border-[#D9D1C5] rounded-md px-3 py-2 text-xs focus:ring-1 focus:ring-[#92006F] outline-none text-[#141414]"
+                    />
+                  </div>
+                </div>
+
+                <div>
+                  <label className="font-bold text-[#333] block mb-1">Observações Forenses</label>
+                  <textarea
+                    rows={2}
+                    placeholder="Histórico prévio, especificidades fiscais ou avenças..."
+                    value={clientFormNotes}
+                    onChange={(e) => setClientFormNotes(e.target.value)}
+                    className="w-full bg-[#FAF8F5] border border-[#D9D1C5] rounded-md px-3 py-2 text-xs focus:ring-1 focus:ring-[#92006F] outline-none text-[#141414]"
+                  />
+                </div>
+
+                <div className="pt-3 sm:pt-4 border-t border-[#EFE8DD] flex items-center justify-end gap-2 shrink-0">
+                  <button
+                    type="button"
+                    onClick={() => setIsNewClientModalOpen(false)}
+                    className="px-4 py-2 border border-[#D9D1C5] rounded-md text-[#666] hover:bg-[#FAF8F5] transition-colors cursor-pointer"
+                  >
+                    Cancelar
+                  </button>
+                  <button
+                    type="submit"
+                    disabled={isSubmittingClient}
+                    className="bg-[#92006F] hover:bg-[#7E0060] text-white px-5 py-2 rounded-md font-semibold transition-colors cursor-pointer shadow-xs disabled:opacity-50"
+                  >
+                    {isSubmittingClient ? "A registar..." : "Registar Cliente"}
+                  </button>
+                </div>
+              </form>
+            </div>
+          </div>
+        )}
+        {/* ── BARRA DE NAVEGAÇÃO INFERIOR PARA TELEMÓVEL (MOBILE BOTTOM BAR) ── */}
+        <nav className="lg:hidden fixed bottom-0 left-0 right-0 z-40 bg-white/95 backdrop-blur-md border-t border-[#ECE6DB] flex items-center justify-around py-1.5 px-1 shadow-[0_-4px_12px_rgba(0,0,0,0.05)]">
+          <button
+            onClick={() => switchTab("dashboard")}
+            className={`flex flex-col items-center justify-center py-1 px-2.5 rounded-lg text-[10px] font-medium transition-colors cursor-pointer ${
+              activeTab === "dashboard"
+                ? "text-[#92006F] font-bold"
+                : "text-[#666] hover:text-[#111]"
+            }`}
+          >
+            <LayoutDashboard className="w-4 h-4 mb-0.5" />
+            <span>Painel</span>
+          </button>
+
+          <button
+            onClick={() => switchTab("tasks")}
+            className={`flex flex-col items-center justify-center py-1 px-2.5 rounded-lg text-[10px] font-medium transition-colors cursor-pointer ${
+              activeTab === "tasks"
+                ? "text-[#92006F] font-bold"
+                : "text-[#666] hover:text-[#111]"
+            }`}
+          >
+            <Kanban className="w-4 h-4 mb-0.5" />
+            <span>Tarefas</span>
+          </button>
+
+          <button
+            onClick={() => switchTab("archived")}
+            className={`flex flex-col items-center justify-center py-1 px-2.5 rounded-lg text-[10px] font-medium transition-colors cursor-pointer relative ${
+              activeTab === "archived"
+                ? "text-[#92006F] font-bold"
+                : "text-[#666] hover:text-[#111]"
+            }`}
+          >
+            <Archive className="w-4 h-4 mb-0.5" />
+            <span>Arquivo</span>
+            {tasks.filter((t) => t.status === "archived").length > 0 && (
+              <span className="absolute top-0.5 right-2 w-2 h-2 rounded-full bg-[#92006F]" />
+            )}
+          </button>
+
+          <button
+            onClick={() => switchTab("calendar")}
+            className={`flex flex-col items-center justify-center py-1 px-2.5 rounded-lg text-[10px] font-medium transition-colors cursor-pointer ${
+              activeTab === "calendar"
+                ? "text-[#92006F] font-bold"
+                : "text-[#666] hover:text-[#111]"
+            }`}
+          >
+            <Scale className="w-4 h-4 mb-0.5" />
+            <span>Prazos</span>
+          </button>
+
+          <button
+            onClick={() => setIsMobileMenuOpen(true)}
+            className="flex flex-col items-center justify-center py-1 px-2.5 rounded-lg text-[10px] font-medium text-[#666] hover:text-[#111] transition-colors cursor-pointer"
+          >
+            <Menu className="w-4 h-4 mb-0.5" />
+            <span>Mais</span>
+          </button>
+        </nav>
+
+        {/* ── MODAL: DETALHES & REATRIBUIÇÃO DE TAREFA ── */}
+        {selectedTaskForDetails && (
+          <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-xs p-3 sm:p-4 overflow-y-auto animate-in fade-in duration-200">
+            <div className="bg-white border border-[#D4AF37]/40 rounded-xl shadow-2xl max-w-lg w-full max-h-[92vh] flex flex-col overflow-hidden my-auto">
+              <div className="bg-gradient-to-r from-[#92006F] to-[#5E0047] text-white px-5 sm:px-6 py-3.5 sm:py-4 flex items-center justify-between shrink-0">
+                <div>
+                  <h3 className="text-sm font-bold tracking-wide">Detalhes & Reatribuição de Tarefa</h3>
+                  <p className="text-[11px] text-white/80">Ref. {selectedTaskForDetails.id} · {selectedTaskForDetails.client_name}</p>
+                </div>
+                <button
+                  onClick={() => setSelectedTaskForDetails(null)}
+                  className="text-white/70 hover:text-white transition-colors cursor-pointer"
+                >
+                  <X className="w-5 h-5" />
+                </button>
+              </div>
+
+              <form onSubmit={handleSaveTaskDetails} className="p-4 sm:p-6 space-y-3.5 sm:space-y-4 text-xs overflow-y-auto flex-1">
+                <div>
+                  <label className="font-bold text-[#333] block mb-1">Título da Tarefa *</label>
+                  <input
+                    type="text"
+                    required
+                    value={detailsForm.title}
+                    onChange={(e) => setDetailsForm({ ...detailsForm, title: e.target.value })}
+                    className="w-full bg-[#FAF8F5] border border-[#D9D1C5] rounded-md px-3 py-2 text-xs focus:ring-1 focus:ring-[#92006F] outline-none text-[#141414]"
+                  />
+                </div>
+
+                <div>
+                  <label className="font-bold text-[#333] block mb-1">Descrição / Factos Forenses</label>
+                  <textarea
+                    rows={3}
+                    value={detailsForm.description}
+                    onChange={(e) => setDetailsForm({ ...detailsForm, description: e.target.value })}
+                    className="w-full bg-[#FAF8F5] border border-[#D9D1C5] rounded-md px-3 py-2 text-xs focus:ring-1 focus:ring-[#92006F] outline-none text-[#141414]"
+                  />
+                </div>
+
+                {/* Secção de Reatribuição (Reassign) */}
+                <div className="p-3 bg-[#FCF8EE] border border-[#F1E5C7] rounded-lg space-y-2">
+                  <label className="font-bold text-[#AA820A] block flex items-center gap-1.5">
+                    <UserCheck className="w-4 h-4 text-[#AA820A]" /> Reatribuir Advogada Responsável:
+                  </label>
+                  <select
+                    value={detailsForm.assigned_to}
+                    onChange={(e) => setDetailsForm({ ...detailsForm, assigned_to: e.target.value })}
+                    className="w-full bg-white border border-[#D9D1C5] rounded-md px-3 py-2 text-xs focus:ring-1 focus:ring-[#92006F] outline-none text-[#141414] font-semibold cursor-pointer"
+                  >
+                    <option value="pool">Pool Partilhada (Livre / Sem Advogada)</option>
+                    <option value="usr_patricia">Dr.ª Patrícia Candeias Neto (Direção)</option>
+                    <option value="usr_ines">Dr.ª Inês Ramos (Advogada)</option>
+                    <option value="usr_sofia">Dr.ª Sofia Lima (Advogada)</option>
+                  </select>
+                  <p className="text-[10px] text-[#777]">
+                    Ao reatribuir, a tarefa passará a constar imediatamente no painel da advogada selecionada.
+                  </p>
+                </div>
+
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                  <div>
+                    <label className="font-bold text-[#333] block mb-1">Estado da Tarefa</label>
+                    <select
+                      value={detailsForm.status}
+                      onChange={(e) => setDetailsForm({ ...detailsForm, status: e.target.value as Task["status"] })}
+                      className="w-full bg-[#FAF8F5] border border-[#D9D1C5] rounded-md px-3 py-2 text-xs focus:ring-1 focus:ring-[#92006F] outline-none text-[#141414] cursor-pointer"
+                    >
+                      <option value="pool">Pool Partilhada</option>
+                      <option value="assigned">Aberta / Atribuída</option>
+                      <option value="in_progress">Em Andamento</option>
+                      <option value="paused">Pausada</option>
+                      <option value="completed">Concluída</option>
+                      <option value="archived">Arquivada</option>
+                    </select>
+                  </div>
+
+                  <div>
+                    <label className="font-bold text-[#333] block mb-1">Data Limite / Prazo</label>
+                    <input
+                      type="date"
+                      value={detailsForm.due_date}
+                      onChange={(e) => setDetailsForm({ ...detailsForm, due_date: e.target.value })}
+                      className="w-full bg-[#FAF8F5] border border-[#D9D1C5] rounded-md px-3 py-2 text-xs focus:ring-1 focus:ring-[#92006F] outline-none text-[#141414]"
+                    />
+                  </div>
+                </div>
+
+                <div className="bg-[#FAF8F5] p-2.5 rounded border border-[#EFE8DD] flex items-center justify-between text-xs font-mono text-[#666]">
+                  <span>Tempo acumulado registado:</span>
+                  <strong className="text-[#141414] font-bold">
+                    {formatSeconds(selectedTaskForDetails.total_duration_seconds)}
+                  </strong>
+                </div>
+
+                <div className="pt-3 sm:pt-4 border-t border-[#EFE8DD] flex items-center justify-between gap-2 shrink-0">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      const t = selectedTaskForDetails;
+                      setSelectedTaskForDetails(null);
+                      confirmDeleteTask(t);
+                    }}
+                    className="text-rose-600 hover:text-rose-700 hover:bg-rose-50 px-3 py-2 rounded-md font-semibold text-xs flex items-center gap-1.5 transition-colors cursor-pointer"
+                  >
+                    <Trash2 className="w-3.5 h-3.5" />
+                    <span>Eliminar Tarefa</span>
+                  </button>
+
+                  <div className="flex items-center gap-2">
+                    <button
+                      type="button"
+                      onClick={() => setSelectedTaskForDetails(null)}
+                      className="px-4 py-2 border border-[#D9D1C5] rounded-md text-[#666] hover:bg-[#FAF8F5] transition-colors cursor-pointer"
+                    >
+                      Cancelar
+                    </button>
+                    <button
+                      type="submit"
+                      disabled={isSubmittingDetails}
+                      className="bg-[#92006F] hover:bg-[#7E0060] text-white px-5 py-2 rounded-md font-semibold transition-colors cursor-pointer shadow-xs disabled:opacity-50"
+                    >
+                      {isSubmittingDetails ? "A guardar..." : "Guardar Alterações"}
+                    </button>
+                  </div>
+                </div>
+              </form>
+            </div>
+          </div>
+        )}
+
+        {/* ── MODAL: CONFIRMAR ELIMINAÇÃO DE TAREFA ── */}
+        {taskToDelete && (
+          <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-xs p-4 overflow-y-auto animate-in fade-in duration-200">
+            <div className="bg-white border border-rose-300 rounded-xl shadow-2xl max-w-md w-full p-5 sm:p-6 space-y-4">
+              <div className="flex items-start gap-3">
+                <div className="w-10 h-10 rounded-full bg-rose-100 flex items-center justify-center shrink-0 text-rose-600">
+                  <AlertCircle className="w-5 h-5" />
+                </div>
+                <div>
+                  <h3 className="text-sm font-bold text-[#141414]">Confirmar Eliminação da Tarefa</h3>
+                  <p className="text-xs text-[#666] mt-1">
+                    Tem a certeza de que deseja eliminar permanentemente a tarefa{" "}
+                    <strong className="text-[#141414]">"{taskToDelete.title}"</strong> ({taskToDelete.client_name})?
+                  </p>
+                  <p className="text-[11px] text-rose-600 font-semibold mt-1.5">
+                    Esta ação não poderá ser revertida e removerá todos os registos associados.
+                  </p>
+                </div>
+              </div>
+
+              <div className="pt-3 border-t border-[#ECE6DB] flex items-center justify-end gap-2">
+                <button
+                  type="button"
+                  onClick={() => setTaskToDelete(null)}
+                  className="px-4 py-2 border border-[#D9D1C5] rounded-md text-xs font-semibold text-[#666] hover:bg-[#FAF8F5] cursor-pointer"
+                >
+                  Cancelar
+                </button>
+                <button
+                  type="button"
+                  onClick={handleDeleteTask}
+                  disabled={isDeletingTask}
+                  className="bg-rose-600 hover:bg-rose-700 text-white text-xs font-semibold px-4 py-2 rounded-md flex items-center gap-1.5 cursor-pointer shadow-xs disabled:opacity-50"
+                >
+                  <Trash2 className="w-3.5 h-3.5" />
+                  <span>{isDeletingTask ? "A eliminar..." : "Sim, Eliminar Definitivamente"}</span>
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
+      </main>
+    </div>
+  );
+}

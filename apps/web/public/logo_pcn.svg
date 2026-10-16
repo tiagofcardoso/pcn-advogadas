@@ -1,0 +1,31 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 520 180" width="100%" height="100%">
+  <defs>
+    <linearGradient id="pcnPurpleGradient" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#92006F" />
+      <stop offset="50%" stop-color="#720056" />
+      <stop offset="100%" stop-color="#4A0038" />
+    </linearGradient>
+    <linearGradient id="pcnGoldGradient" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#F5D77F" />
+      <stop offset="40%" stop-color="#D4AF37" />
+      <stop offset="100%" stop-color="#AA820A" />
+    </linearGradient>
+  </defs>
+
+  <!-- Golden Wave Lines -->
+  <path d="M 10 140 C 140 180, 240 70, 360 120 C 440 155, 490 100, 510 80" fill="none" stroke="url(#pcnGoldGradient)" stroke-width="2.5" opacity="0.8" />
+  <path d="M 30 150 C 160 190, 260 80, 380 130 C 450 160, 495 110, 515 90" fill="none" stroke="url(#pcnGoldGradient)" stroke-width="1.2" opacity="0.4" />
+
+  <!-- PCN Typography -->
+  <!-- 'P' in Pure Black Serif -->
+  <text x="140" y="115" font-family="'Cinzel', 'Playfair Display', 'Times New Roman', Georgia, serif" font-size="110" font-weight="900" fill="#141414">P</text>
+  
+  <!-- 'C' in Stylized Purple Gradient -->
+  <text x="212" y="120" font-family="'Cinzel', 'Playfair Display', 'Times New Roman', Georgia, serif" font-size="124" font-weight="900" fill="url(#pcnPurpleGradient)">C</text>
+  
+  <!-- 'N' in Violet-Purple -->
+  <text x="306" y="115" font-family="'Cinzel', 'Playfair Display', 'Times New Roman', Georgia, serif" font-size="110" font-weight="900" fill="#6B0052">N</text>
+
+  <!-- Subtitle -->
+  <text x="216" y="146" font-family="'Montserrat', 'Inter', -apple-system, sans-serif" font-size="11" font-weight="600" letter-spacing="8" fill="#AA820A">ADVOGADAS</text>
+</svg>
