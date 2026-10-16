@@ -16,7 +16,7 @@ _SECURITY_HEADERS: tuple[tuple[bytes, bytes], ...] = (
     (b"referrer-policy", b"no-referrer"),
     (b"permissions-policy", b"camera=(), microphone=(), geolocation=(), payment=()"),
     (b"cross-origin-opener-policy", b"same-origin"),
-    (b"cross-origin-resource-policy", b"same-site"),
+    (b"cross-origin-resource-policy", b"cross-origin"),
     (b"content-security-policy", b"default-src 'none'; frame-ancestors 'none'"),
     (b"cache-control", b"no-store"),
 )

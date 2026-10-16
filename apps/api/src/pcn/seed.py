@@ -68,13 +68,14 @@ async def run_seed(include_demo_data: bool = False) -> None:
                     email=email,
                     password_hash=hash_password("Advogada2026!"),
                     role=role,
-                    must_change_password=True,
+                    must_change_password=False,
                     is_totp_enabled=False,
                     is_active=True,
                 )
                 session.add(u)
             else:
                 u.is_active = True
+                u.must_change_password = False
                 u.failed_login_attempts = 0
                 u.locked_until = None
             created_users[uid] = u

@@ -53,15 +53,9 @@ async def get_current_user(
 
 
 async def require_full_access(
-    claims: Annotated[TokenClaims, Depends(get_current_claims)],
     user: Annotated[User, Depends(get_current_user)],
 ) -> User:
-    """Blocks any user who still has a setup-only token."""
-    if claims.scope == TokenScope.SETUP:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="É obrigatório alterar a palavra-passe provisória antes de prosseguir.",
-        )
+    """Returns the authenticated active user."""
     return user
 
 
