@@ -1,9 +1,52 @@
-import { Client, Task, UserProfile } from "./types";
+import { Client, ServiceCategory, Task, UserProfile } from "./types";
 
 export const INITIAL_USERS: UserProfile[] = [
   { id: "usr_patricia", name: "Patrícia", role: "admin_lawyer", email: "patricia@pcnadvogadas.pt" },
   { id: "usr_ines", name: "Inês", role: "lawyer", email: "ines@pcnadvogadas.pt" },
   { id: "usr_sofia", name: "Sofia", role: "lawyer", email: "sofia@pcnadvogadas.pt" },
+];
+
+export const INITIAL_SERVICE_CATEGORIES: ServiceCategory[] = [
+  {
+    id: "tp_1",
+    name: "Certidões e Registos",
+    description: "Emissão de certidões prediais, comerciais e fiscais",
+    hourly_rate: 90,
+    default_billable: true,
+    color: "#92006F",
+  },
+  {
+    id: "tp_2",
+    name: "Peças Processuais",
+    description: "Articulados, petições iniciais, contestações e recursos",
+    hourly_rate: 150,
+    default_billable: true,
+    color: "#5E0047",
+  },
+  {
+    id: "tp_3",
+    name: "Consultoria e Reuniões",
+    description: "Pareceres jurídicos, conferências e reuniões com clientes",
+    hourly_rate: 120,
+    default_billable: true,
+    color: "#D4AF37",
+  },
+  {
+    id: "tp_4",
+    name: "Audiências e Julgamentos",
+    description: "Representação em diligências judiciais e audiências",
+    hourly_rate: 180,
+    default_billable: true,
+    color: "#2B2B2B",
+  },
+  {
+    id: "tp_5",
+    name: "Análise Documental",
+    description: "Estudo de autos, contratos e due diligence",
+    hourly_rate: 110,
+    default_billable: true,
+    color: "#7A005D",
+  },
 ];
 
 export const INITIAL_CLIENTS: Client[] = [];

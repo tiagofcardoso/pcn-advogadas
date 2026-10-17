@@ -260,6 +260,48 @@ export async function getTaskTypesApi(token: string) {
   return apiFetch<any[]>("/task-types", { token });
 }
 
+export async function createTaskTypeApi(
+  token: string,
+  payload: {
+    name: string;
+    description?: string;
+    hourly_rate: number;
+    default_billable?: boolean;
+    color?: string;
+  }
+) {
+  return apiFetch<any>("/task-types", {
+    method: "POST",
+    token,
+    body: JSON.stringify(payload),
+  });
+}
+
+export async function updateTaskTypeApi(
+  token: string,
+  typeId: string,
+  payload: {
+    name?: string;
+    description?: string;
+    hourly_rate?: number;
+    default_billable?: boolean;
+    color?: string;
+  }
+) {
+  return apiFetch<any>(`/task-types/${typeId}`, {
+    method: "PATCH",
+    token,
+    body: JSON.stringify(payload),
+  });
+}
+
+export async function deleteTaskTypeApi(token: string, typeId: string) {
+  return apiFetch<any>(`/task-types/${typeId}`, {
+    method: "DELETE",
+    token,
+  });
+}
+
 export async function getMetricsSummaryApi(token: string, query?: string) {
   const q = query ? `?q=${encodeURIComponent(query)}` : "";
   return apiFetch<any>(`/metrics/summary${q}`, { token });

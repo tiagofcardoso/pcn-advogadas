@@ -4,7 +4,7 @@ import asyncio
 from datetime import datetime
 from decimal import Decimal
 
-from sqlalchemy import delete, select
+from sqlalchemy import delete, select, text
 
 import pcn.models
 from pcn.core.database import get_session_factory
@@ -45,9 +45,17 @@ async def run_seed(include_demo_data: bool = False) -> None:
     session_factory = get_session_factory()
     engine = session_factory.kw["bind"]
 
-    # Ensure tables exist
+    # Ensure tables exist and hourly_rate column is present
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
+        try:
+            await conn.execute(
+                text(
+                    "ALTER TABLE task_types ADD COLUMN IF NOT EXISTS hourly_rate NUMERIC(10, 2) DEFAULT 120.00 NOT NULL"
+                )
+            )
+        except Exception:
+            pass
 
     async with session_factory() as session:
         # 1. Utilizadoras Essenciais da Sociedade
@@ -86,20 +94,27 @@ async def run_seed(include_demo_data: bool = False) -> None:
             existing_user.failed_login_attempts = 0
             existing_user.locked_until = None
 
-        # 2. Tipos de Tarefa Oficiais do Escritório
+        # 2. Tipos de Tarefa / Categorias de Serviço Oficiais do Escritório (com Valor/Hora €/h)
         types_data = [
-            ("tp_1", "Certidões e Registos", "#92006F"),
-            ("tp_2", "Peças Processuais", "#5E0047"),
-            ("tp_3", "Consultoria e Reuniões", "#D4AF37"),
-            ("tp_4", "Audiências e Julgamentos", "#2B2B2B"),
-            ("tp_5", "Análise Documental", "#7A005D"),
+            ("tp_1", "Certidões e Registos", "Emissão de certidões prediais, comerciais e fiscais", 90.0, "#92006F"),
+            ("tp_2", "Peças Processuais", "Articulados, petições iniciais, contestações e recursos", 150.0, "#5E0047"),
+            ("tp_3", "Consultoria e Reuniões", "Pareceres jurídicos, conferências e reuniões com clientes", 120.0, "#D4AF37"),
+            ("tp_4", "Audiências e Julgamentos", "Representação em diligências judiciais e audiências", 180.0, "#2B2B2B"),
+            ("tp_5", "Análise Documental", "Estudo de autos, contratos e due diligence", 110.0, "#7A005D"),
         ]
         created_types = {}
-        for tid, name, color in types_data:
+        for tid, name, desc, rate, color in types_data:
             existing = await session.execute(select(TaskType).where(TaskType.name == name))
             tt = existing.scalar_one_or_none()
             if not tt:
-                tt = TaskType(id=tid, name=name, color=color, default_billable=True)
+                tt = TaskType(
+                    id=tid,
+                    name=name,
+                    description=desc,
+                    hourly_rate=rate,
+                    color=color,
+                    default_billable=True,
+                )
                 session.add(tt)
             created_types[name] = tt
 

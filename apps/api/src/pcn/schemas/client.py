@@ -63,6 +63,7 @@ class ClientRead(BaseModel):
 class TaskTypeCreate(BaseModel):
     name: str = Field(min_length=2, max_length=100)
     description: str | None = Field(None, max_length=255)
+    hourly_rate: float = Field(default=120.0, ge=0)
     default_billable: bool = True
     color: str = Field(default="#92006F", pattern=r"^#(?:[0-9a-fA-F]{3}){1,2}$")
 
@@ -70,6 +71,7 @@ class TaskTypeCreate(BaseModel):
 class TaskTypeUpdate(BaseModel):
     name: str | None = Field(None, min_length=2, max_length=100)
     description: str | None = Field(None, max_length=255)
+    hourly_rate: float | None = Field(None, ge=0)
     default_billable: bool | None = None
     color: str | None = Field(None, pattern=r"^#(?:[0-9a-fA-F]{3}){1,2}$")
 
@@ -80,5 +82,6 @@ class TaskTypeRead(BaseModel):
     id: str
     name: str
     description: str | None = None
+    hourly_rate: float = 120.0
     default_billable: bool
     color: str

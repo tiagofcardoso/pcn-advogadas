@@ -2,7 +2,7 @@
 
 from typing import TYPE_CHECKING
 
-from sqlalchemy import Boolean, String, Text
+from sqlalchemy import Boolean, Numeric, String, Text
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from pcn.models.base import Base, TimestampMixin, generate_uuid
@@ -34,6 +34,7 @@ class TaskType(Base, TimestampMixin):
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=generate_uuid)
     name: Mapped[str] = mapped_column(String(100), unique=True, nullable=False)
     description: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    hourly_rate: Mapped[float] = mapped_column(Numeric(10, 2), default=120.0, nullable=False)
     default_billable: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
     color: Mapped[str] = mapped_column(String(20), default="#92006F", nullable=False)
 

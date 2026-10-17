@@ -17,6 +17,7 @@ from pcn.schemas.client import (
     ClientUpdate,
     TaskTypeCreate,
     TaskTypeRead,
+    TaskTypeUpdate,
 )
 
 router = APIRouter(tags=["Clientes e Tipos de Tarefa"])
@@ -108,7 +109,7 @@ async def update_client(
     return ClientRead.model_validate(client)
 
 
-# ── Tipos de Tarefa ──
+# ── Tipos de Tarefa / Categorias de Serviços (CRUD Admin) ──
 
 
 @router.get("/task-types", response_model=list[TaskTypeRead])
@@ -130,14 +131,61 @@ async def create_task_type(
     repo = TaskTypeRepository(session)
     existing = await repo.get_by_name(body.name.strip())
     if existing:
-        raise Conflict("Já existe um tipo de tarefa com este nome.")
+        raise Conflict("Já existe uma categoria de serviço com este nome.")
 
     task_type = TaskType(
         name=body.name.strip(),
         description=body.description,
+        hourly_rate=body.hourly_rate,
         default_billable=body.default_billable,
         color=body.color,
     )
     await repo.add(task_type)
     await session.commit()
     return TaskTypeRead.model_validate(task_type)
+
+
+@router.patch("/task-types/{type_id}", response_model=TaskTypeRead)
+async def update_task_type(
+    type_id: str,
+    body: TaskTypeUpdate,
+    admin: Annotated[User, Depends(require_admin)],
+    session: Annotated[AsyncSession, Depends(get_session)],
+) -> TaskTypeRead:
+    repo = TaskTypeRepository(session)
+    task_type = await repo.get_by_id(type_id)
+    if not task_type:
+        raise NotFound("Categoria de serviço não encontrada.")
+
+    if body.name is not None:
+        clean_name = body.name.strip()
+        if clean_name != task_type.name:
+            existing = await repo.get_by_name(clean_name)
+            if existing and existing.id != type_id:
+                raise Conflict("Já existe outra categoria de serviço com este nome.")
+        task_type.name = clean_name
+    if body.description is not None:
+        task_type.description = body.description
+    if body.hourly_rate is not None:
+        task_type.hourly_rate = body.hourly_rate
+    if body.default_billable is not None:
+        task_type.default_billable = body.default_billable
+    if body.color is not None:
+        task_type.color = body.color
+
+    await session.commit()
+    return TaskTypeRead.model_validate(task_type)
+
+
+@router.delete("/task-types/{type_id}", status_code=status.HTTP_204_NO_CONTENT)
+async def delete_task_type(
+    type_id: str,
+    admin: Annotated[User, Depends(require_admin)],
+    session: Annotated[AsyncSession, Depends(get_session)],
+) -> None:
+    repo = TaskTypeRepository(session)
+    task_type = await repo.get_by_id(type_id)
+    if not task_type:
+        raise NotFound("Categoria de serviço não encontrada.")
+    await repo.delete(task_type)
+    await session.commit()

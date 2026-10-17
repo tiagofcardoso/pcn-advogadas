@@ -45,8 +45,13 @@ import {
   ShieldAlert,
   KeyRound,
 } from "lucide-react";
-import { INITIAL_USERS, INITIAL_CLIENTS, INITIAL_TASKS } from "@/lib/mockData";
-import { Task, Client, UserProfile } from "@/lib/types";
+import {
+  INITIAL_USERS,
+  INITIAL_CLIENTS,
+  INITIAL_TASKS,
+  INITIAL_SERVICE_CATEGORIES,
+} from "@/lib/mockData";
+import { Task, Client, UserProfile, ServiceCategory } from "@/lib/types";
 import { detectPlatform, PlatformInfo } from "@/lib/platform";
 import {
   loginApi,
@@ -54,6 +59,10 @@ import {
   getDirectionBoard,
   getClientsApi,
   createClientApi,
+  getTaskTypesApi,
+  createTaskTypeApi,
+  updateTaskTypeApi,
+  deleteTaskTypeApi,
   getActiveTimerApi,
   startTimerApi,
   pauseTimerApi,
@@ -183,7 +192,15 @@ export default function App() {
   const [sessionExpiry, setSessionExpiry] = useState<number | null>(null);
   const [sessionNotice, setSessionNotice] = useState<string | null>(null);
   const [activeTab, setActiveTab] = useState<
-    "dashboard" | "tasks" | "archived" | "clients" | "calendar" | "feenotes" | "reports" | "users"
+    | "dashboard"
+    | "tasks"
+    | "archived"
+    | "clients"
+    | "calendar"
+    | "feenotes"
+    | "services"
+    | "reports"
+    | "users"
   >("dashboard");
 
   // User Management State (Portal Admin & Seletores de Tarefas)
@@ -202,6 +219,25 @@ export default function App() {
     password: "",
   });
   const [isSubmittingUser, setIsSubmittingUser] = useState<boolean>(false);
+
+  // Service Categories CRUD State (Admin Only - Tabela de Serviços & Valores €/h)
+  const [serviceCategories, setServiceCategories] = useState<ServiceCategory[]>(
+    INITIAL_SERVICE_CATEGORIES
+  );
+  const [isCategoryModalOpen, setIsCategoryModalOpen] = useState<boolean>(false);
+  const [editingCategory, setEditingCategory] = useState<ServiceCategory | null>(null);
+  const [categoryForm, setCategoryForm] = useState<{
+    name: string;
+    description: string;
+    hourly_rate: number;
+    color: string;
+  }>({
+    name: "",
+    description: "",
+    hourly_rate: 120,
+    color: "#92006F",
+  });
+  const [isSubmittingCategory, setIsSubmittingCategory] = useState<boolean>(false);
 
   const [tasks, setTasks] = useState<Task[]>([]);
   const tasksRef = useRef<Task[]>([]);
@@ -248,12 +284,126 @@ export default function App() {
     penaltyDays: ["08/09/2026", "09/09/2026", "10/09/2026"],
   });
 
-  // Fee Note Builder State
+  // Fee Note Builder State & Hourly Billing / Retainer Config
   const [selectedFeeClient, setSelectedFeeClient] = useState<string>("");
   const [feeTaskPrices, setFeeTaskPrices] = useState<Record<string, number>>({});
   const [feeNotesByClient, setFeeNotesByClient] = useState<Record<string, any>>({});
   const [applyWithholdingByClient, setApplyWithholdingByClient] = useState<Record<string, boolean>>({});
   const [isSavingFeeNote, setIsSavingFeeNote] = useState<boolean>(false);
+  const [hourlyRateByClient, setHourlyRateByClient] = useState<Record<string, number>>({});
+  const [retainerHoursByClient, setRetainerHoursByClient] = useState<Record<string, number>>({});
+  const [billingRoundingMinutes, setBillingRoundingMinutes] = useState<0 | 6 | 15>(0);
+  const [clientSearchQuery, setClientSearchQuery] = useState<string>("");
+
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    try {
+      const savedCats = localStorage.getItem("pcn_service_categories");
+      if (savedCats) {
+        const parsed = JSON.parse(savedCats);
+        if (Array.isArray(parsed) && parsed.length > 0) {
+          setServiceCategories(parsed);
+        }
+      }
+      const savedRates = localStorage.getItem("pcn_client_hourly_rates");
+      if (savedRates) setHourlyRateByClient(JSON.parse(savedRates));
+      const savedRetainers = localStorage.getItem("pcn_client_retainer_hours");
+      if (savedRetainers) setRetainerHoursByClient(JSON.parse(savedRetainers));
+      const savedRounding = localStorage.getItem("pcn_billing_rounding");
+      if (savedRounding === "6" || savedRounding === "15" || savedRounding === "0") {
+        setBillingRoundingMinutes(parseInt(savedRounding, 10) as 0 | 6 | 15);
+      }
+    } catch {}
+  }, []);
+
+  const persistCategoriesLocal = (cats: ServiceCategory[]) => {
+    setServiceCategories(cats);
+    if (typeof window !== "undefined") {
+      try {
+        localStorage.setItem("pcn_service_categories", JSON.stringify(cats));
+      } catch {}
+    }
+  };
+
+  const getCategoryForTask = (task: Task): ServiceCategory => {
+    const byId =
+      task.task_type_id && serviceCategories.find((c) => c.id === task.task_type_id);
+    if (byId) return byId;
+    const byName = serviceCategories.find(
+      (c) => c.name.trim().toLowerCase() === (task.task_type || "").trim().toLowerCase()
+    );
+    if (byName) return byName;
+    return (
+      serviceCategories[0] || {
+        id: "tp_default",
+        name: task.task_type || "Geral",
+        hourly_rate: 120,
+        color: "#92006F",
+      }
+    );
+  };
+
+  const getTaskCategoryRate = (task: Task): number => {
+    const cat = getCategoryForTask(task);
+    return Number(cat?.hourly_rate) || 120;
+  };
+
+  const updateClientHourlyRate = (clientId: string, rate: number) => {
+    const clean = Math.max(0, isNaN(rate) ? 0 : rate);
+    setHourlyRateByClient((prev) => {
+      const next = { ...prev, [clientId]: clean };
+      if (typeof window !== "undefined") {
+        try {
+          localStorage.setItem("pcn_client_hourly_rates", JSON.stringify(next));
+        } catch {}
+      }
+      return next;
+    });
+  };
+
+  const updateClientRetainerHours = (clientId: string, hours: number) => {
+    const clean = Math.max(0, isNaN(hours) ? 0 : hours);
+    setRetainerHoursByClient((prev) => {
+      const next = { ...prev, [clientId]: clean };
+      if (typeof window !== "undefined") {
+        try {
+          localStorage.setItem("pcn_client_retainer_hours", JSON.stringify(next));
+        } catch {}
+      }
+      return next;
+    });
+  };
+
+  const updateBillingRounding = (mins: 0 | 6 | 15) => {
+    setBillingRoundingMinutes(mins);
+    if (typeof window !== "undefined") {
+      try {
+        localStorage.setItem("pcn_billing_rounding", String(mins));
+      } catch {}
+    }
+  };
+
+  const calculateFeeFromSeconds = (
+    seconds: number,
+    hourlyRate: number,
+    roundingMin: 0 | 6 | 15
+  ): number => {
+    if (!seconds || seconds <= 0 || !hourlyRate || hourlyRate <= 0) return 0;
+    let billableSeconds = seconds;
+    if (roundingMin > 0) {
+      const blockSec = roundingMin * 60;
+      billableSeconds = Math.ceil(seconds / blockSec) * blockSec;
+    }
+    return Math.round(((billableSeconds / 3600) * hourlyRate) * 100) / 100;
+  };
+
+  const calculateTaskFeeByCategory = (
+    task: Task,
+    roundingMin: 0 | 6 | 15 = billingRoundingMinutes
+  ): number => {
+    const rate = getTaskCategoryRate(task);
+    return calculateFeeFromSeconds(task.total_duration_seconds || 0, rate, roundingMin);
+  };
 
   // Modal & Form States
   const [isMobileMenuOpen, setIsMobileMenuOpen] = useState<boolean>(false);
@@ -272,7 +422,7 @@ export default function App() {
     "all" | "pool" | "assigned" | "in_progress" | "paused" | "completed"
   >("all");
 
-  // Task Details & Reassign Modal State
+  // Task Details & Reassign Modal State (inclui edição manual de tempo)
   const [selectedTaskForDetails, setSelectedTaskForDetails] = useState<Task | null>(null);
   const [detailsForm, setDetailsForm] = useState<{
     title: string;
@@ -280,12 +430,18 @@ export default function App() {
     assigned_to: string;
     due_date: string;
     status: Task["status"];
+    duration_hours: number;
+    duration_minutes: number;
+    duration_seconds: number;
   }>({
     title: "",
     description: "",
     assigned_to: "pool",
     due_date: "",
     status: "assigned",
+    duration_hours: 0,
+    duration_minutes: 0,
+    duration_seconds: 0,
   });
   const [isSubmittingDetails, setIsSubmittingDetails] = useState<boolean>(false);
 
@@ -299,7 +455,16 @@ export default function App() {
 
   // Navigation with native mobile back gesture/popstate support
   const switchTab = (
-    tab: "dashboard" | "tasks" | "archived" | "clients" | "calendar" | "feenotes" | "reports" | "users"
+    tab:
+      | "dashboard"
+      | "tasks"
+      | "archived"
+      | "clients"
+      | "calendar"
+      | "feenotes"
+      | "services"
+      | "reports"
+      | "users"
   ) => {
     if (typeof window !== "undefined") {
       window.history.pushState({ tab }, "");
@@ -331,13 +496,18 @@ export default function App() {
     if (typeof window !== "undefined") {
       window.history.pushState({ modal: "taskDetails" }, "");
     }
-    setSelectedTaskForDetails(task);
+    const liveTask = tasks.find((t) => t.id === task.id) || task;
+    const totalSec = Math.max(0, liveTask.total_duration_seconds || 0);
+    setSelectedTaskForDetails(liveTask);
     setDetailsForm({
-      title: task.title,
-      description: task.description || "",
-      assigned_to: resolveAssigneeValue(task),
-      due_date: task.due_date || getTodayDateString(),
-      status: task.status,
+      title: liveTask.title,
+      description: liveTask.description || "",
+      assigned_to: resolveAssigneeValue(liveTask),
+      due_date: liveTask.due_date || getTodayDateString(),
+      status: liveTask.status,
+      duration_hours: Math.floor(totalSec / 3600),
+      duration_minutes: Math.floor((totalSec % 3600) / 60),
+      duration_seconds: totalSec % 60,
     });
   };
 
@@ -567,6 +737,7 @@ export default function App() {
               client_id: t.client_id,
               client_name: t.client?.name || "Cliente",
               task_type: t.task_type?.name || "Geral",
+              task_type_id: t.task_type_id || t.task_type?.id,
               status: t.status,
               assigned_to: t.assigned_to,
               lawyer_name: t.assignee?.name || "—",
@@ -610,6 +781,60 @@ export default function App() {
         }
       } catch (e) {
         console.warn("Aviso ao verificar cronómetro ativo:", e);
+      }
+
+      // 1.c Categorias de Serviços / Tipos de Tarefa
+      try {
+        const apiTypes = await getTaskTypesApi(token);
+        if (apiTypes && apiTypes.length > 0) {
+          let localCats: ServiceCategory[] = [];
+          if (typeof window !== "undefined") {
+            try {
+              const rawCats = localStorage.getItem("pcn_service_categories");
+              if (rawCats) localCats = JSON.parse(rawCats);
+            } catch {}
+          }
+          const defaultRateMap: Record<string, number> = {
+            "Certidões e Registos": 90,
+            "Peças Processuais": 150,
+            "Consultoria e Reuniões": 120,
+            "Audiências e Julgamentos": 180,
+            "Análise Documental": 110,
+          };
+          const mergedCats: ServiceCategory[] = apiTypes.map((at: any) => {
+            const localMatch = localCats.find(
+              (lc) =>
+                lc.id === at.id ||
+                lc.name.trim().toLowerCase() === (at.name || "").trim().toLowerCase()
+            );
+            const resolvedRate =
+              at.hourly_rate !== undefined && at.hourly_rate !== null
+                ? Number(at.hourly_rate)
+                : localMatch?.hourly_rate ?? defaultRateMap[at.name] ?? 120;
+            return {
+              id: at.id,
+              name: at.name,
+              description: at.description || localMatch?.description || "",
+              hourly_rate: resolvedRate,
+              default_billable: at.default_billable ?? true,
+              color: at.color || localMatch?.color || "#92006F",
+            };
+          });
+          // Preserve any local-only custom categories not yet in apiTypes
+          for (const lc of localCats) {
+            const existsInApi = mergedCats.some(
+              (mc) =>
+                mc.id === lc.id ||
+                mc.name.trim().toLowerCase() === lc.name.trim().toLowerCase()
+            );
+            if (!existsInApi) {
+              mergedCats.push(lc);
+            }
+          }
+          persistCategoriesLocal(mergedCats);
+        }
+      } catch (e) {
+        console.warn("Aviso ao carregar categorias de serviço:", e);
       }
 
       // 2. Clientes
@@ -1488,7 +1713,13 @@ export default function App() {
         ? "assigned"
         : detailsForm.status;
 
-      const liveTask = tasks.find((t) => t.id === selectedTaskForDetails.id) || selectedTaskForDetails;
+      const manualDurationSeconds = Math.max(
+        0,
+        (Number(detailsForm.duration_hours) || 0) * 3600 +
+          (Number(detailsForm.duration_minutes) || 0) * 60 +
+          (Number(detailsForm.duration_seconds) || 0)
+      );
+
       let updatedFromServer: any = null;
       if (authToken && apiConnected) {
         if (isPool) {
@@ -1498,7 +1729,7 @@ export default function App() {
             description: detailsForm.description,
             due_date: detailsForm.due_date ? `${detailsForm.due_date}T18:00:00` : null,
             status: finalStatus,
-            total_duration_seconds: liveTask.total_duration_seconds,
+            total_duration_seconds: manualDurationSeconds,
           });
         } else {
           await assignTaskApi(selectedTaskForDetails.id, detailsForm.assigned_to, authToken);
@@ -1507,12 +1738,25 @@ export default function App() {
             description: detailsForm.description,
             due_date: detailsForm.due_date ? `${detailsForm.due_date}T18:00:00` : null,
             status: finalStatus,
-            total_duration_seconds: liveTask.total_duration_seconds,
+            total_duration_seconds: manualDurationSeconds,
           });
         }
       }
       if (finalStatus !== "in_progress") {
         removeTaskFromLocalTimers(selectedTaskForDetails.id);
+      } else if (typeof window !== "undefined") {
+        try {
+          const raw = localStorage.getItem("pcn_running_timers");
+          const map = raw ? JSON.parse(raw) : {};
+          map[selectedTaskForDetails.id] = {
+            seconds: manualDurationSeconds,
+            updatedAt: Date.now(),
+          };
+          localStorage.setItem("pcn_running_timers", JSON.stringify(map));
+        } catch {}
+      }
+      if (activeTaskId === selectedTaskForDetails.id) {
+        setTimerSeconds(manualDurationSeconds);
       }
 
       const resolvedLawyerName = isPool
@@ -1530,13 +1774,14 @@ export default function App() {
                 assigned_to: isPool ? undefined : updatedFromServer?.assigned_to || detailsForm.assigned_to,
                 lawyer_name: resolvedLawyerName,
                 due_date: detailsForm.due_date || undefined,
+                total_duration_seconds: manualDurationSeconds,
               }
             : t
         )
       );
 
       setSelectedTaskForDetails(null);
-      setModalFeedback("Detalhes e atribuição da tarefa guardados com sucesso!");
+      setModalFeedback("Detalhes, tempo e atribuição da tarefa guardados com sucesso!");
       setTimeout(() => setModalFeedback(null), 3500);
     } catch (err: any) {
       alert("Erro ao atualizar tarefa: " + err.message);
@@ -1678,12 +1923,14 @@ PCN Advogadas · Plataforma Forense`;
 
     setIsSubmittingTask(true);
     try {
-      const typeMap: Record<string, string> = {
-        tp_1: "Certidões e Registos",
-        tp_2: "Peças Processuais",
-        tp_3: "Consultoria e Reuniões",
-        tp_4: "Audiências e Julgamentos",
-      };
+      const selectedCat =
+        serviceCategories.find((c) => c.id === taskFormTypeId) ||
+        serviceCategories[0] || {
+          id: "tp_1",
+          name: "Certidões e Registos",
+          hourly_rate: 90,
+          color: "#92006F",
+        };
       const selectedClient = clients.find((c) => c.id === effectiveClientId);
       const resolvedLawyerName = taskFormPublishToPool
         ? undefined
@@ -1694,7 +1941,7 @@ PCN Advogadas · Plataforma Forense`;
           title: taskFormTitle.trim(),
           description: taskFormDescription.trim() || undefined,
           client_id: effectiveClientId,
-          task_type_id: taskFormTypeId,
+          task_type_id: selectedCat.id,
           assigned_to: taskFormPublishToPool ? null : taskFormAssignee,
           due_date: taskFormDueDate ? `${taskFormDueDate}T18:00:00` : null,
           is_urgent_deadline: taskFormIsUrgent,
@@ -1707,7 +1954,8 @@ PCN Advogadas · Plataforma Forense`;
           description: created.description || "",
           client_id: created.client_id,
           client_name: selectedClient?.name || created.client?.name || "Cliente",
-          task_type: typeMap[taskFormTypeId] || "Geral",
+          task_type: selectedCat.name,
+          task_type_id: selectedCat.id,
           status: taskFormPublishToPool ? "pool" : "assigned",
           assigned_to: taskFormPublishToPool ? undefined : created.assigned_to || taskFormAssignee,
           lawyer_name: taskFormPublishToPool ? undefined : created.assignee?.name || resolvedLawyerName,
@@ -1723,7 +1971,8 @@ PCN Advogadas · Plataforma Forense`;
           description: taskFormDescription.trim(),
           client_id: effectiveClientId,
           client_name: selectedClient?.name || "Cliente",
-          task_type: typeMap[taskFormTypeId] || "Peças Processuais",
+          task_type: selectedCat.name,
+          task_type_id: selectedCat.id,
           status: taskFormPublishToPool ? "pool" : "assigned",
           assigned_to: taskFormPublishToPool ? undefined : taskFormAssignee,
           lawyer_name: resolvedLawyerName,
@@ -1733,7 +1982,7 @@ PCN Advogadas · Plataforma Forense`;
         setTasks((prev) => [newTask, ...prev]);
       }
 
-      setModalFeedback("Tarefa jurídica criada com sucesso!");
+      setModalFeedback(`Tarefa criada na categoria "${selectedCat.name}" (${selectedCat.hourly_rate.toFixed(2)} €/h)!`);
       setTimeout(() => setModalFeedback(null), 3500);
       setIsNewTaskModalOpen(false);
       setTaskFormTitle("");
@@ -1744,6 +1993,191 @@ PCN Advogadas · Plataforma Forense`;
     } finally {
       setIsSubmittingTask(false);
     }
+  };
+
+  // ── CRUD de Categorias de Serviços & Valores (€/h) (Exclusivo Admin) ──
+  const openCreateCategoryModal = () => {
+    setEditingCategory(null);
+    setCategoryForm({
+      name: "",
+      description: "",
+      hourly_rate: 120,
+      color: "#92006F",
+    });
+    setIsCategoryModalOpen(true);
+  };
+
+  const openEditCategoryModal = (cat: ServiceCategory) => {
+    setEditingCategory(cat);
+    setCategoryForm({
+      name: cat.name,
+      description: cat.description || "",
+      hourly_rate: cat.hourly_rate,
+      color: cat.color || "#92006F",
+    });
+    setIsCategoryModalOpen(true);
+  };
+
+  const handleSaveCategory = async (e: React.FormEvent) => {
+    e.preventDefault();
+    const cleanName = categoryForm.name.trim();
+    if (!cleanName) return;
+    const cleanRate = Math.max(0, Number(categoryForm.hourly_rate) || 0);
+    setIsSubmittingCategory(true);
+
+    try {
+      if (editingCategory) {
+        let updatedCat: ServiceCategory = {
+          ...editingCategory,
+          name: cleanName,
+          description: categoryForm.description.trim(),
+          hourly_rate: cleanRate,
+          color: categoryForm.color || "#92006F",
+        };
+        if (authToken && apiConnected) {
+          try {
+            const fromApi = await updateTaskTypeApi(authToken, editingCategory.id, {
+              name: cleanName,
+              description: categoryForm.description.trim() || undefined,
+              hourly_rate: cleanRate,
+              color: categoryForm.color || "#92006F",
+            });
+            if (fromApi) {
+              updatedCat = {
+                ...updatedCat,
+                id: fromApi.id || editingCategory.id,
+                hourly_rate:
+                  fromApi.hourly_rate !== undefined ? Number(fromApi.hourly_rate) : cleanRate,
+              };
+            }
+          } catch (apiErr) {
+            console.warn("Aviso ao sincronizar edição de categoria na API:", apiErr);
+          }
+        }
+        const nextList = serviceCategories.map((c) =>
+          c.id === editingCategory.id ? updatedCat : c
+        );
+        persistCategoriesLocal(nextList);
+
+        // Atualiza o nome da categoria nas tarefas associadas caso tenha mudado
+        if (editingCategory.name !== cleanName) {
+          setTasks((prev) =>
+            prev.map((t) =>
+              t.task_type_id === editingCategory.id || t.task_type === editingCategory.name
+                ? { ...t, task_type: cleanName, task_type_id: updatedCat.id }
+                : t
+            )
+          );
+        }
+        setModalFeedback(`Serviço "${cleanName}" atualizado (${cleanRate.toFixed(2)} €/h)!`);
+      } else {
+        let createdCat: ServiceCategory = {
+          id: `tp_${Date.now()}`,
+          name: cleanName,
+          description: categoryForm.description.trim(),
+          hourly_rate: cleanRate,
+          default_billable: true,
+          color: categoryForm.color || "#92006F",
+        };
+        if (authToken && apiConnected) {
+          try {
+            const fromApi = await createTaskTypeApi(authToken, {
+              name: cleanName,
+              description: categoryForm.description.trim() || undefined,
+              hourly_rate: cleanRate,
+              default_billable: true,
+              color: categoryForm.color || "#92006F",
+            });
+            if (fromApi && fromApi.id) {
+              createdCat = {
+                id: fromApi.id,
+                name: fromApi.name || cleanName,
+                description: fromApi.description || categoryForm.description.trim(),
+                hourly_rate:
+                  fromApi.hourly_rate !== undefined ? Number(fromApi.hourly_rate) : cleanRate,
+                default_billable: true,
+                color: fromApi.color || categoryForm.color || "#92006F",
+              };
+            }
+          } catch (apiErr) {
+            console.warn("Aviso ao criar categoria na API (guardada localmente):", apiErr);
+          }
+        }
+        const nextList = [...serviceCategories, createdCat];
+        persistCategoriesLocal(nextList);
+        setModalFeedback(`Novo serviço "${cleanName}" (${cleanRate.toFixed(2)} €/h) adicionado!`);
+      }
+      setTimeout(() => setModalFeedback(null), 3500);
+      setIsCategoryModalOpen(false);
+      setEditingCategory(null);
+    } catch (err: any) {
+      alert("Erro ao guardar serviço/categoria: " + err.message);
+    } finally {
+      setIsSubmittingCategory(false);
+    }
+  };
+
+  const handleQuickUpdateCategoryRate = async (cat: ServiceCategory, newRate: number) => {
+    const cleanRate = Math.max(0, isNaN(newRate) ? 0 : newRate);
+    const nextList = serviceCategories.map((c) =>
+      c.id === cat.id ? { ...c, hourly_rate: cleanRate } : c
+    );
+    persistCategoriesLocal(nextList);
+    if (authToken && apiConnected) {
+      updateTaskTypeApi(authToken, cat.id, { hourly_rate: cleanRate }).catch(() => {});
+    }
+
+    // Atualiza dinamicamente os honorários das tarefas associadas a esta categoria e guarda na base
+    const nextPrices: Record<string, number> = { ...feeTaskPrices };
+    const affectedClients = new Set<string>();
+    for (const t of tasks) {
+      if (
+        t.task_type_id === cat.id ||
+        t.task_type.trim().toLowerCase() === cat.name.trim().toLowerCase()
+      ) {
+        nextPrices[t.id] = calculateFeeFromSeconds(
+          t.total_duration_seconds || 0,
+          cleanRate,
+          billingRoundingMinutes
+        );
+        if (t.client_id) affectedClients.add(t.client_id);
+      }
+    }
+    setFeeTaskPrices(nextPrices);
+    if (autoSaveTimerRef.current) {
+      clearTimeout(autoSaveTimerRef.current);
+    }
+    autoSaveTimerRef.current = setTimeout(() => {
+      for (const cId of affectedClients) {
+        const useW = applyWithholdingByClient[cId] ?? true;
+        saveFeeNoteToDb(cId, nextPrices, useW, true).catch(() => {});
+      }
+    }, 600);
+  };
+
+  const handleDeleteCategory = async (cat: ServiceCategory) => {
+    const usedCount = tasks.filter(
+      (t) =>
+        t.task_type_id === cat.id ||
+        t.task_type.trim().toLowerCase() === cat.name.trim().toLowerCase()
+    ).length;
+    if (usedCount > 0) {
+      alert(
+        `Não é possível eliminar a categoria "${cat.name}" porque existem ${usedCount} tarefa(s) associadas a este serviço. Pode editar o nome ou o valor (€/h).`
+      );
+      return;
+    }
+    if (serviceCategories.length <= 1) {
+      alert("Deve existir pelo menos uma categoria de serviço ativa no sistema.");
+      return;
+    }
+    const nextList = serviceCategories.filter((c) => c.id !== cat.id);
+    persistCategoriesLocal(nextList);
+    if (authToken && apiConnected) {
+      deleteTaskTypeApi(authToken, cat.id).catch(() => {});
+    }
+    setModalFeedback(`Categoria de serviço "${cat.name}" removida com sucesso.`);
+    setTimeout(() => setModalFeedback(null), 3500);
   };
 
   const handleCreateClient = async (e: React.FormEvent) => {
@@ -1921,6 +2355,291 @@ PCN Advogadas · Plataforma Forense`;
     } finally {
       setIsExportingExcel(false);
     }
+  };
+
+  const handleExportOfficialPdf = () => {
+    if (typeof window === "undefined") return;
+    const clientObj = clients.find((c) => c.id === selectedFeeClient);
+    const clientTasks = tasks.filter((t) => t.client_id === selectedFeeClient);
+    if (!clientObj || clientTasks.length === 0) {
+      alert("Selecione um cliente com tarefas registadas para emitir a Nota de Honorários em PDF.");
+      return;
+    }
+
+    const savedClientNote = feeNotesByClient[selectedFeeClient];
+    const refCode = savedClientNote?.reference_code || "NH-2026-0001";
+    const issueDate = formatIsoToEuropean(getTodayDateString());
+    const useWithholding = applyWithholdingByClient[selectedFeeClient] ?? true;
+
+    let subtotal = 0;
+    let totalSeconds = 0;
+
+    const rowsHtml = clientTasks
+      .map((t, idx) => {
+        const cat = getCategoryForTask(t);
+        const catRate = Number(cat.hourly_rate) || 120;
+        const suggestedVal = calculateTaskFeeByCategory(t, billingRoundingMinutes);
+        const rawPrice =
+          feeTaskPrices[t.id] !== undefined ? feeTaskPrices[t.id] : (t.fee_amount ?? suggestedVal);
+        const finalPrice = Number.isFinite(rawPrice) ? rawPrice : 0;
+        subtotal += finalPrice;
+        totalSeconds += t.total_duration_seconds || 0;
+        const dateStr = formatIsoToEuropean(t.due_date || getTodayDateString());
+
+        return `
+          <tr>
+            <td style="padding:10px 12px; border-bottom:1px solid #E6E0D5; color:#444; font-size:11px;">${String(idx + 1).padStart(2, "0")}</td>
+            <td style="padding:10px 12px; border-bottom:1px solid #E6E0D5; color:#333; font-size:11px; white-space:nowrap;">${dateStr}</td>
+            <td style="padding:10px 12px; border-bottom:1px solid #E6E0D5; font-size:11px;">
+              <div style="font-weight:700; color:#141414;">${t.title}</div>
+              ${t.description ? `<div style="color:#666; font-size:10px; margin-top:2px;">${t.description}</div>` : ""}
+            </td>
+            <td style="padding:10px 12px; border-bottom:1px solid #E6E0D5; font-size:11px; color:#92006F; font-weight:600;">${cat.name}</td>
+            <td style="padding:10px 12px; border-bottom:1px solid #E6E0D5; font-family:monospace; font-size:11px; text-align:center; color:#222;">${formatSeconds(t.total_duration_seconds || 0)}</td>
+            <td style="padding:10px 12px; border-bottom:1px solid #E6E0D5; font-size:11px; text-align:right; color:#555;">${catRate.toFixed(2).replace(".", ",")} €/h</td>
+            <td style="padding:10px 12px; border-bottom:1px solid #E6E0D5; font-size:12px; font-weight:700; text-align:right; color:#141414;">${finalPrice.toFixed(2).replace(".", ",")} €</td>
+          </tr>
+        `;
+      })
+      .join("");
+
+    const vatAmount = Math.round(subtotal * 0.23 * 100) / 100;
+    const withholdingAmount = useWithholding ? Math.round(subtotal * 0.23 * 100) / 100 : 0;
+    const totalToPay = Math.round((subtotal + vatAmount - withholdingAmount) * 100) / 100;
+    const logoUrl = `${window.location.origin}/logo_pcn.svg`;
+
+    const htmlDoc = `<!DOCTYPE html>
+<html lang="pt-PT">
+<head>
+  <meta charset="UTF-8" />
+  <title>Nota_Honorarios_${refCode}_${clientObj.name.replace(/\s+/g, "_")}</title>
+  <style>
+    @page {
+      size: A4 portrait;
+      margin: 14mm 16mm;
+    }
+    * {
+      box-sizing: border-box;
+      -webkit-print-color-adjust: exact !important;
+      print-color-adjust: exact !important;
+    }
+    body {
+      margin: 0;
+      padding: 0;
+      background: #E8E3DA;
+      font-family: 'Segoe UI', -apple-system, BlinkMacSystemFont, Roboto, Helvetica, Arial, sans-serif;
+      color: #141414;
+    }
+    .toolbar {
+      position: sticky;
+      top: 0;
+      z-index: 50;
+      background: #18181C;
+      color: #fff;
+      padding: 12px 24px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      box-shadow: 0 4px 12px rgba(0,0,0,0.18);
+    }
+    .toolbar-btn {
+      background: #92006F;
+      color: #fff;
+      border: 1px solid #D4AF37;
+      padding: 8px 18px;
+      border-radius: 6px;
+      font-size: 12px;
+      font-weight: 700;
+      cursor: pointer;
+    }
+    .toolbar-btn-close {
+      background: transparent;
+      color: #DDD;
+      border: 1px solid #555;
+      padding: 8px 14px;
+      border-radius: 6px;
+      font-size: 12px;
+      cursor: pointer;
+      margin-left: 8px;
+    }
+    .a4-sheet {
+      width: 210mm;
+      min-height: 297mm;
+      margin: 24px auto;
+      background: #FFFFFF;
+      padding: 18mm 18mm 16mm 18mm;
+      box-shadow: 0 12px 36px rgba(0,0,0,0.14);
+      display: flex;
+      flex-direction: column;
+      justify-content: space-between;
+    }
+    @media print {
+      body {
+        background: #FFFFFF;
+      }
+      .toolbar {
+        display: none !important;
+      }
+      .a4-sheet {
+        width: 100%;
+        min-height: auto;
+        margin: 0;
+        padding: 0;
+        box-shadow: none;
+      }
+    }
+  </style>
+</head>
+<body>
+  <div class="toolbar">
+    <div>
+      <strong style="font-size:13px; color:#D4AF37;">PCN ADVOGADAS · Documento Oficial A4</strong>
+      <span style="font-size:12px; color:#BBB; margin-left:12px;">Ref.ª ${refCode} — ${clientObj.name}</span>
+    </div>
+    <div>
+      <button class="toolbar-btn" onclick="window.print()">Guardar como PDF / Imprimir A4</button>
+      <button class="toolbar-btn-close" onclick="window.close()">Fechar</button>
+    </div>
+  </div>
+
+  <div class="a4-sheet">
+    <div>
+      <!-- Cabeçalho Institucional -->
+      <div style="display:flex; justify-content:space-between; align-items:flex-start; padding-bottom:16px; border-bottom:2px solid #92006F;">
+        <div>
+          <img src="${logoUrl}" alt="PCN Advogadas" style="height:54px; object-fit:contain;" />
+          <div style="font-size:10px; font-weight:700; letter-spacing:1.5px; color:#8C7D6B; text-transform:uppercase; margin-top:4px;">
+            Sociedade de Advogadas · Direito Civil, Societário & Forense
+          </div>
+        </div>
+        <div style="text-align:right;">
+          <div style="font-size:16px; font-weight:800; color:#92006F; letter-spacing:0.5px;">
+            NOTA DE HONORÁRIOS
+          </div>
+          <div style="font-size:11px; color:#444; margin-top:4px;">
+            <strong>Referência:</strong> ${refCode}
+          </div>
+          <div style="font-size:11px; color:#444;">
+            <strong>Data de Emissão:</strong> ${issueDate}
+          </div>
+        </div>
+      </div>
+
+      <!-- Quadro de Identificação do Constituinte / Cliente -->
+      <div style="margin-top:20px; background:#FAF8F5; border:1px solid #E2DAD0; border-left:4px solid #D4AF37; border-radius:6px; padding:14px 16px; display:flex; justify-content:space-between; gap:20px;">
+        <div>
+          <div style="font-size:9px; font-weight:700; text-transform:uppercase; color:#8C7D6B; letter-spacing:1px;">
+            Exmo.(a) Constituinte / Cliente
+          </div>
+          <div style="font-size:14px; font-weight:700; color:#141414; margin-top:3px;">
+            ${clientObj.name}
+          </div>
+          <div style="font-size:11px; color:#555; margin-top:3px;">
+            NIF: <strong>${clientObj.nif || "—"}</strong> &nbsp;|&nbsp; Email: ${clientObj.email || "—"}
+          </div>
+        </div>
+        <div style="text-align:right;">
+          <div style="font-size:9px; font-weight:700; text-transform:uppercase; color:#8C7D6B; letter-spacing:1px;">
+            Processo / Dossiê Forense
+          </div>
+          <div style="font-size:12px; font-weight:700; color:#92006F; margin-top:3px;">
+            ${clientObj.process_reference || "Assessoria Jurídica Geral"}
+          </div>
+          <div style="font-size:11px; color:#555; margin-top:3px;">
+            Tempo Total Dedicado: <strong>${formatSeconds(totalSeconds)}</strong>
+          </div>
+        </div>
+      </div>
+
+      <!-- Tabela Discriminada de Serviços Jurídicos -->
+      <div style="margin-top:22px;">
+        <div style="font-size:10px; font-weight:700; text-transform:uppercase; color:#665F54; letter-spacing:1px; margin-bottom:8px;">
+          Discriminação de Atos, Diligências e Serviços Jurídicos Prestados
+        </div>
+        <table style="width:100%; border-collapse:collapse; border:1px solid #E2DAD0;">
+          <thead>
+            <tr style="background:#92006F; color:#FFFFFF;">
+              <th style="padding:9px 12px; font-size:10px; text-transform:uppercase; text-align:left; width:36px;">#</th>
+              <th style="padding:9px 12px; font-size:10px; text-transform:uppercase; text-align:left; width:82px;">Data</th>
+              <th style="padding:9px 12px; font-size:10px; text-transform:uppercase; text-align:left;">Ato / Serviço Forense</th>
+              <th style="padding:9px 12px; font-size:10px; text-transform:uppercase; text-align:left; width:135px;">Categoria</th>
+              <th style="padding:9px 12px; font-size:10px; text-transform:uppercase; text-align:center; width:78px;">Duração</th>
+              <th style="padding:9px 12px; font-size:10px; text-transform:uppercase; text-align:right; width:82px;">Tarifa</th>
+              <th style="padding:9px 12px; font-size:10px; text-transform:uppercase; text-align:right; width:95px;">Valor (€)</th>
+            </tr>
+          </thead>
+          <tbody>
+            ${rowsHtml}
+          </tbody>
+        </table>
+      </div>
+
+      <!-- Quadro de Totais Fiscais -->
+      <div style="margin-top:22px; display:flex; justify-content:space-between; align-items:flex-start; gap:24px;">
+        <div style="flex:1; font-size:10px; color:#666; line-height:1.5; background:#FAF8F5; border:1px solid #ECE6DB; padding:12px 14px; border-radius:6px;">
+          <strong style="color:#333; display:block; margin-bottom:4px;">Notas Fiscais e Condições Forenses:</strong>
+          • Valores calculados de acordo com a Tabela de Serviços e Categorias Forenses da sociedade.<br/>
+          • IVA aplicável à taxa legal em vigor de 23% (CIVA).<br/>
+          ${
+            useWithholding
+              ? "• Sujeito a Retenção na Fonte de IRS à taxa de 23%, nos termos do Art. 101.º, n.º 1, alínea b) do CIRS."
+              : "• Sem retenção na fonte de IRS (entidade sem contabilidade organizada ou dispensa legal aplicável)."
+          }
+        </div>
+
+        <div style="width:270px; border:1px solid #D9D1C5; border-radius:6px; overflow:hidden;">
+          <div style="padding:8px 14px; display:flex; justify-content:space-between; font-size:11px; border-bottom:1px solid #EFE9DE;">
+            <span style="color:#555;">Subtotal de Honorários:</span>
+            <strong style="color:#141414;">${subtotal.toFixed(2).replace(".", ",")} €</strong>
+          </div>
+          <div style="padding:8px 14px; display:flex; justify-content:space-between; font-size:11px; border-bottom:1px solid #EFE9DE;">
+            <span style="color:#555;">IVA (23%):</span>
+            <strong style="color:#141414;">+${vatAmount.toFixed(2).replace(".", ",")} €</strong>
+          </div>
+          <div style="padding:8px 14px; display:flex; justify-content:space-between; font-size:11px; border-bottom:1px solid #EFE9DE;">
+            <span style="color:#555;">Retenção IRS (${useWithholding ? "23%" : "0%"}):</span>
+            <strong style="color:#B91C1C;">-${withholdingAmount.toFixed(2).replace(".", ",")} €</strong>
+          </div>
+          <div style="padding:11px 14px; background:#FDF2F8; display:flex; justify-content:space-between; font-size:13px; font-weight:800; color:#92006F;">
+            <span>TOTAL A PAGAR:</span>
+            <span>${totalToPay.toFixed(2).replace(".", ",")} €</span>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Rodapé Institucional e Assinatura -->
+    <div style="margin-top:36px; padding-top:16px; border-top:1px solid #D9D1C5; display:flex; justify-content:space-between; align-items:flex-end; font-size:10px; color:#777;">
+      <div>
+        <strong style="color:#333;">PCN ADVOGADAS — Sociedade de Advogadas</strong><br/>
+        Documento processado pelo Sistema de Gestão Forense PCN · Ref.ª ${refCode}
+      </div>
+      <div style="text-align:center; width:210px;">
+        <div style="border-bottom:1px solid #888; height:28px; margin-bottom:5px;"></div>
+        <strong style="color:#333;">A Direção · Dr.ª Patrícia</strong><br/>
+        <span>PCN Advogadas</span>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    window.onload = function() {
+      setTimeout(function() {
+        window.print();
+      }, 350);
+    };
+  </script>
+</body>
+</html>`;
+
+    const printWin = window.open("", "_blank");
+    if (!printWin) {
+      alert("Por favor, permita a abertura de janelas pop-up no seu navegador para gerar o PDF A4 oficial.");
+      return;
+    }
+    printWin.document.open();
+    printWin.document.write(htmlDoc);
+    printWin.document.close();
   };
 
   // Sistema Semáforo de Prazos (Verde: >= 6/7 dias | Amarelo: 4 a 5 dias | Vermelho: <= 3 dias ou ultrapassado)
@@ -2265,7 +2984,7 @@ PCN Advogadas · Plataforma Forense`;
   }
 
   return (
-    <div className="flex min-h-screen bg-[#FAF8F5]">
+    <div className="flex min-h-screen bg-[#F3EFE8]">
       {/* ── GAVETA LATERAL MOBILE / TABLET / PWA (DRAWER) ── */}
       {isMobileMenuOpen && (
         <div className="fixed inset-0 z-50 flex">
@@ -2397,22 +3116,41 @@ PCN Advogadas · Plataforma Forense`;
                 </button>
 
                 {currentUser.role === "admin_lawyer" && (
-                  <button
-                    onClick={() => switchTab("users")}
-                    className={`w-full flex items-center justify-between px-3.5 py-2.5 rounded-lg text-sm font-medium transition-all ${
-                      activeTab === "users"
-                        ? "bg-[#FDF2F8] text-[#92006F] font-semibold border border-[#FBCFE8]"
-                        : "text-[#555] hover:bg-[#F9F6F0]"
-                    }`}
-                  >
-                    <div className="flex items-center gap-3">
-                      <ShieldCheck className="w-4 h-4 text-[#92006F]" />
-                      <span>Gestão de Utilizadoras</span>
-                    </div>
-                    <span className="text-[10px] bg-[#92006F] text-white font-bold px-1.5 py-0.5 rounded">
-                      Admin
-                    </span>
-                  </button>
+                  <>
+                    <button
+                      onClick={() => switchTab("services")}
+                      className={`w-full flex items-center justify-between px-3.5 py-2.5 rounded-lg text-sm font-medium transition-all ${
+                        activeTab === "services"
+                          ? "bg-[#FDF2F8] text-[#92006F] font-semibold border border-[#FBCFE8]"
+                          : "text-[#555] hover:bg-[#F9F6F0]"
+                      }`}
+                    >
+                      <div className="flex items-center gap-3">
+                        <SlidersHorizontal className="w-4 h-4 text-[#92006F]" />
+                        <span>Tabela de Serviços (€/h)</span>
+                      </div>
+                      <span className="text-[10px] bg-[#92006F] text-white font-bold px-1.5 py-0.5 rounded">
+                        Admin
+                      </span>
+                    </button>
+
+                    <button
+                      onClick={() => switchTab("users")}
+                      className={`w-full flex items-center justify-between px-3.5 py-2.5 rounded-lg text-sm font-medium transition-all ${
+                        activeTab === "users"
+                          ? "bg-[#FDF2F8] text-[#92006F] font-semibold border border-[#FBCFE8]"
+                          : "text-[#555] hover:bg-[#F9F6F0]"
+                      }`}
+                    >
+                      <div className="flex items-center gap-3">
+                        <ShieldCheck className="w-4 h-4 text-[#92006F]" />
+                        <span>Gestão de Utilizadoras</span>
+                      </div>
+                      <span className="text-[10px] bg-[#92006F] text-white font-bold px-1.5 py-0.5 rounded">
+                        Admin
+                      </span>
+                    </button>
+                  </>
                 )}
               </nav>
             </div>
@@ -2597,22 +3335,41 @@ PCN Advogadas · Plataforma Forense`;
             </button>
 
             {currentUser.role === "admin_lawyer" && (
-              <button
-                onClick={() => switchTab("users")}
-                className={`w-full flex items-center justify-between px-3.5 py-2.5 rounded-lg text-sm font-medium transition-all ${
-                  activeTab === "users"
-                    ? "bg-[#FDF2F8] text-[#92006F] font-semibold shadow-xs border border-[#FBCFE8]"
-                    : "text-[#555] hover:bg-[#F9F6F0] hover:text-[#111]"
-                }`}
-              >
-                <div className="flex items-center gap-3">
-                  <ShieldCheck className="w-4 h-4 text-[#92006F]" />
-                  <span>Gestão de Utilizadoras</span>
-                </div>
-                <span className="text-[10px] bg-[#92006F] text-white font-bold px-1.5 py-0.5 rounded">
-                  Admin
-                </span>
-              </button>
+              <>
+                <button
+                  onClick={() => switchTab("services")}
+                  className={`w-full flex items-center justify-between px-3.5 py-2.5 rounded-lg text-sm font-medium transition-all ${
+                    activeTab === "services"
+                      ? "bg-[#FDF2F8] text-[#92006F] font-semibold shadow-xs border border-[#FBCFE8]"
+                      : "text-[#555] hover:bg-[#F9F6F0] hover:text-[#111]"
+                  }`}
+                >
+                  <div className="flex items-center gap-3">
+                    <SlidersHorizontal className="w-4 h-4 text-[#92006F]" />
+                    <span>Tabela de Serviços (€/h)</span>
+                  </div>
+                  <span className="text-[10px] bg-[#92006F] text-white font-bold px-1.5 py-0.5 rounded">
+                    Admin
+                  </span>
+                </button>
+
+                <button
+                  onClick={() => switchTab("users")}
+                  className={`w-full flex items-center justify-between px-3.5 py-2.5 rounded-lg text-sm font-medium transition-all ${
+                    activeTab === "users"
+                      ? "bg-[#FDF2F8] text-[#92006F] font-semibold shadow-xs border border-[#FBCFE8]"
+                      : "text-[#555] hover:bg-[#F9F6F0] hover:text-[#111]"
+                  }`}
+                >
+                  <div className="flex items-center gap-3">
+                    <ShieldCheck className="w-4 h-4 text-[#92006F]" />
+                    <span>Gestão de Utilizadoras</span>
+                  </div>
+                  <span className="text-[10px] bg-[#92006F] text-white font-bold px-1.5 py-0.5 rounded">
+                    Admin
+                  </span>
+                </button>
+              </>
             )}
           </nav>
         </div>
@@ -2752,6 +3509,7 @@ PCN Advogadas · Plataforma Forense`;
                 {activeTab === "clients" && "Clientes PCN"}
                 {activeTab === "calendar" && "Agendas e Prazos Processuais"}
                 {activeTab === "feenotes" && "Notas de Honorários"}
+                {activeTab === "services" && "Tabela de Serviços & Categorias (€/h)"}
                 {activeTab === "reports" && "Relatório PCN"}
                 {activeTab === "users" && "Gestão de Utilizadoras & Níveis de Acesso"}
               </h1>
@@ -2811,7 +3569,7 @@ PCN Advogadas · Plataforma Forense`;
                         Não existem tarefas ativas de momento.
                       </div>
                     ) : (
-                      <div className="divide-y divide-[#F2EDE4]">
+                      <div className="space-y-2.5">
                         {[...activeTasks]
                           .sort((a, b) => {
                             if (a.status === "in_progress" && b.status !== "in_progress") return -1;
@@ -2842,7 +3600,7 @@ PCN Advogadas · Plataforma Forense`;
                                   setTaskStatusFilter("all");
                                   switchTab("tasks");
                                 }}
-                                className="py-3 flex flex-col sm:flex-row sm:items-center justify-between gap-3 hover:bg-[#FAF8F5] px-2.5 -mx-2.5 rounded-lg transition-colors cursor-pointer group"
+                                className="p-3 sm:px-3.5 sm:py-3 flex flex-col sm:flex-row sm:items-center justify-between gap-3 bg-[#F8F5EE] border border-[#E5DEC9] shadow-xs hover:bg-white hover:border-[#D4AF37] hover:shadow-md rounded-xl transition-all cursor-pointer group"
                               >
                                 <div className="min-w-0 flex-1">
                                   <div className="flex items-center gap-2">
@@ -2890,7 +3648,7 @@ PCN Advogadas · Plataforma Forense`;
                                       Na Pool
                                     </span>
                                   ) : (
-                                    <span className="text-[10px] font-semibold bg-[#FAF8F5] text-[#666] border border-[#E5DECF] px-2.5 py-0.5 rounded-full">
+                                    <span className="text-[10px] font-semibold bg-white text-[#666] border border-[#E5DECF] px-2.5 py-0.5 rounded-full">
                                       Aberta
                                     </span>
                                   )}
@@ -2926,7 +3684,7 @@ PCN Advogadas · Plataforma Forense`;
                     <h2 className="text-base font-bold text-[#141414]">Equipa</h2>
                     <div className="gold-accent-line w-full my-3.5" />
 
-                    <div className="divide-y divide-[#F2EDE4]">
+                    <div className="space-y-2.5">
                       {usersList.map((u) => {
                         const userTasks = tasks.filter(
                           (t) =>
@@ -2940,7 +3698,10 @@ PCN Advogadas · Plataforma Forense`;
                         const activeCnt = userTasks.filter((t) => t.status !== "completed").length;
 
                         return (
-                          <div key={u.id} className="py-2.5 flex items-center justify-between gap-2">
+                          <div
+                            key={u.id}
+                            className="p-2.5 px-3 bg-[#F8F5EE] border border-[#E5DEC9] shadow-2xs rounded-xl flex items-center justify-between gap-2"
+                          >
                             <div className="flex items-center gap-2.5 min-w-0">
                               <div className="w-7 h-7 rounded-full bg-[#92006F]/10 text-[#92006F] font-bold text-xs flex items-center justify-center shrink-0">
                                 {u.name.replace("Dr.ª ", "").charAt(0)}
@@ -2957,7 +3718,7 @@ PCN Advogadas · Plataforma Forense`;
                               </div>
                             </div>
 
-                            <span className="text-xs font-semibold text-[#555] bg-[#FAF8F5] border border-[#ECE6DB] px-2.5 py-0.5 rounded-full shrink-0">
+                            <span className="text-xs font-semibold text-[#555] bg-white border border-[#E5DEC9] px-2.5 py-0.5 rounded-full shrink-0 shadow-2xs">
                               {activeCnt} {activeCnt === 1 ? "ativa" : "ativas"}
                             </span>
                           </div>
@@ -3008,7 +3769,7 @@ PCN Advogadas · Plataforma Forense`;
             </div>
 
             {/* Filtros Rápidos por Estado (Pool, Abertas, Em Andamento, Pausadas, Concluídas) */}
-            <div className="flex items-center gap-1.5 overflow-x-auto pb-2 border-b border-[#ECE6DB] -mx-1 px-1">
+            <div className="flex items-center gap-1.5 overflow-x-auto pb-2 border-b border-[#DFD6C5] -mx-1 px-1">
               {[
                 { id: "all", label: "Todas", count: tasks.filter((t) => t.status !== "archived").length },
                 { id: "pool", label: "Pool", count: tasks.filter((t) => t.status === "pool").length },
@@ -3024,8 +3785,8 @@ PCN Advogadas · Plataforma Forense`;
                     onClick={() => setTaskStatusFilter(f.id as any)}
                     className={`px-3 py-1.5 rounded-full text-xs font-semibold whitespace-nowrap transition-all flex items-center gap-1.5 cursor-pointer ${
                       isSelected
-                        ? "bg-[#92006F] text-white shadow-xs"
-                        : "bg-white text-[#666] border border-[#E5DECF] hover:border-[#AA820A] hover:text-[#111]"
+                        ? "bg-[#92006F] text-white shadow-sm"
+                        : "bg-white text-[#666] border border-[#DFD6C5] shadow-2xs hover:border-[#AA820A] hover:text-[#111]"
                     }`}
                   >
                     <span>{f.label}</span>
@@ -3033,7 +3794,7 @@ PCN Advogadas · Plataforma Forense`;
                       className={`text-[10px] px-1.5 py-0.2 rounded-full font-bold ${
                         isSelected
                           ? "bg-white/20 text-white"
-                          : "bg-[#FAF7F2] text-[#888] border border-[#EFE8DD]"
+                          : "bg-[#F3EFE8] text-[#666] border border-[#E2D9C8]"
                       }`}
                     >
                       {f.count}
@@ -3047,8 +3808,8 @@ PCN Advogadas · Plataforma Forense`;
             {taskStatusFilter === "all" ? (
               <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4 gap-4 sm:gap-5">
                 {/* Coluna 1: Pool Partilhada */}
-                <div className="pcn-card p-3.5 sm:p-4 bg-[#FDFCFB]">
-                  <div className="flex items-center justify-between pb-3 border-b border-[#ECE6DB]">
+                <div className="pcn-kanban-col p-3.5 sm:p-4">
+                  <div className="flex items-center justify-between pb-3 border-b border-[#DDD3C0]">
                     <h3 className="text-xs font-bold text-[#141414] uppercase tracking-wider">
                       Pool Partilhada ({tasks.filter((t) => t.status === "pool").length})
                     </h3>
@@ -3057,7 +3818,7 @@ PCN Advogadas · Plataforma Forense`;
                     </span>
                   </div>
 
-                  <div className="space-y-3 mt-3">
+                  <div className="space-y-3.5 mt-3.5">
                     {tasks
                       .filter((t) => t.status === "pool")
                       .map((task) => {
@@ -3065,7 +3826,7 @@ PCN Advogadas · Plataforma Forense`;
                         return (
                           <div
                             key={task.id}
-                            className="bg-white border border-[#E5DECF] p-3 sm:p-3.5 rounded-lg shadow-xs space-y-2 hover:border-[#D4AF37] transition-all"
+                            className="pcn-task-card p-3 sm:p-3.5 space-y-2"
                           >
                             <div className="flex items-center justify-between">
                               <span className="text-[10px] font-bold text-[#92006F] uppercase">
@@ -3126,8 +3887,8 @@ PCN Advogadas · Plataforma Forense`;
                 </div>
 
                 {/* Coluna 2: Em Andamento (e Abertas) */}
-                <div className="pcn-card p-3.5 sm:p-4 bg-[#FDFCFB]">
-                  <div className="flex items-center justify-between pb-3 border-b border-[#ECE6DB]">
+                <div className="pcn-kanban-col p-3.5 sm:p-4">
+                  <div className="flex items-center justify-between pb-3 border-b border-[#DDD3C0]">
                     <h3 className="text-xs font-bold text-[#141414] uppercase tracking-wider">
                       Em Andamento (
                       {
@@ -3142,7 +3903,7 @@ PCN Advogadas · Plataforma Forense`;
                     </span>
                   </div>
 
-                  <div className="space-y-3 mt-3">
+                  <div className="space-y-3.5 mt-3.5">
                     {tasks
                       .filter(
                         (t) => t.status === "assigned" || t.status === "in_progress"
@@ -3153,9 +3914,9 @@ PCN Advogadas · Plataforma Forense`;
                         return (
                           <div
                             key={task.id}
-                            className={`bg-white border ${
-                              isRunningThis ? "border-[#92006F] ring-1 ring-[#92006F]" : "border-[#E5DECF]"
-                            } p-3 sm:p-3.5 rounded-lg shadow-xs space-y-2.5 transition-all`}
+                            className={`pcn-task-card ${
+                              isRunningThis ? "border-[#92006F] ring-2 ring-[#92006F]/25" : ""
+                            } p-3 sm:p-3.5 space-y-2.5`}
                           >
                             <div className="flex items-center justify-between">
                               <span className="text-[10px] font-bold text-[#92006F] uppercase">
@@ -3216,7 +3977,7 @@ PCN Advogadas · Plataforma Forense`;
                               </div>
                             )}
 
-                            <div className="bg-[#FAF7F2] p-2 rounded border border-[#EFE8DD] flex items-center justify-between text-xs font-mono">
+                            <div className="bg-[#F6F2EA] p-2 rounded border border-[#E4DDD0] flex items-center justify-between text-xs font-mono">
                               <span className="text-[#666]">Tempo acumulado:</span>
                               <span className="font-bold text-[#141414]">
                                 {formatSeconds(task.total_duration_seconds)}
@@ -3261,8 +4022,8 @@ PCN Advogadas · Plataforma Forense`;
                 </div>
 
                 {/* Coluna 3: Pausadas */}
-                <div className="pcn-card p-3.5 sm:p-4 bg-[#FDFCFB]">
-                  <div className="flex items-center justify-between pb-3 border-b border-[#ECE6DB]">
+                <div className="pcn-kanban-col p-3.5 sm:p-4">
+                  <div className="flex items-center justify-between pb-3 border-b border-[#DDD3C0]">
                     <h3 className="text-xs font-bold text-[#141414] uppercase tracking-wider">
                       Pausadas ({tasks.filter((t) => t.status === "paused").length})
                     </h3>
@@ -3271,7 +4032,7 @@ PCN Advogadas · Plataforma Forense`;
                     </span>
                   </div>
 
-                  <div className="space-y-3 mt-3">
+                  <div className="space-y-3.5 mt-3.5">
                     {tasks
                       .filter((t) => t.status === "paused")
                       .map((task) => {
@@ -3279,7 +4040,7 @@ PCN Advogadas · Plataforma Forense`;
                         return (
                           <div
                             key={task.id}
-                            className="bg-white border border-[#E5DECF] p-3 sm:p-3.5 rounded-lg shadow-xs space-y-2.5 hover:border-[#D4AF37] transition-all"
+                            className="pcn-task-card p-3 sm:p-3.5 space-y-2.5"
                           >
                             <div className="flex items-center justify-between">
                               <span className="text-[10px] font-bold text-[#92006F] uppercase">
@@ -3331,7 +4092,7 @@ PCN Advogadas · Plataforma Forense`;
                               </div>
                             )}
 
-                            <div className="bg-[#FAF7F2] p-2 rounded border border-[#EFE8DD] flex items-center justify-between text-xs font-mono">
+                            <div className="bg-[#F6F2EA] p-2 rounded border border-[#E4DDD0] flex items-center justify-between text-xs font-mono">
                               <span className="text-[#666]">Tempo acumulado:</span>
                               <span className="font-bold text-[#141414]">
                                 {formatSeconds(task.total_duration_seconds)}
@@ -3365,8 +4126,8 @@ PCN Advogadas · Plataforma Forense`;
                 </div>
 
                 {/* Coluna 4: Tarefas Concluídas */}
-                <div className="pcn-card p-3.5 sm:p-4 bg-[#FDFCFB]">
-                  <div className="flex items-center justify-between pb-3 border-b border-[#ECE6DB]">
+                <div className="pcn-kanban-col p-3.5 sm:p-4">
+                  <div className="flex items-center justify-between pb-3 border-b border-[#DDD3C0]">
                     <h3 className="text-xs font-bold text-[#141414] uppercase tracking-wider">
                       Concluídas ({tasks.filter((t) => t.status === "completed").length})
                     </h3>
@@ -3375,13 +4136,13 @@ PCN Advogadas · Plataforma Forense`;
                     </span>
                   </div>
 
-                  <div className="space-y-3 mt-3">
+                  <div className="space-y-3.5 mt-3.5">
                     {tasks
                       .filter((t) => t.status === "completed")
                       .map((task) => (
                         <div
                           key={task.id}
-                          className="bg-white border border-[#E5DECF] p-3 sm:p-3.5 rounded-lg shadow-xs space-y-2 opacity-95 hover:border-[#D4AF37] transition-all"
+                          className="pcn-task-card p-3 sm:p-3.5 space-y-2 opacity-95"
                         >
                           <div className="flex items-center justify-between">
                             <span className="text-[10px] font-bold text-emerald-700 uppercase">
@@ -3465,7 +4226,7 @@ PCN Advogadas · Plataforma Forense`;
                       return (
                         <div
                           key={task.id}
-                          className="bg-white border border-[#E5DECF] p-4 rounded-xl shadow-xs space-y-3 hover:border-[#D4AF37] transition-all"
+                          className="pcn-task-card p-4 space-y-3"
                         >
                           <div className="flex items-center justify-between">
                             <span className="text-[10px] font-bold text-[#92006F] uppercase">
@@ -3660,10 +4421,10 @@ PCN Advogadas · Plataforma Forense`;
                   .map((task) => (
                     <div
                       key={task.id}
-                      className="bg-white border border-[#E5DECF] p-4 rounded-xl shadow-xs space-y-3 hover:border-[#D4AF37] transition-all"
+                      className="pcn-task-card p-4 space-y-3"
                     >
                       <div className="flex items-center justify-between">
-                        <span className="text-[10px] font-bold text-[#777] uppercase bg-[#FAF8F5] px-2 py-0.5 rounded border border-[#ECE6DB]">
+                        <span className="text-[10px] font-bold text-[#665F54] uppercase bg-[#F3EFE8] px-2 py-0.5 rounded border border-[#E2DAD0]">
                           {task.task_type}
                         </span>
                         <span className="text-[10px] font-semibold bg-gray-100 text-gray-700 px-2 py-0.5 rounded flex items-center gap-1">
@@ -3681,7 +4442,7 @@ PCN Advogadas · Plataforma Forense`;
                         <p className="text-[11px] text-[#777] line-clamp-2">{task.description}</p>
                       )}
 
-                      <div className="bg-[#FAF7F2] p-2.5 rounded-lg border border-[#EFE8DD] text-xs space-y-1">
+                      <div className="bg-[#F5F1EA] p-2.5 rounded-lg border border-[#E4DDD2] text-xs space-y-1">
                         <div className="flex justify-between text-[#666]">
                           <span>Cliente:</span>
                           <strong className="text-[#333]">{task.client_name}</strong>
@@ -3735,6 +4496,14 @@ PCN Advogadas · Plataforma Forense`;
         {activeTab === "feenotes" &&
           (() => {
             const clientTasks = tasks.filter((t) => t.client_id === selectedFeeClient);
+            const totalClientSeconds = clientTasks.reduce(
+              (acc, t) => acc + (t.total_duration_seconds || 0),
+              0
+            );
+            const theoreticalCategoryTotal = clientTasks.reduce(
+              (acc, t) => acc + calculateTaskFeeByCategory(t, billingRoundingMinutes),
+              0
+            );
             const subtotal = clientTasks.reduce((acc, t) => {
               const val = feeTaskPrices[t.id] ?? (t.fee_amount || 0);
               return acc + (Number.isFinite(val) ? val : 0);
@@ -3748,95 +4517,172 @@ PCN Advogadas · Plataforma Forense`;
             const savedClientNote = feeNotesByClient[selectedFeeClient];
             const currentRefCode = savedClientNote?.reference_code || "NH-2026-0001";
 
+            const handleCalculateAllByCategoryRates = () => {
+              if (clientTasks.length === 0) return;
+              const nextPrices: Record<string, number> = { ...feeTaskPrices };
+              for (const t of clientTasks) {
+                nextPrices[t.id] = calculateTaskFeeByCategory(t, billingRoundingMinutes);
+              }
+              setFeeTaskPrices(nextPrices);
+              saveFeeNoteToDb(selectedFeeClient, nextPrices, useWithholding, false).catch((err) =>
+                console.error("Erro ao guardar cálculo automático:", err)
+              );
+              setModalFeedback(
+                `Honorários calculados automaticamente segundo a Tabela de Serviços (€/h por categoria) para ${clientTasks.length} tarefa(s)!`
+              );
+              setTimeout(() => setModalFeedback(null), 3500);
+            };
+
             return (
               <div className="p-4 sm:p-6 lg:p-8 space-y-4 sm:space-y-6 max-w-7xl w-full mx-auto">
                 <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
                   <div>
                     <h2 className="text-base sm:text-lg font-bold text-[#141414]">
-                      Notas de Honorários PCN
+                      Notas de Honorários PCN · Cálculo Automático por Categoria de Serviço
                     </h2>
                     <p className="text-xs text-[#736B5E]">
-                      Área financeira reservada à Dr.ª Patrícia. Atribua o preço com base no tempo gasto, guarde na base de dados e exporte o ficheiro Excel oficial.
+                      Área financeira reservada à Direção. O sistema calcula cada ato de acordo com o valor (€/h) definido na Tabela de Serviços Forenses.
                     </p>
                   </div>
 
                   <div className="flex items-center gap-2 flex-wrap">
                     <button
-                      onClick={() => saveFeeNoteToDb(selectedFeeClient)}
-                      disabled={isSavingFeeNote || clientTasks.length === 0}
-                      className="bg-emerald-700 hover:bg-emerald-800 text-white text-xs font-semibold px-3 sm:px-4 py-2 rounded-md shadow-xs flex items-center gap-1.5 sm:gap-2 transition-colors cursor-pointer disabled:opacity-50"
+                      onClick={handleCalculateAllByCategoryRates}
+                      disabled={clientTasks.length === 0}
+                      className="bg-[#FAF5E8] hover:bg-[#F3E9CE] text-[#8F6D07] border border-[#E5D3A1] text-xs font-bold px-3 sm:px-4 py-2 rounded-md shadow-xs flex items-center gap-1.5 transition-colors cursor-pointer disabled:opacity-50"
+                      title="Converte automaticamente o tempo gasto em cada tarefa pelo valor €/h definido na sua Categoria de Serviço"
                     >
-                      {isSavingFeeNote ? (
-                        <RefreshCw className="w-4 h-4 shrink-0 animate-spin" />
-                      ) : (
-                        <Database className="w-4 h-4 shrink-0" />
-                      )}
-                      <span>
-                        {isSavingFeeNote ? "A guardar..." : "Guardar na Base de Dados"}
-                      </span>
+                      <Sparkles className="w-4 h-4 shrink-0 text-[#AA820A]" />
+                      <span>Calcular Tudo pela Categoria (€/h)</span>
+                    </button>
+
+                    <button
+                      onClick={handleExportOfficialPdf}
+                      disabled={clientTasks.length === 0}
+                      className="bg-[#92006F] hover:bg-[#7A005D] text-white text-xs font-bold px-3.5 sm:px-4 py-2 rounded-md shadow-sm flex items-center gap-1.5 transition-colors cursor-pointer disabled:opacity-50"
+                      title="Gerar Documento Oficial A4 de Nota de Honorários pronto para PDF ou Impressão"
+                    >
+                      <Download className="w-3.5 h-3.5 text-[#F3D066]" />
+                      <span>Emitir PDF Oficial (A4)</span>
                     </button>
 
                     <button
                       onClick={() => handleExportExcel(false)}
                       disabled={isExportingExcel || clientTasks.length === 0}
-                      className="bg-[#92006F] hover:bg-[#7A005D] text-white text-xs font-semibold px-3 sm:px-4 py-2 rounded-md shadow-xs flex items-center gap-1.5 sm:gap-2 transition-colors cursor-pointer disabled:opacity-50"
+                      className="bg-white hover:bg-[#FAF8F5] text-[#333] border border-[#D9D1C5] text-xs font-semibold px-3 py-2 rounded-md shadow-xs flex items-center gap-1.5 transition-colors cursor-pointer disabled:opacity-50"
                     >
-                      <FileSpreadsheet className="w-4 h-4 shrink-0" />
-                      <span>
-                        {isExportingExcel ? "A descarregar..." : "Exportar Excel (Cliente)"}
-                      </span>
-                    </button>
-
-                    <button
-                      onClick={() => handleExportExcel(true)}
-                      disabled={isExportingExcel || clientTasks.length === 0}
-                      className="bg-[#BA9448] hover:bg-[#A88238] text-white text-xs font-semibold px-3 py-2 rounded-md shadow-xs flex items-center gap-1.5 transition-colors cursor-pointer disabled:opacity-50"
-                    >
-                      <span>{isExportingExcel ? "..." : "Versão Interna"}</span>
+                      <FileSpreadsheet className="w-3.5 h-3.5 shrink-0 text-[#92006F]" />
+                      <span>{isExportingExcel ? "A descarregar..." : "Excel (Cliente)"}</span>
                     </button>
                   </div>
                 </div>
 
-                {/* Seletor de Cliente */}
-                <div className="pcn-card p-4 sm:p-5 flex flex-col sm:flex-row sm:items-center justify-between gap-4">
-                  <div>
-                    <label className="text-xs font-bold text-[#444] block mb-2">
-                      Selecione o Cliente para Faturação:
-                    </label>
-                    <select
-                      value={selectedFeeClient}
-                      onChange={(e) => setSelectedFeeClient(e.target.value)}
-                      className="w-full sm:w-96 text-xs text-[#222] bg-[#FAF8F5] border border-[#D9D1C5] rounded-md px-3 py-2 focus:ring-1 focus:ring-[#92006F] outline-none"
-                    >
-                      {clients.map((c) => (
-                        <option key={c.id} value={c.id}>
-                          {c.name} ({c.nif || "Sem NIF"} — {c.process_reference || "Geral"})
-                        </option>
-                      ))}
-                    </select>
+                {/* Seletor de Cliente + Resumo de Categorias Ativas + Arredondamento Forense */}
+                <div className="pcn-card p-4 sm:p-5 space-y-4">
+                  <div className="grid grid-cols-1 md:grid-cols-3 gap-4 items-end">
+                    <div>
+                      <label className="text-xs font-bold text-[#444] block mb-1.5">
+                        Selecione o Cliente para Faturação:
+                      </label>
+                      <select
+                        value={selectedFeeClient}
+                        onChange={(e) => setSelectedFeeClient(e.target.value)}
+                        className="w-full text-xs text-[#222] bg-[#FAF8F5] border border-[#D9D1C5] rounded-md px-3 py-2 focus:ring-1 focus:ring-[#92006F] outline-none font-medium"
+                      >
+                        {clients.map((c) => (
+                          <option key={c.id} value={c.id}>
+                            {c.name} ({c.nif || "Sem NIF"} — {c.process_reference || "Geral"})
+                          </option>
+                        ))}
+                      </select>
+                    </div>
+
+                    <div>
+                      <label className="text-xs font-bold text-[#444] block mb-1.5">
+                        Tabela de Preços Aplicada:
+                      </label>
+                      <div className="flex items-center justify-between bg-[#FAF8F5] border border-[#D9D1C5] rounded-md px-3 py-2">
+                        <span className="text-xs font-semibold text-[#141414]">
+                          {serviceCategories.length} Categorias de Serviço Ativas
+                        </span>
+                        <button
+                          type="button"
+                          onClick={() => switchTab("services")}
+                          className="text-[11px] font-bold text-[#92006F] hover:underline cursor-pointer"
+                        >
+                          Gerir Preços →
+                        </button>
+                      </div>
+                    </div>
+
+                    <div>
+                      <label className="text-xs font-bold text-[#444] block mb-1.5">
+                        Arredondamento de Tempo Forense:
+                      </label>
+                      <select
+                        value={billingRoundingMinutes}
+                        onChange={(e) => {
+                          const nextRounding = parseInt(e.target.value, 10) as 0 | 6 | 15;
+                          updateBillingRounding(nextRounding);
+                          if (clientTasks.length > 0) {
+                            const nextPrices: Record<string, number> = { ...feeTaskPrices };
+                            for (const t of clientTasks) {
+                              nextPrices[t.id] = calculateTaskFeeByCategory(t, nextRounding);
+                            }
+                            setFeeTaskPrices(nextPrices);
+                            saveFeeNoteToDb(selectedFeeClient, nextPrices, useWithholding, true).catch(
+                              () => {}
+                            );
+                          }
+                        }}
+                        className="w-full text-xs text-[#222] bg-[#FAF8F5] border border-[#D9D1C5] rounded-md px-3 py-2 focus:ring-1 focus:ring-[#92006F] outline-none"
+                      >
+                        <option value={0}>Ao Segundo Exato (Sem arredondamento)</option>
+                        <option value={6}>Blocos de 6 Minutos (0,1h Forense)</option>
+                        <option value={15}>Blocos de 15 Minutos (0,25h Forense)</option>
+                      </select>
+                    </div>
                   </div>
 
-                  <div className="flex items-center gap-2 pt-1 sm:pt-5">
-                    <input
-                      type="checkbox"
-                      id="withholdingCheck"
-                      checked={useWithholding}
-                      onChange={(e) => {
-                        const checked = e.target.checked;
-                        setApplyWithholdingByClient((prev) => ({
-                          ...prev,
-                          [selectedFeeClient]: checked,
-                        }));
-                        saveFeeNoteToDb(selectedFeeClient, undefined, checked, false);
-                      }}
-                      className="rounded border-[#D9D1C5] text-[#92006F] focus:ring-[#92006F] cursor-pointer"
-                    />
-                    <label
-                      htmlFor="withholdingCheck"
-                      className="text-xs font-semibold text-[#444] cursor-pointer"
-                    >
-                      Aplicar Retenção na Fonte IRS (23%)
-                    </label>
+                  <div className="pt-3 border-t border-[#EFE8DD] flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+                    <div className="flex items-center gap-4 text-xs text-[#555] flex-wrap">
+                      <span>
+                        Tempo Total Acumulado:{" "}
+                        <strong className="font-mono text-[#141414]">
+                          {formatSeconds(totalClientSeconds)}
+                        </strong>
+                      </span>
+                      <span>·</span>
+                      <span>
+                        Valor Calculado pelas Categorias:{" "}
+                        <strong className="text-[#92006F]">
+                          {theoreticalCategoryTotal.toFixed(2)} €
+                        </strong>
+                      </span>
+                    </div>
+
+                    <div className="flex items-center gap-2">
+                      <input
+                        type="checkbox"
+                        id="withholdingCheck"
+                        checked={useWithholding}
+                        onChange={(e) => {
+                          const checked = e.target.checked;
+                          setApplyWithholdingByClient((prev) => ({
+                            ...prev,
+                            [selectedFeeClient]: checked,
+                          }));
+                          saveFeeNoteToDb(selectedFeeClient, undefined, checked, false);
+                        }}
+                        className="rounded border-[#D9D1C5] text-[#92006F] focus:ring-[#92006F] cursor-pointer"
+                      />
+                      <label
+                        htmlFor="withholdingCheck"
+                        className="text-xs font-semibold text-[#444] cursor-pointer"
+                      >
+                        Aplicar Retenção na Fonte IRS (23%)
+                      </label>
+                    </div>
                   </div>
                 </div>
 
@@ -3859,66 +4705,131 @@ PCN Advogadas · Plataforma Forense`;
                   </div>
 
                   <div className="overflow-x-auto w-full">
-                    <table className="min-w-[620px] w-full text-left text-xs border-collapse">
+                    <table className="min-w-[720px] w-full text-left text-xs border-collapse">
                       <thead>
                         <tr className="bg-[#92006F] text-white">
                           <th className="p-3">Data</th>
-                          <th className="p-3">Descrição do Ato / Tarefa</th>
+                          <th className="p-3">Descrição do Ato & Categoria</th>
+                          <th className="p-3">Tarifa da Categoria</th>
                           <th className="p-3">Advogada</th>
                           <th className="p-3">Tempo Gasto</th>
+                          <th className="p-3">Estado</th>
                           <th className="p-3 text-right">Honorários (€)</th>
                         </tr>
                       </thead>
                       <tbody className="divide-y divide-[#EFE9DE]">
-                        {clientTasks.map((t) => (
-                          <tr key={t.id} className="hover:bg-[#FAF8F5]">
-                            <td className="p-3 text-[#555]">
-                              {formatIsoToEuropean(t.due_date || getTodayDateString())}
-                            </td>
-                            <td className="p-3 font-medium text-[#111]">{t.title}</td>
-                            <td className="p-3 text-[#555]">{t.lawyer_name || "—"}</td>
-                            <td className="p-3 font-mono font-semibold text-[#92006F]">
-                              {formatSeconds(t.total_duration_seconds)}
-                            </td>
-                            <td className="p-3 text-right">
-                              <input
-                                type="number"
-                                step="0.01"
-                                min="0"
-                                value={
-                                  feeTaskPrices[t.id] !== undefined
-                                    ? feeTaskPrices[t.id]
-                                    : (t.fee_amount ?? 0)
-                                }
-                                onChange={(e) => {
-                                  const raw = e.target.value;
-                                  const parsed = raw === "" ? 0 : parseFloat(raw);
-                                  const cleanVal = isNaN(parsed) ? 0 : parsed;
-                                  const updatedPrices = {
-                                    ...feeTaskPrices,
-                                    [t.id]: cleanVal,
-                                  };
-                                  setFeeTaskPrices(updatedPrices);
-                                  if (autoSaveTimerRef.current) {
-                                    clearTimeout(autoSaveTimerRef.current);
-                                  }
-                                  autoSaveTimerRef.current = setTimeout(() => {
-                                    saveFeeNoteToDb(
-                                      selectedFeeClient,
-                                      updatedPrices,
-                                      useWithholding,
-                                      true
-                                    ).catch((err) => console.error("Auto-save fee note error:", err));
-                                  }, 800);
-                                }}
-                                className="w-24 sm:w-28 text-right font-semibold text-xs border border-[#D9D1C5] rounded px-2 py-1 focus:ring-1 focus:ring-[#92006F] bg-white"
-                              />
-                            </td>
-                          </tr>
-                        ))}
+                        {clientTasks.map((t) => {
+                          const catRate = getTaskCategoryRate(t);
+                          const suggestedFee = calculateTaskFeeByCategory(
+                            t,
+                            billingRoundingMinutes
+                          );
+                          const currentVal =
+                            feeTaskPrices[t.id] !== undefined
+                              ? feeTaskPrices[t.id]
+                              : (t.fee_amount ?? 0);
+                          const isBilled = currentVal > 0;
+
+                          return (
+                            <tr key={t.id} className="hover:bg-[#FAF8F5]">
+                              <td className="p-3 text-[#555]">
+                                {formatIsoToEuropean(t.due_date || getTodayDateString())}
+                              </td>
+                              <td className="p-3 font-medium text-[#111]">
+                                <div>{t.title}</div>
+                                <span className="inline-block mt-0.5 text-[10px] font-bold text-[#92006F] bg-[#FDF2F8] border border-[#FBCFE8] px-2 py-0.2 rounded">
+                                  {t.task_type}
+                                </span>
+                              </td>
+                              <td className="p-3">
+                                <span className="font-mono font-bold text-[#444] bg-[#F5F1EA] border border-[#E2DAD0] px-2 py-0.5 rounded text-[11px]">
+                                  {catRate.toFixed(2)} €/h
+                                </span>
+                              </td>
+                              <td className="p-3 text-[#555]">{t.lawyer_name || "—"}</td>
+                              <td className="p-3">
+                                <div className="font-mono font-semibold text-[#92006F]">
+                                  {formatSeconds(t.total_duration_seconds)}
+                                </div>
+                                {suggestedFee > 0 && (
+                                  <div className="text-[10px] text-[#736B5E]">
+                                    Cálculo: <strong>{suggestedFee.toFixed(2)} €</strong>
+                                  </div>
+                                )}
+                              </td>
+                              <td className="p-3">
+                                {isBilled ? (
+                                  <span className="inline-flex items-center gap-1 text-[10px] font-bold bg-emerald-50 text-emerald-700 border border-emerald-200 px-2 py-0.5 rounded-full">
+                                    <Check className="w-2.5 h-2.5" /> Valorizada
+                                  </span>
+                                ) : (
+                                  <span className="inline-flex items-center gap-1 text-[10px] font-bold bg-amber-50 text-amber-700 border border-amber-200 px-2 py-0.5 rounded-full">
+                                    Por Valorizar (WIP)
+                                  </span>
+                                )}
+                              </td>
+                              <td className="p-3 text-right">
+                                <div className="inline-flex items-center justify-end gap-1.5">
+                                  <button
+                                    type="button"
+                                    onClick={() => {
+                                      const updatedPrices = {
+                                        ...feeTaskPrices,
+                                        [t.id]: suggestedFee,
+                                      };
+                                      setFeeTaskPrices(updatedPrices);
+                                      saveFeeNoteToDb(
+                                        selectedFeeClient,
+                                        updatedPrices,
+                                        useWithholding,
+                                        true
+                                      ).catch((err) =>
+                                        console.error("Auto-save fee note error:", err)
+                                      );
+                                    }}
+                                    className="text-[10px] font-semibold bg-[#FAF5E8] hover:bg-[#EFE4C6] text-[#8F6D07] border border-[#E5D3A1] px-2 py-1 rounded cursor-pointer transition-colors"
+                                    title={`Calcular segundo a categoria "${t.task_type}": ${formatSeconds(t.total_duration_seconds)} × ${catRate.toFixed(2)} €/h = ${suggestedFee.toFixed(2)} €`}
+                                  >
+                                    ⟳ {catRate}€/h
+                                  </button>
+                                  <input
+                                    type="number"
+                                    step="0.01"
+                                    min="0"
+                                    value={currentVal}
+                                    onChange={(e) => {
+                                      const raw = e.target.value;
+                                      const parsed = raw === "" ? 0 : parseFloat(raw);
+                                      const cleanVal = isNaN(parsed) ? 0 : parsed;
+                                      const updatedPrices = {
+                                        ...feeTaskPrices,
+                                        [t.id]: cleanVal,
+                                      };
+                                      setFeeTaskPrices(updatedPrices);
+                                      if (autoSaveTimerRef.current) {
+                                        clearTimeout(autoSaveTimerRef.current);
+                                      }
+                                      autoSaveTimerRef.current = setTimeout(() => {
+                                        saveFeeNoteToDb(
+                                          selectedFeeClient,
+                                          updatedPrices,
+                                          useWithholding,
+                                          true
+                                        ).catch((err) =>
+                                          console.error("Auto-save fee note error:", err)
+                                        );
+                                      }, 800);
+                                    }}
+                                    className="w-24 sm:w-28 text-right font-semibold text-xs border border-[#D9D1C5] rounded px-2 py-1 focus:ring-1 focus:ring-[#92006F] bg-white"
+                                  />
+                                </div>
+                              </td>
+                            </tr>
+                          );
+                        })}
                         {clientTasks.length === 0 && (
                           <tr>
-                            <td colSpan={5} className="p-6 text-center text-xs text-[#888] italic">
+                            <td colSpan={7} className="p-6 text-center text-xs text-[#888] italic">
                               Nenhuma tarefa registada para este cliente.
                             </td>
                           </tr>
@@ -3928,7 +4839,16 @@ PCN Advogadas · Plataforma Forense`;
                   </div>
 
                   {/* Quadro de Totais Fiscais */}
-                  <div className="p-4 sm:p-5 bg-[#FAF8F5] border-t border-[#ECE6DB] flex justify-end">
+                  <div className="p-4 sm:p-5 bg-[#FAF8F5] border-t border-[#ECE6DB] flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+                    <div className="text-xs text-[#665F54] space-y-1 max-w-md">
+                      <p className="font-bold text-[#141414]">
+                        Documento Oficial pronto para emissão
+                      </p>
+                      <p className="text-[11px]">
+                        Ao clicar em <strong>"Emitir PDF Oficial (A4)"</strong>, o sistema gera uma Nota de Honorários executiva em formato A4 com papel timbrado PCN Advogadas, tabela discriminada por categoria, apuramento fiscal e espaço de assinatura.
+                      </p>
+                    </div>
+
                     <div className="w-full sm:w-72 space-y-2 text-xs">
                       <div className="flex justify-between text-[#555]">
                         <span>Subtotal (Honorários):</span>
@@ -4046,12 +4966,12 @@ PCN Advogadas · Plataforma Forense`;
                     </span>
                   </div>
 
-                  {/* Botão Único Inteligente com Deteção Automática do Sistema Operativo (iOS / Android / Mac / Windows) */}
+                  {/* Botão Único Inteligente com Deteção Automática do Sistema Operativo + Criar Tarefa com este Prazo */}
                   <div className="pt-3 border-t border-[#EEDB98] flex flex-col sm:flex-row sm:items-center justify-between gap-3">
                     <div className="flex flex-col">
                       <span className="text-[11px] font-bold text-[#AA820A] flex items-center gap-1.5">
                         <CalendarPlus className="w-4 h-4 text-[#AA820A]" />
-                        Sincronizar Prazo Processual:
+                        Sincronizar ou Criar Tarefa com este Prazo:
                       </span>
                       <span className="text-[10px] text-[#736B5E] mt-0.5 flex items-center gap-1">
                         <Sparkles className="w-3 h-3 text-[#AA820A]" />
@@ -4064,64 +4984,82 @@ PCN Advogadas · Plataforma Forense`;
                       </span>
                     </div>
 
-                    <div className="relative inline-flex items-stretch shadow-xs rounded-lg">
-                      {/* Botão Principal Único (Automático para o SO detetado) */}
+                    <div className="flex items-center gap-2 flex-wrap">
                       <button
-                        onClick={handleSmartExportToCalendar}
-                        className="bg-[#92006F] hover:bg-[#7E0060] text-white text-xs font-semibold px-4 py-2 rounded-l-lg flex items-center gap-2 cursor-pointer transition-colors"
-                        title={platformInfo?.hint || "Adicionar à agenda do seu dispositivo"}
+                        type="button"
+                        onClick={() => {
+                          const parts = calcResult.finalDate.split("/");
+                          if (parts.length === 3) {
+                            setTaskFormDueDate(`${parts[2]}-${parts[1]}-${parts[0]}`);
+                          }
+                          setTaskFormIsUrgent(calcIsUrgent);
+                          setIsNewTaskModalOpen(true);
+                        }}
+                        className="bg-white hover:bg-[#FAF8F5] text-[#92006F] border border-[#92006F]/30 text-xs font-bold px-3.5 py-2 rounded-lg flex items-center gap-1.5 shadow-xs cursor-pointer transition-colors"
                       >
-                        <CalendarPlus className="w-4 h-4 text-[#D4AF37]" />
-                        <span>{platformInfo?.label || "Adicionar à Agenda"}</span>
+                        <Plus className="w-4 h-4 text-[#92006F]" />
+                        <span>Criar Tarefa com este Prazo ({calcResult.finalDate})</span>
                       </button>
 
-                      {/* Botão Secundário para abrir opções caso prefira outro fornecedor */}
-                      <button
-                        onClick={() => setShowCalendarMenu(!showCalendarMenu)}
-                        className="bg-[#7E0060] hover:bg-[#6A0051] text-white px-2.5 rounded-r-lg border-l border-white/20 cursor-pointer transition-colors flex items-center justify-center"
-                        title="Escolher outro formato (Google, Outlook, Apple .ics)"
-                        aria-label="Escolher outro fornecedor de agenda"
-                      >
-                        <ChevronDown className="w-3.5 h-3.5" />
-                      </button>
+                      <div className="relative inline-flex items-stretch shadow-xs rounded-lg">
+                        {/* Botão Principal Único (Automático para o SO detetado) */}
+                        <button
+                          onClick={handleSmartExportToCalendar}
+                          className="bg-[#92006F] hover:bg-[#7E0060] text-white text-xs font-semibold px-4 py-2 rounded-l-lg flex items-center gap-2 cursor-pointer transition-colors"
+                          title={platformInfo?.hint || "Adicionar à agenda do seu dispositivo"}
+                        >
+                          <CalendarPlus className="w-4 h-4 text-[#D4AF37]" />
+                          <span>{platformInfo?.label || "Adicionar à Agenda"}</span>
+                        </button>
 
-                      {showCalendarMenu && (
-                        <div className="absolute right-0 bottom-full mb-2 sm:bottom-auto sm:top-full sm:mt-1.5 w-64 bg-white border border-[#D9D1C5] rounded-xl shadow-2xl z-30 p-1.5 space-y-1 animate-in fade-in duration-150">
-                          <div className="px-2 py-1 text-[10px] font-bold text-[#8C7D6B] uppercase tracking-wider border-b border-[#F4EFE6]">
-                            Outros Fornecedores de Agenda:
+                        {/* Botão Secundário para abrir opções caso prefira outro fornecedor */}
+                        <button
+                          onClick={() => setShowCalendarMenu(!showCalendarMenu)}
+                          className="bg-[#7E0060] hover:bg-[#6A0051] text-white px-2.5 rounded-r-lg border-l border-white/20 cursor-pointer transition-colors flex items-center justify-center"
+                          title="Escolher outro formato (Google, Outlook, Apple .ics)"
+                          aria-label="Escolher outro fornecedor de agenda"
+                        >
+                          <ChevronDown className="w-3.5 h-3.5" />
+                        </button>
+
+                        {showCalendarMenu && (
+                          <div className="absolute right-0 bottom-full mb-2 sm:bottom-auto sm:top-full sm:mt-1.5 w-64 bg-white border border-[#D9D1C5] rounded-xl shadow-2xl z-30 p-1.5 space-y-1 animate-in fade-in duration-150">
+                            <div className="px-2 py-1 text-[10px] font-bold text-[#8C7D6B] uppercase tracking-wider border-b border-[#F4EFE6]">
+                              Outros Fornecedores de Agenda:
+                            </div>
+                            <button
+                              onClick={() => handleExportToCalendar("ics")}
+                              className="w-full text-left px-2.5 py-2 rounded-lg text-xs font-medium hover:bg-[#FAF8F5] flex items-center gap-2 text-[#333] transition-colors"
+                            >
+                              <Download className="w-3.5 h-3.5 text-[#92006F]" />
+                              <div>
+                                <p className="font-semibold">iPhone / iPad / Mac (.ics)</p>
+                                <p className="text-[10px] text-[#777]">Ficheiro universal iCalendar</p>
+                              </div>
+                            </button>
+                            <button
+                              onClick={() => handleExportToCalendar("google")}
+                              className="w-full text-left px-2.5 py-2 rounded-lg text-xs font-medium hover:bg-[#FAF8F5] flex items-center gap-2 text-[#333] transition-colors"
+                            >
+                              <ExternalLink className="w-3.5 h-3.5 text-[#AA820A]" />
+                              <div>
+                                <p className="font-semibold">Google Agenda</p>
+                                <p className="text-[10px] text-[#777]">Abre no navegador ou na app Google</p>
+                              </div>
+                            </button>
+                            <button
+                              onClick={() => handleExportToCalendar("outlook")}
+                              className="w-full text-left px-2.5 py-2 rounded-lg text-xs font-medium hover:bg-[#FAF8F5] flex items-center gap-2 text-[#333] transition-colors"
+                            >
+                              <ExternalLink className="w-3.5 h-3.5 text-blue-600" />
+                              <div>
+                                <p className="font-semibold">Outlook Web / 365</p>
+                                <p className="text-[10px] text-[#777]">Microsoft 365 Corporativo</p>
+                              </div>
+                            </button>
                           </div>
-                          <button
-                            onClick={() => handleExportToCalendar("ics")}
-                            className="w-full text-left px-2.5 py-2 rounded-lg text-xs font-medium hover:bg-[#FAF8F5] flex items-center gap-2 text-[#333] transition-colors"
-                          >
-                            <Download className="w-3.5 h-3.5 text-[#92006F]" />
-                            <div>
-                              <p className="font-semibold">iPhone / iPad / Mac (.ics)</p>
-                              <p className="text-[10px] text-[#777]">Ficheiro universal iCalendar</p>
-                            </div>
-                          </button>
-                          <button
-                            onClick={() => handleExportToCalendar("google")}
-                            className="w-full text-left px-2.5 py-2 rounded-lg text-xs font-medium hover:bg-[#FAF8F5] flex items-center gap-2 text-[#333] transition-colors"
-                          >
-                            <ExternalLink className="w-3.5 h-3.5 text-[#AA820A]" />
-                            <div>
-                              <p className="font-semibold">Google Agenda</p>
-                              <p className="text-[10px] text-[#777]">Abre no navegador ou na app Google</p>
-                            </div>
-                          </button>
-                          <button
-                            onClick={() => handleExportToCalendar("outlook")}
-                            className="w-full text-left px-2.5 py-2 rounded-lg text-xs font-medium hover:bg-[#FAF8F5] flex items-center gap-2 text-[#333] transition-colors"
-                          >
-                            <ExternalLink className="w-3.5 h-3.5 text-blue-600" />
-                            <div>
-                              <p className="font-semibold">Outlook Web / 365</p>
-                              <p className="text-[10px] text-[#777]">Microsoft 365 Corporativo</p>
-                            </div>
-                          </button>
-                        </div>
-                      )}
+                        )}
+                      </div>
                     </div>
                   </div>
                 </div>
@@ -4232,70 +5170,341 @@ PCN Advogadas · Plataforma Forense`;
           <div className="p-4 sm:p-6 lg:p-8 space-y-4 sm:space-y-6 max-w-7xl w-full mx-auto">
             <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
               <div>
-                <h2 className="text-base sm:text-lg font-bold text-[#141414]">Diretório de Clientes PCN</h2>
+                <h2 className="text-base sm:text-lg font-bold text-[#141414]">
+                  Diretório de Clientes PCN
+                </h2>
                 <p className="text-xs text-[#736B5E]">
-                  Histórico cronológico de assuntos e processos judiciais por cliente.
+                  Gestão de clientes, dossiês e referências processuais do escritório.
                 </p>
               </div>
 
-              <button
-                onClick={() => setIsNewClientModalOpen(true)}
-                className="bg-[#92006F] hover:bg-[#7E0060] text-white text-xs font-semibold px-4 py-2 rounded-md shadow-xs flex items-center justify-center gap-2 transition-colors cursor-pointer w-full sm:w-auto"
-              >
-                <Plus className="w-4 h-4" />
-                <span>Registar Cliente</span>
-              </button>
+              <div className="flex items-center gap-2.5 flex-wrap sm:flex-nowrap">
+                <div className="relative w-full sm:w-64">
+                  <Search className="w-3.5 h-3.5 text-[#888] absolute left-3 top-2.5" />
+                  <input
+                    type="text"
+                    placeholder="Filtrar cliente, NIF ou proc..."
+                    value={clientSearchQuery}
+                    onChange={(e) => setClientSearchQuery(e.target.value)}
+                    className="w-full text-xs pl-8 pr-3 py-2 border border-[#D9D1C5] rounded-md bg-white focus:outline-none focus:ring-1 focus:ring-[#92006F]"
+                  />
+                </div>
+                <button
+                  onClick={() => setIsNewClientModalOpen(true)}
+                  className="bg-[#92006F] hover:bg-[#7E0060] text-white text-xs font-semibold px-4 py-2 rounded-md shadow-xs flex items-center justify-center gap-2 transition-colors cursor-pointer w-full sm:w-auto shrink-0"
+                >
+                  <Plus className="w-4 h-4" />
+                  <span>Registar Cliente</span>
+                </button>
+              </div>
             </div>
 
             <div className="grid grid-cols-1 md:grid-cols-2 gap-4 sm:gap-6">
-              {clients.map((c) => (
-                <div key={c.id} className="pcn-card p-4 sm:p-5 space-y-3">
-                  <div className="flex justify-between items-start">
-                    <div>
-                      <h3 className="text-sm font-bold text-[#141414]">{c.name}</h3>
-                      <p className="text-xs text-[#777]">
-                        NIF: {c.nif || "Não registado"} · {c.process_reference || "Assessoria Geral"}
-                      </p>
+              {clients
+                .filter((c) => {
+                  const q = clientSearchQuery.trim().toLowerCase();
+                  if (!q) return true;
+                  return (
+                    c.name.toLowerCase().includes(q) ||
+                    (c.nif || "").toLowerCase().includes(q) ||
+                    (c.process_reference || "").toLowerCase().includes(q)
+                  );
+                })
+                .map((c) => {
+                  const cTasks = tasks.filter((t) => t.client_id === c.id);
+
+                  return (
+                    <div key={c.id} className="pcn-card p-4 sm:p-5 space-y-3.5">
+                      <div className="flex justify-between items-start gap-2">
+                        <div>
+                          <h3 className="text-sm font-bold text-[#141414]">{c.name}</h3>
+                          <p className="text-xs text-[#777]">
+                            NIF: {c.nif || "Não registado"} ·{" "}
+                            {c.process_reference || "Assessoria Geral"}
+                          </p>
+                        </div>
+                        <span className="text-[10px] bg-emerald-100 text-emerald-800 px-2 py-0.5 rounded font-semibold shrink-0">
+                          Ativo
+                        </span>
+                      </div>
+
+                      <div className="text-xs text-[#666] space-y-1">
+                        <p>Correio: {c.email || "—"}</p>
+                        <p>Contacto telefónico: {c.phone || "—"}</p>
+                      </div>
+
+                      <div className="pt-2 border-t border-[#F2EDE4] flex justify-between items-center text-xs">
+                        <span className="text-[#888]">{cTasks.length} tarefas registadas</span>
+                        <div className="flex items-center gap-2">
+                          <button
+                            onClick={() => {
+                              setTaskFormClientId(c.id);
+                              setIsNewTaskModalOpen(true);
+                            }}
+                            className="text-xs font-semibold text-[#141414] hover:text-[#92006F] hover:underline cursor-pointer"
+                            title="Criar tarefa para este cliente"
+                          >
+                            + Nova Tarefa
+                          </button>
+                          {currentUser.role === "admin_lawyer" && (
+                            <>
+                              <span className="text-[#CCC]">·</span>
+                              <button
+                                onClick={() => {
+                                  setSelectedFeeClient(c.id);
+                                  setActiveTab("feenotes");
+                                }}
+                                className="text-xs font-semibold text-[#92006F] hover:underline cursor-pointer"
+                              >
+                                Criar Nota de Honorários →
+                              </button>
+                            </>
+                          )}
+                        </div>
+                      </div>
                     </div>
-                    <span className="text-[10px] bg-emerald-100 text-emerald-800 px-2 py-0.5 rounded font-semibold">
-                      Ativo
-                    </span>
+                  );
+                })}
+            </div>
+          </div>
+        )}
+
+        {/* ── CONTEÚDO DA TAB: TABELA DE SERVIÇOS & CATEGORIAS (€/H) (PORTAL ADMIN) ── */}
+        {activeTab === "services" && currentUser.role === "admin_lawyer" && (
+          <div className="p-4 sm:p-8 space-y-6 max-w-7xl w-full mx-auto">
+            {/* Cabeçalho */}
+            <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4 bg-white p-5 sm:p-6 rounded-xl border border-[#ECE6DB] shadow-xs">
+              <div className="flex items-center gap-3">
+                <span className="p-2.5 rounded-lg bg-[#FDF2F8] text-[#92006F] border border-[#FBCFE8]">
+                  <SlidersHorizontal className="w-5 h-5" />
+                </span>
+                <div>
+                  <h2 className="text-lg sm:text-xl font-bold text-[#141414]">
+                    Tabela de Serviços Forenses & Tarifas por Categoria (€/h)
+                  </h2>
+                </div>
+              </div>
+
+              <div className="flex items-center gap-2">
+                <button
+                  type="button"
+                  onClick={() => switchTab("feenotes")}
+                  className="bg-white hover:bg-[#FAF8F5] text-[#444] border border-[#D9D1C5] text-xs font-semibold px-3.5 py-2.5 rounded-lg flex items-center gap-1.5 shadow-2xs transition-all cursor-pointer"
+                >
+                  <CreditCard className="w-4 h-4 text-[#92006F]" />
+                  <span>Ir para Notas de Honorários</span>
+                </button>
+
+                <button
+                  type="button"
+                  onClick={openCreateCategoryModal}
+                  className="bg-[#92006F] hover:bg-[#7E0060] text-white text-xs font-semibold px-4 py-2.5 rounded-lg flex items-center gap-2 shadow-xs transition-all cursor-pointer"
+                >
+                  <Plus className="w-4 h-4" />
+                  <span>+ Novo Serviço / Categoria</span>
+                </button>
+              </div>
+            </div>
+
+            {/* Tabela de Categorias de Serviço */}
+            <div className="pcn-card overflow-hidden">
+              <div className="px-5 py-4 bg-[#FAF7F2] border-b border-[#ECE6DB] flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+                <div>
+                  <h3 className="text-sm font-bold text-[#141414]">
+                    Catálogo de Serviços e Valores Horários (€/h)
+                  </h3>
+                  <p className="text-[11px] text-[#736B5E]">
+                    Pode alterar rapidamente o valor €/h diretamente na tabela ou clicar em "Editar" para alterar o nome e descrição do serviço.
+                  </p>
+                </div>
+                <span className="text-[11px] font-semibold text-emerald-800 bg-emerald-50 border border-emerald-200 px-2.5 py-1 rounded-full">
+                  Cálculo Automático Ativo
+                </span>
+              </div>
+
+              <div className="overflow-x-auto">
+                <table className="min-w-[600px] w-full text-left text-xs text-[#222] border-collapse">
+                  <thead className="bg-[#92006F] text-white text-[11px] font-bold uppercase tracking-wider">
+                    <tr>
+                      <th className="px-5 py-3">Categoria / Serviço Forense</th>
+                      <th className="px-5 py-3">Descrição do Ato</th>
+                      <th className="px-5 py-3">Valor Hora (€/h)</th>
+                      <th className="px-5 py-3 text-right">Ações</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-[#ECE6DB]">
+                    {serviceCategories.map((cat) => (
+                      <tr key={cat.id} className="hover:bg-[#FAF8F5] transition-colors">
+                        <td className="px-5 py-3.5">
+                          <div className="flex items-center gap-2.5">
+                            <span
+                              className="w-3 h-3 rounded-full shrink-0 border border-black/10"
+                              style={{ backgroundColor: cat.color || "#92006F" }}
+                            />
+                            <span className="font-bold text-[#141414] text-xs">{cat.name}</span>
+                          </div>
+                        </td>
+                        <td className="px-5 py-3.5 text-[#665F54] max-w-md">
+                          {cat.description || "Serviço jurídico e acompanhamento processual"}
+                        </td>
+                        <td className="px-5 py-3.5">
+                          <div className="inline-flex items-center gap-1.5">
+                            <input
+                              type="number"
+                              min="0"
+                              step="5"
+                              value={cat.hourly_rate}
+                              onChange={(e) => {
+                                const val = parseFloat(e.target.value);
+                                handleQuickUpdateCategoryRate(cat, isNaN(val) ? 0 : val);
+                              }}
+                              className="w-24 text-right font-bold text-xs text-[#92006F] bg-[#FAF8F5] border border-[#D9D1C5] rounded-md px-2.5 py-1.5 focus:ring-1 focus:ring-[#92006F] outline-none"
+                            />
+                            <span className="font-bold text-[#555] text-xs">€/h</span>
+                          </div>
+                        </td>
+                        <td className="px-5 py-3.5 text-right">
+                          <div className="inline-flex items-center justify-end gap-2">
+                            <button
+                              type="button"
+                              onClick={() => openEditCategoryModal(cat)}
+                              className="px-2.5 py-1.5 rounded-md bg-white hover:bg-[#FAF8F5] text-[#333] border border-[#D9D1C5] font-semibold text-[11px] cursor-pointer transition-colors"
+                            >
+                              Editar
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => handleDeleteCategory(cat)}
+                              className="p-1.5 rounded-md text-[#888] hover:text-rose-700 hover:bg-rose-50 cursor-pointer transition-colors"
+                              title="Eliminar Categoria de Serviço"
+                            >
+                              <Trash2 className="w-4 h-4" />
+                            </button>
+                          </div>
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* ── MODAL: CRIAR / EDITAR CATEGORIA DE SERVIÇO (€/H) (PORTAL ADMIN) ── */}
+        {isCategoryModalOpen && (
+          <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-xs p-4 overflow-y-auto animate-in fade-in duration-200">
+            <div className="bg-white border border-[#D4AF37]/40 rounded-xl shadow-2xl max-w-md w-full overflow-hidden">
+              <div className="bg-gradient-to-r from-[#92006F] to-[#5E0047] text-white px-5 py-4 flex items-center justify-between">
+                <div>
+                  <h3 className="text-sm font-bold tracking-wide">
+                    {editingCategory ? "Editar Categoria de Serviço" : "Novo Serviço / Categoria Forense"}
+                  </h3>
+                  <p className="text-[11px] text-white/80">
+                    Defina o nome do serviço e o valor por hora (€/h) para cálculo automático
+                  </p>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setIsCategoryModalOpen(false)}
+                  className="text-white/70 hover:text-white cursor-pointer"
+                >
+                  <X className="w-5 h-5" />
+                </button>
+              </div>
+
+              <form onSubmit={handleSaveCategory} className="p-5 space-y-4 text-xs">
+                <div>
+                  <label className="block font-bold text-[#333] mb-1">
+                    Nome do Serviço / Categoria *
+                  </label>
+                  <input
+                    type="text"
+                    required
+                    value={categoryForm.name}
+                    onChange={(e) => setCategoryForm({ ...categoryForm, name: e.target.value })}
+                    placeholder="ex: Direito Societário & Contratos"
+                    className="w-full bg-[#FAF8F5] border border-[#D9D1C5] rounded-md px-3 py-2 text-xs text-[#141414] focus:ring-1 focus:ring-[#92006F] outline-none"
+                  />
+                </div>
+
+                <div className="grid grid-cols-2 gap-3">
+                  <div>
+                    <label className="block font-bold text-[#333] mb-1">
+                      Valor por Hora (€/h) *
+                    </label>
+                    <div className="flex items-center gap-1.5">
+                      <input
+                        type="number"
+                        required
+                        min="0"
+                        step="0.5"
+                        value={categoryForm.hourly_rate}
+                        onChange={(e) =>
+                          setCategoryForm({
+                            ...categoryForm,
+                            hourly_rate: parseFloat(e.target.value) || 0,
+                          })
+                        }
+                        placeholder="150"
+                        className="w-full bg-[#FAF8F5] border border-[#D9D1C5] rounded-md px-3 py-2 text-xs font-bold text-[#92006F] focus:ring-1 focus:ring-[#92006F] outline-none"
+                      />
+                      <span className="font-bold text-[#555]">€/h</span>
+                    </div>
                   </div>
 
-                  <div className="text-xs text-[#666] space-y-1">
-                    <p>Correio: {c.email || "—"}</p>
-                    <p>Contacto telefónico: {c.phone || "—"}</p>
-                  </div>
-
-                  <div className="pt-3 border-t border-[#F2EDE4] flex justify-between items-center text-xs">
-                    <span className="text-[#888]">
-                      {tasks.filter((t) => t.client_id === c.id).length} tarefas registadas
-                    </span>
+                  <div>
+                    <label className="block font-bold text-[#333] mb-1">
+                      Cor Identificadora
+                    </label>
                     <div className="flex items-center gap-2">
-                      <button
-                        onClick={() => {
-                          setTaskFormClientId(c.id);
-                          setIsNewTaskModalOpen(true);
-                        }}
-                        className="text-xs font-semibold text-[#141414] hover:text-[#92006F] hover:underline cursor-pointer"
-                        title="Criar tarefa para este cliente"
-                      >
-                        + Nova Tarefa
-                      </button>
-                      <span className="text-[#CCC]">·</span>
-                      <button
-                        onClick={() => {
-                          setSelectedFeeClient(c.id);
-                          setActiveTab("feenotes");
-                        }}
-                        className="text-xs font-semibold text-[#92006F] hover:underline cursor-pointer"
-                      >
-                        Criar Nota de Honorários →
-                      </button>
+                      <input
+                        type="color"
+                        value={categoryForm.color}
+                        onChange={(e) =>
+                          setCategoryForm({ ...categoryForm, color: e.target.value })
+                        }
+                        className="h-9 w-14 rounded border border-[#D9D1C5] bg-[#FAF8F5] p-1 cursor-pointer"
+                      />
+                      <span className="font-mono text-[11px] text-[#666]">
+                        {categoryForm.color}
+                      </span>
                     </div>
                   </div>
                 </div>
-              ))}
+
+                <div>
+                  <label className="block font-bold text-[#333] mb-1">
+                    Descrição / Âmbito do Serviço
+                  </label>
+                  <textarea
+                    rows={3}
+                    value={categoryForm.description}
+                    onChange={(e) =>
+                      setCategoryForm({ ...categoryForm, description: e.target.value })
+                    }
+                    placeholder="ex: Elaboração de contratos, atas societárias, pareceres ou diligências externas..."
+                    className="w-full bg-[#FAF8F5] border border-[#D9D1C5] rounded-md px-3 py-2 text-xs text-[#141414] focus:ring-1 focus:ring-[#92006F] outline-none"
+                  />
+                </div>
+
+                <div className="pt-3 border-t border-[#ECE6DB] flex items-center justify-end gap-2">
+                  <button
+                    type="button"
+                    onClick={() => setIsCategoryModalOpen(false)}
+                    className="px-3 py-2 text-xs font-medium text-[#666] hover:text-[#222] cursor-pointer"
+                  >
+                    Cancelar
+                  </button>
+                  <button
+                    type="submit"
+                    className="bg-[#92006F] hover:bg-[#7E0060] text-white text-xs font-semibold px-4 py-2 rounded-md flex items-center gap-1.5 shadow-xs cursor-pointer"
+                  >
+                    <Check className="w-3.5 h-3.5" />
+                    <span>{editingCategory ? "Guardar Alterações" : "Criar Serviço"}</span>
+                  </button>
+                </div>
+              </form>
             </div>
           </div>
         )}
@@ -4636,16 +5845,31 @@ PCN Advogadas · Plataforma Forense`;
                   </div>
 
                   <div>
-                    <label className="font-bold text-[#333] block mb-1">Tipo de Tarefa *</label>
+                    <div className="flex items-center justify-between mb-1">
+                      <label className="font-bold text-[#333]">Categoria de Serviço *</label>
+                      {currentUser.role === "admin_lawyer" && (
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setIsNewTaskModalOpen(false);
+                            switchTab("services");
+                          }}
+                          className="text-[10px] font-bold text-[#92006F] hover:underline cursor-pointer"
+                        >
+                          + Gerir Serviços
+                        </button>
+                      )}
+                    </div>
                     <select
                       value={taskFormTypeId}
                       onChange={(e) => setTaskFormTypeId(e.target.value)}
                       className="w-full bg-[#FAF8F5] border border-[#D9D1C5] rounded-md px-3 py-2 text-xs focus:ring-1 focus:ring-[#92006F] outline-none text-[#141414]"
                     >
-                      <option value="tp_1">Certidões e Registos</option>
-                      <option value="tp_2">Peças Processuais</option>
-                      <option value="tp_3">Consultoria e Reuniões</option>
-                      <option value="tp_4">Audiências e Julgamentos</option>
+                      {serviceCategories.map((cat) => (
+                        <option key={cat.id} value={cat.id}>
+                          {cat.name} ({cat.hourly_rate.toFixed(2)} €/h)
+                        </option>
+                      ))}
                     </select>
                   </div>
                 </div>
@@ -4992,11 +6216,125 @@ PCN Advogadas · Plataforma Forense`;
                   </div>
                 </div>
 
-                <div className="bg-[#FAF8F5] p-2.5 rounded border border-[#EFE8DD] flex items-center justify-between text-xs font-mono text-[#666]">
-                  <span>Tempo acumulado registado:</span>
-                  <strong className="text-[#141414] font-bold">
-                    {formatSeconds(selectedTaskForDetails.total_duration_seconds)}
-                  </strong>
+                <div className="bg-[#F5F1EA] p-3 rounded-lg border border-[#E4DDD2] space-y-2.5">
+                  <div className="flex items-center justify-between">
+                    <span className="text-xs font-bold text-[#444] flex items-center gap-1.5">
+                      <Clock className="w-3.5 h-3.5 text-[#92006F]" />
+                      Ajuste Manual de Tempo Acumulado:
+                    </span>
+                    <strong className="font-mono text-xs text-[#92006F] bg-white px-2 py-0.5 rounded border border-[#E2DAD0]">
+                      {formatSeconds(
+                        Math.max(
+                          0,
+                          (Number(detailsForm.duration_hours) || 0) * 3600 +
+                            (Number(detailsForm.duration_minutes) || 0) * 60 +
+                            (Number(detailsForm.duration_seconds) || 0)
+                        )
+                      )}
+                    </strong>
+                  </div>
+
+                  <div className="grid grid-cols-3 gap-2">
+                    <div>
+                      <label className="text-[10px] font-semibold text-[#665F54] block mb-0.5">
+                        Horas
+                      </label>
+                      <input
+                        type="number"
+                        min="0"
+                        value={detailsForm.duration_hours}
+                        onChange={(e) =>
+                          setDetailsForm({
+                            ...detailsForm,
+                            duration_hours: Math.max(0, parseInt(e.target.value, 10) || 0),
+                          })
+                        }
+                        className="w-full bg-white border border-[#D9D1C5] rounded px-2 py-1.5 text-xs font-mono font-bold text-[#141414] focus:ring-1 focus:ring-[#92006F] outline-none"
+                      />
+                    </div>
+                    <div>
+                      <label className="text-[10px] font-semibold text-[#665F54] block mb-0.5">
+                        Minutos
+                      </label>
+                      <input
+                        type="number"
+                        min="0"
+                        max="59"
+                        value={detailsForm.duration_minutes}
+                        onChange={(e) =>
+                          setDetailsForm({
+                            ...detailsForm,
+                            duration_minutes: Math.max(0, parseInt(e.target.value, 10) || 0),
+                          })
+                        }
+                        className="w-full bg-white border border-[#D9D1C5] rounded px-2 py-1.5 text-xs font-mono font-bold text-[#141414] focus:ring-1 focus:ring-[#92006F] outline-none"
+                      />
+                    </div>
+                    <div>
+                      <label className="text-[10px] font-semibold text-[#665F54] block mb-0.5">
+                        Segundos
+                      </label>
+                      <input
+                        type="number"
+                        min="0"
+                        max="59"
+                        value={detailsForm.duration_seconds}
+                        onChange={(e) =>
+                          setDetailsForm({
+                            ...detailsForm,
+                            duration_seconds: Math.max(0, parseInt(e.target.value, 10) || 0),
+                          })
+                        }
+                        className="w-full bg-white border border-[#D9D1C5] rounded px-2 py-1.5 text-xs font-mono font-bold text-[#141414] focus:ring-1 focus:ring-[#92006F] outline-none"
+                      />
+                    </div>
+                  </div>
+
+                  <div className="flex items-center justify-between gap-1.5 pt-1">
+                    <span className="text-[10px] text-[#736B5E]">Atalhos rápidos:</span>
+                    <div className="flex items-center gap-1 flex-wrap">
+                      {[
+                        { label: "+15m", addSec: 900 },
+                        { label: "+30m", addSec: 1800 },
+                        { label: "+1h", addSec: 3600 },
+                      ].map((btn) => (
+                        <button
+                          key={btn.label}
+                          type="button"
+                          onClick={() => {
+                            const cur =
+                              (Number(detailsForm.duration_hours) || 0) * 3600 +
+                              (Number(detailsForm.duration_minutes) || 0) * 60 +
+                              (Number(detailsForm.duration_seconds) || 0) +
+                              btn.addSec;
+                            setDetailsForm({
+                              ...detailsForm,
+                              duration_hours: Math.floor(cur / 3600),
+                              duration_minutes: Math.floor((cur % 3600) / 60),
+                              duration_seconds: cur % 60,
+                            });
+                          }}
+                          className="text-[10px] font-bold bg-white hover:bg-[#FAF8F5] text-[#92006F] border border-[#D9D1C5] px-2 py-0.5 rounded cursor-pointer transition-colors"
+                        >
+                          {btn.label}
+                        </button>
+                      ))}
+                      <button
+                        type="button"
+                        onClick={() =>
+                          setDetailsForm({
+                            ...detailsForm,
+                            duration_hours: 0,
+                            duration_minutes: 0,
+                            duration_seconds: 0,
+                          })
+                        }
+                        className="text-[10px] font-semibold bg-white hover:bg-rose-50 text-rose-600 border border-[#D9D1C5] px-2 py-0.5 rounded cursor-pointer transition-colors"
+                      >
+                        Zerar
+                      </button>
+                    </div>
+                  </div>
                 </div>
 
                 <div className="pt-3 sm:pt-4 border-t border-[#EFE8DD] flex items-center justify-between gap-2 shrink-0">
