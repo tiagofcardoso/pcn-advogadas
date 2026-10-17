@@ -79,6 +79,13 @@ class UserService:
             user.role = data.role
         if data.is_active is not None:
             user.is_active = data.is_active
+        if data.password:
+            user.password_hash = hash_password(data.password.strip())
+        if data.must_change_password is not None:
+            user.must_change_password = data.must_change_password
+
+        user.failed_login_attempts = 0
+        user.locked_until = None
 
         await self._audit(AuditAction.USER_UPDATED, admin_user.id, user.id)
         await self.session.commit()

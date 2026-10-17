@@ -80,6 +80,12 @@ async def run_seed(include_demo_data: bool = False) -> None:
                 u.locked_until = None
             created_users[uid] = u
 
+        # Garantir que todas as contas existentes na base de dados estão desbloqueadas
+        all_users_res = await session.execute(select(User))
+        for existing_user in all_users_res.scalars().all():
+            existing_user.failed_login_attempts = 0
+            existing_user.locked_until = None
+
         # 2. Tipos de Tarefa Oficiais do Escritório
         types_data = [
             ("tp_1", "Certidões e Registos", "#92006F"),

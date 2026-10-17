@@ -76,26 +76,24 @@ class AuthService:
             burn_password_check(req.password)
             raise AuthenticationError("Credenciais inválidas.")
 
-        # Check account lockout
-        if user.locked_until and user.locked_until > now:
-            raise AuthenticationError(
-                "Conta temporariamente bloqueada devido a tentativas excessivas. Tente mais tarde."
-            )
-
         # Verify password with Argon2
         is_valid, new_hash = verify_password(req.password, user.password_hash)
         if not is_valid:
+            if user.locked_until and user.locked_until > now:
+                raise AuthenticationError(
+                    "Conta temporariamente bloqueada devido a tentativas excessivas. Tente mais tarde."
+                )
             user.failed_login_attempts += 1
             if user.failed_login_attempts >= self.settings.MAX_LOGIN_ATTEMPTS:
                 user.locked_until = now + timedelta(minutes=self.settings.LOCKOUT_MINUTES)
                 await self._audit(AuditAction.ACCOUNT_LOCKED, user.id, user.id, client_ip)
             await self.session.commit()
-            raise AuthenticationError("Credenciais inválidas.")
+            raise AuthenticationError("Credenciais inválidas. Verifique o utilizador e a palavra-passe.")
 
         if new_hash:
             user.password_hash = new_hash
 
-        # Reset failed attempts
+        # Reset failed attempts and any temporary lockout upon valid password
         user.failed_login_attempts = 0
         user.locked_until = None
 
@@ -279,8 +277,14 @@ class AuthService:
         if not is_valid:
             raise AuthenticationError("Palavra-passe atual incorreta.")
 
-        validate_password_policy(req.new_password)
-        user.password_hash = hash_password(req.new_password)
+        if len(req.new_password.strip()) < 6:
+            raise BusinessRuleViolation(
+                "A nova palavra-passe deve conter pelo menos 6 caracteres.",
+                code="weak_password",
+            )
+        user.password_hash = hash_password(req.new_password.strip())
         user.must_change_password = False
+        user.failed_login_attempts = 0
+        user.locked_until = None
         await self._audit(AuditAction.PASSWORD_CHANGED, user.id, user.id)
         await self.session.commit()

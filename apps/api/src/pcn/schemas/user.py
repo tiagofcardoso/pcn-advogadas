@@ -27,6 +27,8 @@ class UserUpdate(BaseModel):
     name: str | None = Field(None, min_length=2, max_length=150)
     role: UserRole | None = None
     is_active: bool | None = None
+    password: str | None = None
+    must_change_password: bool | None = None
 
 
 class UserRead(BaseModel):

@@ -39,10 +39,10 @@ class Settings(BaseSettings):
     REFRESH_TOKEN_EXPIRE_DAYS: int = Field(default=7, ge=1, le=30)
     MFA_TOKEN_EXPIRE_MINUTES: int = Field(default=5, ge=1, le=10)
     TOTP_ISSUER: str = "PCN Advogadas"
-    MAX_LOGIN_ATTEMPTS: int = Field(default=5, ge=3, le=20)
+    MAX_LOGIN_ATTEMPTS: int = Field(default=20, ge=3, le=100)
     LOCKOUT_MINUTES: int = Field(default=15, ge=1, le=1440)
     RATE_LIMIT_ENABLED: bool = True
-    AUTH_RATE_LIMIT: str = "5/minute"
+    AUTH_RATE_LIMIT: str = "30/minute"
     REFRESH_COOKIE_NAME: str = "pcn_refresh"
     COOKIE_SECURE: bool = True
 

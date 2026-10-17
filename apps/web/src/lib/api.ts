@@ -35,7 +35,9 @@ export async function apiFetch<T>(endpoint: string, options: RequestOptions = {}
     ...rest,
   });
 
-  if (res.status === 401) {
+  const isAuthRoute = endpoint.startsWith("/auth/");
+
+  if (res.status === 401 && !isAuthRoute) {
     if (typeof window !== "undefined") {
       localStorage.removeItem("pcn_session_token");
       localStorage.removeItem("pcn_session_expiry");
@@ -51,7 +53,7 @@ export async function apiFetch<T>(endpoint: string, options: RequestOptions = {}
 
   if (!res.ok) {
     const errorBody = await res.json().catch(() => ({}));
-    throw new Error(errorBody.detail || errorBody.message || `Erro ${res.status}: ${res.statusText}`);
+    throw new Error(errorBody.message || errorBody.detail || `Erro ${res.status}: ${res.statusText}`);
   }
 
   if (res.status === 204) {
@@ -65,7 +67,7 @@ export async function apiFetch<T>(endpoint: string, options: RequestOptions = {}
 export async function loginApi(email: string, password: string) {
   return apiFetch<any>("/auth/login", {
     method: "POST",
-    body: JSON.stringify({ email, password }),
+    body: JSON.stringify({ email: email.trim(), password }),
   });
 }
 
