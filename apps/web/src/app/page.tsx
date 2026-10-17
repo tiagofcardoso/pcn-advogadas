@@ -3808,17 +3808,17 @@ PCN Advogadas · Plataforma Forense`;
             {taskStatusFilter === "all" ? (
               <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4 gap-4 sm:gap-5">
                 {/* Coluna 1: Pool Partilhada */}
-                <div className="pcn-kanban-col p-3.5 sm:p-4">
-                  <div className="flex items-center justify-between pb-3 border-b border-[#DDD3C0]">
+                <div className="bg-[#ECE5D8] border border-[#DDD4C4] rounded-2xl p-3.5 sm:p-4 min-h-[480px] shadow-2xs flex flex-col">
+                  <div className="flex items-center justify-between pb-3.5">
                     <h3 className="text-xs font-bold text-[#141414] uppercase tracking-wider">
                       Pool Partilhada ({tasks.filter((t) => t.status === "pool").length})
                     </h3>
-                    <span className="text-[10px] bg-purple-100 text-[#92006F] px-2 py-0.5 rounded font-semibold">
+                    <span className="text-[10px] bg-[#F3E8FF] text-[#92006F] px-2 py-0.5 rounded font-semibold">
                       Livre
                     </span>
                   </div>
 
-                  <div className="space-y-3.5 mt-3.5">
+                  <div className="space-y-3 flex-1">
                     {tasks
                       .filter((t) => t.status === "pool")
                       .map((task) => {
@@ -3826,13 +3826,13 @@ PCN Advogadas · Plataforma Forense`;
                         return (
                           <div
                             key={task.id}
-                            className="pcn-task-card p-3 sm:p-3.5 space-y-2"
+                            className="bg-white border border-[#E2D9CB] p-4 rounded-xl shadow-md space-y-3 hover:border-[#92006F] hover:shadow-lg transition-all"
                           >
                             <div className="flex items-center justify-between">
                               <span className="text-[10px] font-bold text-[#92006F] uppercase">
                                 {task.task_type}
                               </span>
-                              <div className="flex items-center gap-1">
+                              <div className="flex items-center gap-1.5">
                                 <button
                                   onClick={() => openTaskDetails(task)}
                                   className="text-[#888] hover:text-[#92006F] p-1 rounded cursor-pointer"
@@ -3855,9 +3855,11 @@ PCN Advogadas · Plataforma Forense`;
                             >
                               {task.title}
                             </h4>
-                            <p className="text-[11px] text-[#666] line-clamp-2">{task.description}</p>
+                            {task.description && (
+                              <p className="text-[11px] text-[#666] line-clamp-2">{task.description}</p>
+                            )}
                             {dInfo && (
-                              <div className="pt-0.5">
+                              <div>
                                 <span
                                   className={`text-[10px] border px-2 py-0.5 rounded-full font-semibold inline-flex items-center gap-1 ${dInfo.badgeClass}`}
                                 >
@@ -3879,16 +3881,18 @@ PCN Advogadas · Plataforma Forense`;
                         );
                       })}
                     {tasks.filter((t) => t.status === "pool").length === 0 && (
-                      <p className="text-xs text-[#888] text-center py-6 italic">
-                        Nenhuma tarefa na Pool de momento.
-                      </p>
+                      <div className="flex-1 flex items-center justify-center py-12">
+                        <p className="text-xs text-[#8C7E6D] text-center italic">
+                          Nenhuma tarefa na Pool de momento.
+                        </p>
+                      </div>
                     )}
                   </div>
                 </div>
 
                 {/* Coluna 2: Em Andamento (e Abertas) */}
-                <div className="pcn-kanban-col p-3.5 sm:p-4">
-                  <div className="flex items-center justify-between pb-3 border-b border-[#DDD3C0]">
+                <div className="bg-[#ECE5D8] border border-[#DDD4C4] rounded-2xl p-3.5 sm:p-4 min-h-[480px] shadow-2xs flex flex-col">
+                  <div className="flex items-center justify-between pb-3.5">
                     <h3 className="text-xs font-bold text-[#141414] uppercase tracking-wider">
                       Em Andamento (
                       {
@@ -3898,12 +3902,12 @@ PCN Advogadas · Plataforma Forense`;
                       }
                       )
                     </h3>
-                    <span className="text-[10px] bg-emerald-100 text-emerald-800 px-2 py-0.5 rounded font-semibold">
+                    <span className="text-[10px] bg-[#D1FAE5] text-emerald-800 px-2 py-0.5 rounded font-semibold">
                       Em Execução
                     </span>
                   </div>
 
-                  <div className="space-y-3.5 mt-3.5">
+                  <div className="space-y-3 flex-1">
                     {tasks
                       .filter(
                         (t) => t.status === "assigned" || t.status === "in_progress"
@@ -3914,9 +3918,11 @@ PCN Advogadas · Plataforma Forense`;
                         return (
                           <div
                             key={task.id}
-                            className={`pcn-task-card ${
-                              isRunningThis ? "border-[#92006F] ring-2 ring-[#92006F]/25" : ""
-                            } p-3 sm:p-3.5 space-y-2.5`}
+                            className={`bg-white border ${
+                              isRunningThis
+                                ? "border-[#92006F] ring-2 ring-[#92006F]/25 shadow-lg"
+                                : "border-[#E2D9CB] shadow-md"
+                            } p-4 rounded-xl space-y-3 hover:border-[#92006F] hover:shadow-lg transition-all`}
                           >
                             <div className="flex items-center justify-between">
                               <span className="text-[10px] font-bold text-[#92006F] uppercase">
@@ -3977,7 +3983,7 @@ PCN Advogadas · Plataforma Forense`;
                               </div>
                             )}
 
-                            <div className="bg-[#F6F2EA] p-2 rounded border border-[#E4DDD0] flex items-center justify-between text-xs font-mono">
+                            <div className="bg-[#FAF7F2] p-2.5 rounded-lg border border-[#E6DFD3] flex items-center justify-between text-xs font-mono">
                               <span className="text-[#666]">Tempo acumulado:</span>
                               <span className="font-bold text-[#141414]">
                                 {formatSeconds(task.total_duration_seconds)}
@@ -3988,14 +3994,14 @@ PCN Advogadas · Plataforma Forense`;
                               {task.status === "in_progress" ? (
                                 <button
                                   onClick={() => handlePauseTimer(task)}
-                                  className="w-full bg-amber-500 hover:bg-amber-600 text-white text-[11px] font-semibold py-1.5 rounded flex items-center justify-center gap-1 cursor-pointer transition-colors"
+                                  className="w-full bg-amber-500 hover:bg-amber-600 text-white text-[11px] font-semibold py-1.5 rounded-lg flex items-center justify-center gap-1 cursor-pointer transition-colors"
                                 >
                                   <Pause className="w-3 h-3" /> Pausar
                                 </button>
                               ) : (
                                 <button
                                   onClick={() => handleStartTimer(task)}
-                                  className="w-full bg-[#92006F] hover:bg-[#7E0060] text-white text-[11px] font-semibold py-1.5 rounded flex items-center justify-center gap-1 cursor-pointer transition-colors"
+                                  className="w-full bg-[#92006F] hover:bg-[#7E0060] text-white text-[11px] font-semibold py-1.5 rounded-lg flex items-center justify-center gap-1 cursor-pointer transition-colors"
                                 >
                                   <Play className="w-3 h-3 fill-current" /> Iniciar
                                 </button>
@@ -4003,7 +4009,7 @@ PCN Advogadas · Plataforma Forense`;
 
                               <button
                                 onClick={() => handleCompleteTask(task)}
-                                className="bg-emerald-600 hover:bg-emerald-700 text-white text-[11px] font-semibold px-3 py-1.5 rounded cursor-pointer transition-colors"
+                                className="bg-emerald-600 hover:bg-emerald-700 text-white text-[11px] font-semibold px-3 py-1.5 rounded-lg cursor-pointer transition-colors"
                               >
                                 Concluir
                               </button>
@@ -4014,25 +4020,27 @@ PCN Advogadas · Plataforma Forense`;
                     {tasks.filter(
                       (t) => t.status === "assigned" || t.status === "in_progress"
                     ).length === 0 && (
-                      <p className="text-xs text-[#888] text-center py-6 italic">
-                        Nenhuma tarefa em andamento.
-                      </p>
+                      <div className="flex-1 flex items-center justify-center py-12">
+                        <p className="text-xs text-[#8C7E6D] text-center italic">
+                          Nenhuma tarefa em andamento.
+                        </p>
+                      </div>
                     )}
                   </div>
                 </div>
 
                 {/* Coluna 3: Pausadas */}
-                <div className="pcn-kanban-col p-3.5 sm:p-4">
-                  <div className="flex items-center justify-between pb-3 border-b border-[#DDD3C0]">
+                <div className="bg-[#ECE5D8] border border-[#DDD4C4] rounded-2xl p-3.5 sm:p-4 min-h-[480px] shadow-2xs flex flex-col">
+                  <div className="flex items-center justify-between pb-3.5">
                     <h3 className="text-xs font-bold text-[#141414] uppercase tracking-wider">
                       Pausadas ({tasks.filter((t) => t.status === "paused").length})
                     </h3>
-                    <span className="text-[10px] bg-amber-100 text-[#AA820A] px-2 py-0.5 rounded font-semibold">
+                    <span className="text-[10px] bg-[#FEF3C7] text-[#92400E] px-2 py-0.5 rounded font-semibold">
                       Em Pausa
                     </span>
                   </div>
 
-                  <div className="space-y-3.5 mt-3.5">
+                  <div className="space-y-3 flex-1">
                     {tasks
                       .filter((t) => t.status === "paused")
                       .map((task) => {
@@ -4040,7 +4048,7 @@ PCN Advogadas · Plataforma Forense`;
                         return (
                           <div
                             key={task.id}
-                            className="pcn-task-card p-3 sm:p-3.5 space-y-2.5"
+                            className="bg-white border border-[#E2D9CB] p-4 rounded-xl shadow-md space-y-3 hover:border-[#92006F] hover:shadow-lg transition-all"
                           >
                             <div className="flex items-center justify-between">
                               <span className="text-[10px] font-bold text-[#92006F] uppercase">
@@ -4092,7 +4100,7 @@ PCN Advogadas · Plataforma Forense`;
                               </div>
                             )}
 
-                            <div className="bg-[#F6F2EA] p-2 rounded border border-[#E4DDD0] flex items-center justify-between text-xs font-mono">
+                            <div className="bg-[#FAF7F2] p-2.5 rounded-lg border border-[#E6DFD3] flex items-center justify-between text-xs font-mono">
                               <span className="text-[#666]">Tempo acumulado:</span>
                               <span className="font-bold text-[#141414]">
                                 {formatSeconds(task.total_duration_seconds)}
@@ -4102,14 +4110,14 @@ PCN Advogadas · Plataforma Forense`;
                             <div className="pt-2 border-t border-[#F2ECE1] flex items-center justify-between gap-2">
                               <button
                                 onClick={() => handleStartTimer(task)}
-                                className="w-full bg-[#92006F] hover:bg-[#7E0060] text-white text-[11px] font-semibold py-1.5 rounded flex items-center justify-center gap-1 cursor-pointer transition-colors"
+                                className="w-full bg-[#92006F] hover:bg-[#7E0060] text-white text-[11px] font-semibold py-1.5 rounded-lg flex items-center justify-center gap-1 cursor-pointer transition-colors"
                               >
                                 <Play className="w-3 h-3 fill-current" /> Iniciar
                               </button>
 
                               <button
                                 onClick={() => handleCompleteTask(task)}
-                                className="bg-emerald-600 hover:bg-emerald-700 text-white text-[11px] font-semibold px-3 py-1.5 rounded cursor-pointer transition-colors"
+                                className="bg-emerald-600 hover:bg-emerald-700 text-white text-[11px] font-semibold px-3 py-1.5 rounded-lg cursor-pointer transition-colors"
                               >
                                 Concluir
                               </button>
@@ -4118,31 +4126,33 @@ PCN Advogadas · Plataforma Forense`;
                         );
                       })}
                     {tasks.filter((t) => t.status === "paused").length === 0 && (
-                      <p className="text-xs text-[#888] text-center py-6 italic">
-                        Nenhuma tarefa pausada de momento.
-                      </p>
+                      <div className="flex-1 flex items-center justify-center py-12">
+                        <p className="text-xs text-[#8C7E6D] text-center italic">
+                          Nenhuma tarefa pausada de momento.
+                        </p>
+                      </div>
                     )}
                   </div>
                 </div>
 
                 {/* Coluna 4: Tarefas Concluídas */}
-                <div className="pcn-kanban-col p-3.5 sm:p-4">
-                  <div className="flex items-center justify-between pb-3 border-b border-[#DDD3C0]">
+                <div className="bg-[#ECE5D8] border border-[#DDD4C4] rounded-2xl p-3.5 sm:p-4 min-h-[480px] shadow-2xs flex flex-col">
+                  <div className="flex items-center justify-between pb-3.5">
                     <h3 className="text-xs font-bold text-[#141414] uppercase tracking-wider">
                       Concluídas ({tasks.filter((t) => t.status === "completed").length})
                     </h3>
-                    <span className="text-[10px] bg-emerald-100 text-emerald-800 px-2 py-0.5 rounded font-semibold">
+                    <span className="text-[10px] bg-[#D1FAE5] text-emerald-800 px-2 py-0.5 rounded font-semibold">
                       Finalizadas
                     </span>
                   </div>
 
-                  <div className="space-y-3.5 mt-3.5">
+                  <div className="space-y-3 flex-1">
                     {tasks
                       .filter((t) => t.status === "completed")
                       .map((task) => (
                         <div
                           key={task.id}
-                          className="pcn-task-card p-3 sm:p-3.5 space-y-2 opacity-95"
+                          className="bg-white border border-[#E2D9CB] p-4 rounded-xl shadow-md space-y-3 hover:border-emerald-600 hover:shadow-lg transition-all"
                         >
                           <div className="flex items-center justify-between">
                             <span className="text-[10px] font-bold text-emerald-700 uppercase">
@@ -4168,32 +4178,42 @@ PCN Advogadas · Plataforma Forense`;
 
                           <h4
                             onClick={() => openTaskDetails(task)}
-                            className="text-xs font-bold text-[#141414] line-through text-[#666] hover:text-[#92006F] cursor-pointer"
+                            className="text-xs font-bold text-[#141414] hover:text-[#92006F] cursor-pointer"
                           >
                             {task.title}
                           </h4>
+                          {task.description && (
+                            <p className="text-[11px] text-[#666] line-clamp-2">{task.description}</p>
+                          )}
 
-                          <div className="text-[11px] text-[#666] flex justify-between">
-                            <span>Tempo total:</span>
-                            <strong>{formatSeconds(task.total_duration_seconds)}</strong>
+                          <div className="text-[11px] text-[#777] flex items-center justify-between">
+                            <span>Cliente: <strong>{task.client_name}</strong></span>
+                            <span>Resp: <strong>{task.lawyer_name || "—"}</strong></span>
                           </div>
 
-                          <div className="pt-2 border-t border-[#F2ECE1] flex items-center justify-between gap-2">
+                          <div className="flex items-center justify-between text-xs pt-1 border-t border-[#F2ECE1]">
+                            <span className="text-[#777]">Tempo total:</span>
+                            <span className="font-mono font-bold text-[#141414]">
+                              {formatSeconds(task.total_duration_seconds)}
+                            </span>
+                          </div>
+
+                          <div className="pt-2 flex items-center gap-2">
                             <button
                               onClick={() => handleArchiveTask(task)}
-                              className="w-full bg-[#5E0047] hover:bg-[#4A0038] text-white text-[11px] font-semibold py-1.5 px-2 rounded flex items-center justify-center gap-1 cursor-pointer transition-colors shadow-xs"
-                              title="Mover para Arquivadas (sai do quadro)"
+                              className="w-full bg-[#5E0047] hover:bg-[#470036] text-white text-[11px] font-semibold py-1.5 rounded-lg flex items-center justify-center gap-1 cursor-pointer transition-colors shadow-xs"
                             >
-                              <Archive className="w-3.5 h-3.5" />
-                              <span>Mover para Arquivadas</span>
+                              <Archive className="w-3.5 h-3.5" /> Mover para Arquivadas
                             </button>
                           </div>
                         </div>
                       ))}
                     {tasks.filter((t) => t.status === "completed").length === 0 && (
-                      <p className="text-xs text-[#888] text-center py-6 italic">
-                        Nenhuma tarefa concluída no quadro ativo.
-                      </p>
+                      <div className="flex-1 flex items-center justify-center py-12">
+                        <p className="text-xs text-[#8C7E6D] text-center italic">
+                          Nenhuma tarefa concluída no quadro ativo.
+                        </p>
+                      </div>
                     )}
                   </div>
                 </div>
@@ -4226,7 +4246,7 @@ PCN Advogadas · Plataforma Forense`;
                       return (
                         <div
                           key={task.id}
-                          className="pcn-task-card p-4 space-y-3"
+                          className="bg-white border border-[#E2D9CB] rounded-xl shadow-md p-4 space-y-3 hover:border-[#92006F] hover:shadow-lg transition-all"
                         >
                           <div className="flex items-center justify-between">
                             <span className="text-[10px] font-bold text-[#92006F] uppercase">
@@ -4421,7 +4441,7 @@ PCN Advogadas · Plataforma Forense`;
                   .map((task) => (
                     <div
                       key={task.id}
-                      className="pcn-task-card p-4 space-y-3"
+                      className="bg-white border border-[#E2D9CB] rounded-xl shadow-md p-4 space-y-3 hover:border-[#92006F] transition-all"
                     >
                       <div className="flex items-center justify-between">
                         <span className="text-[10px] font-bold text-[#665F54] uppercase bg-[#F3EFE8] px-2 py-0.5 rounded border border-[#E2DAD0]">
