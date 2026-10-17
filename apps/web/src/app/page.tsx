@@ -235,7 +235,7 @@ export default function App() {
   const [reportsData, setReportsData] = useState<any>(null);
 
   // Judicial Deadline Calculator State (Art. 138/139 CPC)
-  const [calcStartDate, setCalcStartDate] = useState<string>(() => getTodayDateString());
+  const [calcStartDate, setCalcStartDate] = useState<string>("");
   const [calcDays, setCalcDays] = useState<number>(10);
   const [calcIsUrgent, setCalcIsUrgent] = useState<boolean>(false);
   const [calcResult, setCalcResult] = useState<{
@@ -454,10 +454,23 @@ export default function App() {
   const [taskFormClientId, setTaskFormClientId] = useState("");
   const [taskFormTypeId, setTaskFormTypeId] = useState("tp_2");
   const [taskFormAssignee, setTaskFormAssignee] = useState("usr_patricia");
-  const [taskFormDueDate, setTaskFormDueDate] = useState(() => getTodayDateString());
+  const [taskFormDueDate, setTaskFormDueDate] = useState("");
   const [taskFormIsUrgent, setTaskFormIsUrgent] = useState(false);
   const [taskFormPublishToPool, setTaskFormPublishToPool] = useState(false);
   const [isSubmittingTask, setIsSubmittingTask] = useState(false);
+
+  // Define a data atual no cliente após o mount (evita erro de prerender estático no Next.js 16)
+  useEffect(() => {
+    const today = getTodayDateString();
+    setTaskFormDueDate((prev) => prev || today);
+    setCalcStartDate((prev) => prev || today);
+  }, []);
+
+  useEffect(() => {
+    if (isNewTaskModalOpen) {
+      setTaskFormDueDate(getTodayDateString());
+    }
+  }, [isNewTaskModalOpen]);
 
   // New Client Form
   const [clientFormName, setClientFormName] = useState("");
