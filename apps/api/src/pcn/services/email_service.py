@@ -1,12 +1,13 @@
 """Email notification service for task overtime (1h+) and deadline alerts."""
 
 import asyncio
+import json
 import logging
 import smtplib
+import urllib.request
 from email.message import EmailMessage
 from typing import Any
 
-import httpx
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from pcn.core.config import Settings, get_settings
@@ -126,23 +127,32 @@ class EmailNotificationService:
 
         if self.settings.RESEND_API_KEY and recipients:
             try:
-                async with httpx.AsyncClient(timeout=10) as client:
-                    resp = await client.post(
+                def _post_resend() -> tuple[int, str]:
+                    payload = json.dumps({
+                        "from": self.settings.SMTP_FROM,
+                        "to": recipients,
+                        "subject": subject,
+                        "html": html_body,
+                        "text": plain_body,
+                    }).encode("utf-8")
+                    req = urllib.request.Request(
                         "https://api.resend.com/emails",
-                        headers={"Authorization": f"Bearer {self.settings.RESEND_API_KEY}"},
-                        json={
-                            "from": self.settings.SMTP_FROM,
-                            "to": recipients,
-                            "subject": subject,
-                            "html": html_body,
-                            "text": plain_body,
+                        data=payload,
+                        headers={
+                            "Authorization": f"Bearer {self.settings.RESEND_API_KEY}",
+                            "Content-Type": "application/json",
                         },
+                        method="POST",
                     )
-                    if resp.status_code in (200, 201):
-                        sent = True
-                        method = "resend_api"
-                    else:
-                        error_detail = resp.text
+                    with urllib.request.urlopen(req, timeout=10) as resp:
+                        return resp.status, resp.read().decode("utf-8", errors="replace")
+
+                status_code, resp_text = await asyncio.to_thread(_post_resend)
+                if status_code in (200, 201):
+                    sent = True
+                    method = "resend_api"
+                else:
+                    error_detail = resp_text
             except Exception as exc:
                 error_detail = str(exc)
                 logger.warning("Falha ao enviar email via Resend: %s", exc)

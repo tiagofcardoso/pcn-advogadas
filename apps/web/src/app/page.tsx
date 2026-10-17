@@ -80,6 +80,102 @@ import {
   updateUserApi,
 } from "@/lib/api";
 
+function formatIsoToEuropean(iso?: string): string {
+  if (!iso) return "";
+  const clean = iso.split("T")[0];
+  if (/^\d{4}-\d{2}-\d{2}$/.test(clean)) {
+    const [y, m, d] = clean.split("-");
+    return `${d}/${m}/${y}`;
+  }
+  return clean;
+}
+
+function EuropeanDateInput({
+  value,
+  onChange,
+  className = "",
+}: {
+  value: string;
+  onChange: (isoDate: string) => void;
+  className?: string;
+}) {
+  const datePickerRef = useRef<HTMLInputElement>(null);
+  const [textVal, setTextVal] = useState<string>(() => formatIsoToEuropean(value));
+
+  useEffect(() => {
+    setTextVal(formatIsoToEuropean(value));
+  }, [value]);
+
+  const handleTextChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const digits = e.target.value.replace(/\D/g, "").slice(0, 8);
+    let formatted = digits;
+    if (digits.length > 4) {
+      formatted = `${digits.slice(0, 2)}/${digits.slice(2, 4)}/${digits.slice(4)}`;
+    } else if (digits.length > 2) {
+      formatted = `${digits.slice(0, 2)}/${digits.slice(2)}`;
+    }
+    setTextVal(formatted);
+
+    if (digits.length === 8) {
+      const dd = digits.slice(0, 2);
+      const mm = digits.slice(2, 4);
+      const yyyy = digits.slice(4, 8);
+      onChange(`${yyyy}-${mm}-${dd}`);
+    } else if (digits.length === 0) {
+      onChange("");
+    }
+  };
+
+  const openPicker = () => {
+    if (datePickerRef.current) {
+      try {
+        if (typeof (datePickerRef.current as any).showPicker === "function") {
+          (datePickerRef.current as any).showPicker();
+        } else {
+          datePickerRef.current.focus();
+          datePickerRef.current.click();
+        }
+      } catch {}
+    }
+  };
+
+  return (
+    <div className="relative flex items-center w-full">
+      <input
+        type="text"
+        inputMode="numeric"
+        placeholder="DD/MM/AAAA"
+        value={textVal}
+        onChange={handleTextChange}
+        onClick={openPicker}
+        className={`${className} pr-8`}
+      />
+      <button
+        type="button"
+        onClick={openPicker}
+        className="absolute right-2.5 text-[#736B5E] hover:text-[#92006F] cursor-pointer"
+        tabIndex={-1}
+        title="Selecionar data no calendário (DD/MM/AAAA)"
+      >
+        <Calendar className="w-4 h-4" />
+      </button>
+      <input
+        ref={datePickerRef}
+        type="date"
+        value={/^\d{4}-\d{2}-\d{2}$/.test(value) ? value : ""}
+        onChange={(e) => {
+          if (e.target.value) {
+            onChange(e.target.value);
+          }
+        }}
+        className="sr-only pointer-events-none"
+        tabIndex={-1}
+        aria-hidden="true"
+      />
+    </div>
+  );
+}
+
 export default function App() {
   const [currentUser, setCurrentUser] = useState<UserProfile>(INITIAL_USERS[0]);
   const [authToken, setAuthToken] = useState<string | null>(null);
@@ -126,12 +222,20 @@ export default function App() {
   } | null>(null);
   const alertedHoursRef = useRef<Record<string, number>>({});
 
+  const getTodayDateString = (): string => {
+    const now = new Date();
+    const y = now.getFullYear();
+    const m = String(now.getMonth() + 1).padStart(2, "0");
+    const d = String(now.getDate()).padStart(2, "0");
+    return `${y}-${m}-${d}`;
+  };
+
   // Search in Reports
   const [searchQuery, setSearchQuery] = useState<string>("");
   const [reportsData, setReportsData] = useState<any>(null);
 
   // Judicial Deadline Calculator State (Art. 138/139 CPC)
-  const [calcStartDate, setCalcStartDate] = useState<string>("2026-07-10");
+  const [calcStartDate, setCalcStartDate] = useState<string>(() => getTodayDateString());
   const [calcDays, setCalcDays] = useState<number>(10);
   const [calcIsUrgent, setCalcIsUrgent] = useState<boolean>(false);
   const [calcResult, setCalcResult] = useState<{
@@ -232,7 +336,7 @@ export default function App() {
       title: task.title,
       description: task.description || "",
       assigned_to: resolveAssigneeValue(task),
-      due_date: task.due_date || "",
+      due_date: task.due_date || getTodayDateString(),
       status: task.status,
     });
   };
@@ -350,7 +454,7 @@ export default function App() {
   const [taskFormClientId, setTaskFormClientId] = useState("");
   const [taskFormTypeId, setTaskFormTypeId] = useState("tp_2");
   const [taskFormAssignee, setTaskFormAssignee] = useState("usr_patricia");
-  const [taskFormDueDate, setTaskFormDueDate] = useState("2026-10-25");
+  const [taskFormDueDate, setTaskFormDueDate] = useState(() => getTodayDateString());
   const [taskFormIsUrgent, setTaskFormIsUrgent] = useState(false);
   const [taskFormPublishToPool, setTaskFormPublishToPool] = useState(false);
   const [isSubmittingTask, setIsSubmittingTask] = useState(false);
@@ -397,6 +501,8 @@ export default function App() {
     setIsLoadingApi(true);
     try {
       const dbPrices: Record<string, number> = {};
+      let loadedTasks: Task[] = [];
+      let loadedUsers: UserProfile[] = usersList;
 
       // 1. Tarefas
       try {
@@ -413,7 +519,15 @@ export default function App() {
           const toSyncWithServer: Array<{ task_id: string; total_duration_seconds: number }> = [];
           const nowMs = Date.now();
 
-          const mappedTasks = apiTasks.map((t: any) => {
+          let savedThresholds: Record<string, number> = {};
+          if (typeof window !== "undefined") {
+            try {
+              const rawThresh = localStorage.getItem("pcn_overtime_thresholds");
+              if (rawThresh) savedThresholds = JSON.parse(rawThresh);
+            } catch {}
+          }
+
+          const mappedTasks: Task[] = apiTasks.map((t: any) => {
             const parsedFee = t.fee_amount !== null && t.fee_amount !== undefined ? parseFloat(t.fee_amount) : undefined;
             if (parsedFee !== undefined && !isNaN(parsedFee)) {
               dbPrices[t.id] = parsedFee;
@@ -430,7 +544,9 @@ export default function App() {
                 toSyncWithServer.push({ task_id: t.id, total_duration_seconds: dur });
               }
             }
-            alertedHoursRef.current[t.id] = Math.floor(dur / 3600);
+            const persistedThreshold = savedThresholds[t.id] ?? 3600;
+            alertedHoursRef.current[t.id] =
+              dur >= persistedThreshold ? dur + 3600 : persistedThreshold;
             return {
               id: t.id,
               title: t.title,
@@ -446,6 +562,7 @@ export default function App() {
               fee_amount: parsedFee,
             };
           });
+          loadedTasks = mappedTasks;
           setTasks(mappedTasks);
 
           const runningList = mappedTasks.filter((t: Task) => t.status === "in_progress");
@@ -470,14 +587,13 @@ export default function App() {
           const accSec = activeTimer.total_accumulated_seconds || 0;
           setActiveTaskId(activeTimer.task_id);
           setIsTimerRunning(true);
-          setTasks((prev) =>
-            prev.map((t) => {
-              if (t.id !== activeTimer.task_id) return t;
-              const bestSec = Math.max(t.total_duration_seconds || 0, accSec);
-              setTimerSeconds(bestSec);
-              return { ...t, total_duration_seconds: bestSec };
-            })
-          );
+          loadedTasks = loadedTasks.map((t) => {
+            if (t.id !== activeTimer.task_id) return t;
+            const bestSec = Math.max(t.total_duration_seconds || 0, accSec);
+            setTimerSeconds(bestSec);
+            return { ...t, total_duration_seconds: bestSec };
+          });
+          setTasks(loadedTasks);
         }
       } catch (e) {
         console.warn("Aviso ao verificar cronómetro ativo:", e);
@@ -508,6 +624,7 @@ export default function App() {
         setIsLoadingUsers(true);
         const apiUsers = await getUsersApi(token);
         if (apiUsers && apiUsers.length > 0) {
+          loadedUsers = apiUsers;
           setUsersList(apiUsers);
           setTaskFormAssignee((prev) => {
             const exists = apiUsers.some((u: any) => u.id === prev);
@@ -519,6 +636,87 @@ export default function App() {
       } finally {
         setIsLoadingUsers(false);
       }
+
+      // 3.b Restaurar Popup de Alerta de 1h+ se existir tarefa em andamento que atingiu o limite atual sem ter sido reiniciada em "Continuar"
+      try {
+        let savedOvertime: {
+          taskId?: string;
+          hours?: number;
+          emailSent?: boolean;
+          recipientEmail?: string;
+        } | null = null;
+        let savedThresholds: Record<string, number> = {};
+        if (typeof window !== "undefined") {
+          const rawAlert = localStorage.getItem("pcn_overtime_alert");
+          if (rawAlert) {
+            savedOvertime = JSON.parse(rawAlert);
+          }
+          const rawThresh = localStorage.getItem("pcn_overtime_thresholds");
+          if (rawThresh) {
+            savedThresholds = JSON.parse(rawThresh);
+          }
+        }
+
+        const overtimeCandidates = loadedTasks.filter((t) => {
+          if (t.status !== "in_progress") return false;
+          const dur = t.total_duration_seconds || 0;
+          const nextThreshold = savedThresholds[t.id] ?? 3600;
+          return (
+            dur >= nextThreshold ||
+            (savedOvertime?.taskId && savedOvertime.taskId === t.id)
+          );
+        });
+
+        if (overtimeCandidates.length > 0) {
+          const targetTask =
+            (savedOvertime?.taskId &&
+              overtimeCandidates.find((t) => t.id === savedOvertime?.taskId)) ||
+            overtimeCandidates.find(
+              (t) =>
+                t.assigned_to === currentUser?.id ||
+                t.lawyer_name === currentUser?.name
+            ) ||
+            overtimeCandidates[0];
+
+          const hoursCount = Math.max(
+            1,
+            Math.floor((targetTask.total_duration_seconds || 0) / 3600)
+          );
+          const assignedUser = loadedUsers.find(
+            (u) => u.id === targetTask.assigned_to || u.name === targetTask.lawyer_name
+          );
+          const recipientEmail =
+            savedOvertime?.recipientEmail ||
+            assignedUser?.email ||
+            currentUser?.email ||
+            "direcao@pcnadvogadas.pt";
+
+          alertedHoursRef.current[targetTask.id] =
+            (targetTask.total_duration_seconds || 0) + 3600;
+
+          const restoredAlert = {
+            task: targetTask,
+            hours: hoursCount,
+            emailSent: true,
+            recipientEmail,
+          };
+          setOvertimeAlert(restoredAlert);
+
+          if (typeof window !== "undefined") {
+            localStorage.setItem(
+              "pcn_overtime_alert",
+              JSON.stringify({
+                taskId: targetTask.id,
+                hours: hoursCount,
+                emailSent: true,
+                recipientEmail,
+              })
+            );
+          }
+        } else if (typeof window !== "undefined") {
+          localStorage.removeItem("pcn_overtime_alert");
+        }
+      } catch {}
 
       // 4. Notas de Honorários (se Direção / Admin)
       const roleToCheck = userRole || currentUser?.role;
@@ -842,27 +1040,54 @@ export default function App() {
       } catch {}
     }
 
-    // 3. Abre Popup Modal Imediato no Ecrã
+    // 3. Abre Popup Modal Imediato no Ecrã e Persiste no LocalStorage (para sobreviver a queda de sessão / novo login)
     setOvertimeAlert({
       task: { ...task, total_duration_seconds: durationSeconds },
       hours: hoursCount,
       emailSent: false,
       recipientEmail,
     });
+    if (typeof window !== "undefined") {
+      try {
+        localStorage.setItem(
+          "pcn_overtime_alert",
+          JSON.stringify({
+            taskId: task.id,
+            hours: hoursCount,
+            emailSent: true,
+            recipientEmail,
+          })
+        );
+      } catch {}
+    }
 
     // 4. Envia Email via Backend API
     if (authToken && apiConnected) {
       try {
         const res = await notifyTaskOvertimeApi(task.id, authToken, durationSeconds, recipientEmail);
+        const resolvedRecipient = res?.recipient_email || recipientEmail;
         setOvertimeAlert((prev) =>
           prev && prev.task.id === task.id
             ? {
                 ...prev,
                 emailSent: true,
-                recipientEmail: res?.recipient_email || recipientEmail,
+                recipientEmail: resolvedRecipient,
               }
             : prev
         );
+        if (typeof window !== "undefined") {
+          try {
+            localStorage.setItem(
+              "pcn_overtime_alert",
+              JSON.stringify({
+                taskId: task.id,
+                hours: hoursCount,
+                emailSent: true,
+                recipientEmail: resolvedRecipient,
+              })
+            );
+          } catch {}
+        }
       } catch (e) {
         console.warn("Aviso ao enviar email de alerta de 1h:", e);
       }
@@ -888,10 +1113,10 @@ export default function App() {
           if (t.status !== "in_progress") return t;
           const nextSec = (t.total_duration_seconds || 0) + 1;
           localMap[t.id] = { seconds: nextSec, updatedAt: nowMs };
-          const currentHours = Math.floor(nextSec / 3600);
-          const lastAlertedHour = alertedHoursRef.current[t.id] ?? 0;
-          if (currentHours >= 1 && currentHours > lastAlertedHour) {
-            alertedHoursRef.current[t.id] = currentHours;
+          const nextThreshold = alertedHoursRef.current[t.id] || 3600;
+          if (nextSec >= nextThreshold) {
+            alertedHoursRef.current[t.id] = nextSec + 3600;
+            const currentHours = Math.max(1, Math.floor(nextSec / 3600));
             setTimeout(() => {
               triggerOvertimeAlert(t, nextSec, currentHours);
             }, 0);
@@ -948,11 +1173,73 @@ export default function App() {
     if (typeof window === "undefined") return;
     try {
       const raw = localStorage.getItem("pcn_running_timers");
-      if (!raw) return;
-      const map = JSON.parse(raw);
-      delete map[taskId];
-      localStorage.setItem("pcn_running_timers", JSON.stringify(map));
+      if (raw) {
+        const map = JSON.parse(raw);
+        delete map[taskId];
+        localStorage.setItem("pcn_running_timers", JSON.stringify(map));
+      }
     } catch {}
+    try {
+      const rawAlert = localStorage.getItem("pcn_overtime_alert");
+      if (rawAlert) {
+        const parsed = JSON.parse(rawAlert);
+        if (parsed?.taskId === taskId) {
+          let savedThresholds: Record<string, number> = {};
+          try {
+            const rawThresh = localStorage.getItem("pcn_overtime_thresholds");
+            if (rawThresh) savedThresholds = JSON.parse(rawThresh);
+          } catch {}
+          const otherOvertime = tasksRef.current.find(
+            (t) =>
+              t.id !== taskId &&
+              t.status === "in_progress" &&
+              (t.total_duration_seconds || 0) >= (savedThresholds[t.id] ?? 3600)
+          );
+          if (otherOvertime) {
+            const hoursCount = Math.max(
+              1,
+              Math.floor((otherOvertime.total_duration_seconds || 0) / 3600)
+            );
+            localStorage.setItem(
+              "pcn_overtime_alert",
+              JSON.stringify({
+                taskId: otherOvertime.id,
+                hours: hoursCount,
+                emailSent: true,
+                recipientEmail: parsed.recipientEmail || currentUser.email,
+              })
+            );
+          } else {
+            localStorage.removeItem("pcn_overtime_alert");
+          }
+        }
+      }
+    } catch {}
+    setOvertimeAlert((prev) => (prev?.task.id === taskId ? null : prev));
+  };
+
+  const handleContinueOvertimeTask = () => {
+    if (!overtimeAlert) return;
+    const taskId = overtimeAlert.task.id;
+    const liveTask = tasks.find((t) => t.id === taskId) || overtimeAlert.task;
+    const currentSec = liveTask.total_duration_seconds || 3600;
+    const nextThreshold = currentSec + 3600; // Reinicia contador de alerta para daqui a +1 hora (3600s)
+
+    alertedHoursRef.current[taskId] = nextThreshold;
+
+    if (typeof window !== "undefined") {
+      try {
+        const rawThresh = localStorage.getItem("pcn_overtime_thresholds");
+        const threshMap: Record<string, number> = rawThresh ? JSON.parse(rawThresh) : {};
+        threshMap[taskId] = nextThreshold;
+        localStorage.setItem("pcn_overtime_thresholds", JSON.stringify(threshMap));
+        localStorage.removeItem("pcn_overtime_alert");
+      } catch {}
+    }
+
+    setOvertimeAlert(null);
+    setModalFeedback("Contador do alerta reiniciado: novo aviso será emitido após mais 1 hora de execução.");
+    setTimeout(() => setModalFeedback(null), 3500);
   };
 
   const formatSeconds = (sec: number) => {
@@ -974,15 +1261,21 @@ export default function App() {
         console.error(e);
       }
     }
+    const nextThreshold = (serverDuration || 0) + 3600;
     if (typeof window !== "undefined") {
       try {
         const raw = localStorage.getItem("pcn_running_timers");
         const map = raw ? JSON.parse(raw) : {};
         map[task.id] = { seconds: serverDuration, updatedAt: Date.now() };
         localStorage.setItem("pcn_running_timers", JSON.stringify(map));
+
+        const rawThresh = localStorage.getItem("pcn_overtime_thresholds");
+        const threshMap: Record<string, number> = rawThresh ? JSON.parse(rawThresh) : {};
+        threshMap[task.id] = nextThreshold;
+        localStorage.setItem("pcn_overtime_thresholds", JSON.stringify(threshMap));
       } catch {}
     }
-    alertedHoursRef.current[task.id] = Math.floor((serverDuration || 0) / 3600);
+    alertedHoursRef.current[task.id] = nextThreshold;
     setActiveTaskId(task.id);
     setTimerSeconds(serverDuration);
     setIsTimerRunning(true);
@@ -1104,6 +1397,7 @@ export default function App() {
         console.error("Erro ao arquivar na API:", e);
       }
     }
+    removeTaskFromLocalTimers(task.id);
     if (activeTaskId === task.id) {
       setIsTimerRunning(false);
       setActiveTaskId(null);
@@ -1137,6 +1431,7 @@ export default function App() {
       if (authToken && apiConnected) {
         await deleteTaskApi(taskToDelete.id, authToken);
       }
+      removeTaskFromLocalTimers(taskToDelete.id);
       if (activeTaskId === taskToDelete.id) {
         setIsTimerRunning(false);
         setActiveTaskId(null);
@@ -1430,6 +1725,7 @@ PCN Advogadas · Plataforma Forense`;
       setIsNewTaskModalOpen(false);
       setTaskFormTitle("");
       setTaskFormDescription("");
+      setTaskFormDueDate(getTodayDateString());
     } catch (err: any) {
       alert("Erro ao criar tarefa: " + err.message);
     } finally {
@@ -2473,253 +2769,201 @@ PCN Advogadas · Plataforma Forense`;
           <div className="gold-divider-ribbon absolute bottom-0 left-0 right-0" />
         </header>
 
-        {/* ── CONTEÚDO DA TAB: PAINEL DE DIREÇÃO (COM SEMÁFORO REAL DE PRAZOS) ── */}
+        {/* ── CONTEÚDO DA TAB: PAINEL DE DIREÇÃO (ESTRITAMENTE INFORMATIVO) ── */}
         {activeTab === "dashboard" && (
-          <div className="p-4 sm:p-6 lg:p-8 space-y-4 sm:space-y-6 max-w-7xl w-full mx-auto">
-            {/* 1. Fileira de 4 Cartões KPI */}
-            <div className="grid grid-cols-2 lg:grid-cols-4 gap-3 sm:gap-4">
-              <div className="pcn-card p-3.5 sm:p-5 bg-gradient-to-b from-white to-[#FAF6F8]">
-                <p className="text-[11px] sm:text-xs font-medium text-[#736B5E] mb-1">Tarefas em aberto</p>
-                <p className="text-2xl sm:text-4xl font-bold text-[#92006F]">{openTasksCount}</p>
-              </div>
-
-              <div className="pcn-card p-3.5 sm:p-5">
-                <p className="text-[11px] sm:text-xs font-medium text-[#736B5E] mb-1">Prazos ultrapassados</p>
-                <div className="flex items-baseline justify-between gap-2">
-                  <p
-                    className={`text-2xl sm:text-4xl font-bold ${
-                      overdueTasksCount > 0 ? "text-rose-600" : "text-[#92006F]"
-                    }`}
-                  >
-                    {overdueTasksCount}
-                  </p>
-                  {redDeadlineCount > 0 && (
-                    <span className="text-[10px] bg-rose-50 text-rose-700 border border-rose-200 px-2 py-0.5 rounded-full font-semibold">
-                      {redDeadlineCount} {redDeadlineCount === 1 ? "crítico (≤3d)" : "críticos (≤3d)"}
-                    </span>
-                  )}
-                </div>
-              </div>
-
-              <div className="pcn-card p-3.5 sm:p-5">
-                <p className="text-[11px] sm:text-xs font-medium text-[#736B5E] mb-1">Por atribuir</p>
-                <p className="text-2xl sm:text-4xl font-bold text-[#92006F]">{poolTasksCount}</p>
-              </div>
-
-              <div className="pcn-card p-3.5 sm:p-5">
-                <p className="text-[11px] sm:text-xs font-medium text-[#736B5E] mb-1">Tarefas concluídas</p>
-                <p className="text-2xl sm:text-4xl font-bold text-[#141414]">{completedTasksCount}</p>
-              </div>
-            </div>
-
-            {/* 2. Grelha Central de Dois Cartões */}
-            <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
-              {/* Assuntos que exigem atenção (Prazos Reais com Semáforo 7d Verde / 5d Amarelo / 3d Vermelho) */}
-              <div className="lg:col-span-7 pcn-card p-6 flex flex-col justify-between">
+            <div className="p-4 sm:p-6 lg:p-8 space-y-6 max-w-6xl w-full mx-auto">
+              {/* Se o menu lateral estiver recolhido no desktop, botão discreto para reabrir */}
+              {isSidebarCollapsed && (
                 <div>
-                  <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
-                    <h2 className="text-base font-bold text-[#1F1F1F]">Assuntos que exigem atenção</h2>
-                    <div className="flex flex-wrap items-center gap-1.5 text-[10px] font-semibold">
-                      <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-emerald-50 text-emerald-800 border border-emerald-200">
-                        <span className="w-1.5 h-1.5 rounded-full bg-emerald-500" /> ≥7d ({greenDeadlineCount})
-                      </span>
-                      <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-amber-50 text-amber-800 border border-amber-200">
-                        <span className="w-1.5 h-1.5 rounded-full bg-amber-500" /> 5d ({yellowDeadlineCount})
-                      </span>
-                      <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-rose-50 text-rose-700 border border-rose-200">
-                        <span className="w-1.5 h-1.5 rounded-full bg-rose-500" /> ≤3d ({redDeadlineCount})
-                      </span>
-                    </div>
-                  </div>
-                  <div className="gold-accent-line w-full my-3" />
-
-                  <div className="py-1 divide-y divide-[#F2EDE4]">
-                    {(() => {
-                      const sortedAttention = [...activeTasks].sort((a, b) => {
-                        const da = getDeadlineInfo(a.due_date);
-                        const db = getDeadlineInfo(b.due_date);
-                        if (da && db) return da.diffDays - db.diffDays;
-                        if (da && !db) return -1;
-                        if (!da && db) return 1;
-                        if (a.status === "pool" && b.status !== "pool") return -1;
-                        return 0;
-                      });
-
-                      if (sortedAttention.length === 0) {
-                        return (
-                          <div className="py-6 text-center text-xs text-[#888] italic">
-                            Não existem tarefas ou prazos pendentes de momento.
-                          </div>
-                        );
-                      }
-
-                      return sortedAttention.slice(0, 6).map((task) => {
-                        const dInfo = getDeadlineInfo(task.due_date);
-                        const respLabel =
-                          task.status === "pool"
-                            ? "Pool partilhada"
-                            : task.lawyer_name && task.lawyer_name !== "—"
-                            ? task.lawyer_name.replace("Dr.ª ", "")
-                            : "Atribuída";
-                        return (
-                          <div
-                            key={task.id}
-                            onClick={() => openTaskDetails(task)}
-                            className="py-2.5 text-xs text-[#333] flex flex-col sm:flex-row sm:items-center justify-between gap-2 hover:bg-[#FAF8F5] px-2 rounded transition-colors cursor-pointer"
-                          >
-                            <span className="font-medium truncate">
-                              <strong>{task.client_name}</strong> · {task.title} — {respLabel}
-                              {dInfo ? ` · ${dInfo.formattedDate}` : ""}
-                            </span>
-                            <div className="flex items-center gap-1.5 shrink-0">
-                              {dInfo ? (
-                                <span
-                                  className={`text-[10px] border px-2.5 py-0.5 rounded-full font-semibold inline-flex items-center gap-1.5 ${dInfo.badgeClass}`}
-                                >
-                                  <span className={`w-1.5 h-1.5 rounded-full ${dInfo.dotClass}`} />
-                                  {dInfo.label}
-                                </span>
-                              ) : task.status === "pool" ? (
-                                <span className="text-[10px] bg-purple-50 text-[#92006F] border border-purple-200 px-2.5 py-0.5 rounded-full font-semibold">
-                                  Disponível na Pool
-                                </span>
-                              ) : (
-                                <span className="text-[10px] bg-[#FAF7F2] text-[#736B5E] border border-[#E5DECF] px-2.5 py-0.5 rounded-full font-semibold">
-                                  Sem prazo fixado
-                                </span>
-                              )}
-                            </div>
-                          </div>
-                        );
-                      });
-                    })()}
-                  </div>
-                </div>
-
-                <div className="mt-4 pt-4 border-t border-[#F2EDE4] flex justify-end">
                   <button
-                    onClick={() => setActiveTab("tasks")}
-                    className="text-xs font-semibold text-[#92006F] hover:underline cursor-pointer"
+                    onClick={() => setIsSidebarCollapsed(false)}
+                    className="inline-flex items-center gap-1.5 text-xs font-semibold text-[#92006F] bg-white border border-[#ECE6DB] px-3 py-1.5 rounded-lg hover:bg-[#FDF2F8] transition-colors cursor-pointer shadow-2xs"
                   >
-                    Ver todas as tarefas no quadro →
+                    <PanelLeftOpen className="w-3.5 h-3.5" />
+                    <span>Mostrar Menu Lateral</span>
                   </button>
-                </div>
-              </div>
-
-              {/* Resumo operacional */}
-              <div className="lg:col-span-5 pcn-card p-6 flex flex-col justify-between">
-                <div>
-                  <h2 className="text-base font-bold text-[#1F1F1F]">Resumo operacional</h2>
-                  <div className="gold-accent-line w-full my-3" />
-
-                  <ul className="space-y-2.5 text-xs text-[#444] py-1">
-                    <li className="flex items-center gap-2">
-                      <span className="w-1.5 h-1.5 rounded-full bg-[#AA820A]"></span>
-                      <span>
-                        <strong>{pausedTasksCount}</strong> tarefas em pausa / a aguardar elementos
-                      </span>
-                    </li>
-                    <li className="flex items-center gap-2">
-                      <span className="w-1.5 h-1.5 rounded-full bg-[#AA820A]"></span>
-                      <span>
-                        <strong>{activeClientIds.size || clients.length}</strong> clientes com assuntos ativos
-                      </span>
-                    </li>
-                    <li className="flex items-center gap-2">
-                      <span className="w-1.5 h-1.5 rounded-full bg-[#AA820A]"></span>
-                      <span>
-                        <strong>{unbilledCompletedCount}</strong> serviços concluídos ainda não faturados
-                      </span>
-                    </li>
-                    <li className="flex items-center gap-2">
-                      <span className="w-1.5 h-1.5 rounded-full bg-[#AA820A]"></span>
-                      <span>
-                        <strong>{activeTasksWithDeadline.length}</strong> compromissos / prazos registados
-                      </span>
-                    </li>
-                  </ul>
-                </div>
-
-                <div className="mt-5">
-                  <button
-                    onClick={() => setActiveTab("reports")}
-                    className="w-full sm:w-auto bg-[#BA9448] hover:bg-[#A88238] text-white text-xs font-semibold px-5 py-2.5 rounded-md shadow-xs transition-colors cursor-pointer"
-                  >
-                    Consultar relatório das 9h00
-                  </button>
-                </div>
-              </div>
-            </div>
-
-            {/* 3. Bloco Inferior: Prioridades e Acompanhamento Externo */}
-            <div className="pcn-card p-6">
-              <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 mb-2">
-                <h2 className="text-base font-bold text-[#1F1F1F]">
-                  Prioridades e acompanhamento externo
-                </h2>
-                <span className="text-[10px] text-[#8C7D6B] font-semibold">
-                  Monitorização automática de prazos e tarefas em execução (&gt; 1h)
-                </span>
-              </div>
-
-              {overtimeRunningTasks.length === 0 && redDeadlineCount === 0 ? (
-                <div className="py-2 text-xs text-[#736B5E]">
-                  Sem alertas críticos de momento. O sistema notificará automaticamente por popup e email sempre que uma tarefa atingir 1 hora contínua em andamento.
-                </div>
-              ) : (
-                <div className="space-y-2 pt-2">
-                  {overtimeRunningTasks.map((t) => (
-                    <div
-                      key={`ot_${t.id}`}
-                      className="p-3 rounded-lg bg-amber-50 border border-amber-200 flex flex-col sm:flex-row sm:items-center justify-between gap-2 text-xs"
-                    >
-                      <div className="flex items-center gap-2 text-amber-900">
-                        <Clock className="w-4 h-4 text-amber-600 shrink-0 animate-spin" />
-                        <span>
-                          <strong>Em andamento há +1h:</strong> {t.title} ({t.client_name}) — Resp:{" "}
-                          <strong>{t.lawyer_name || "—"}</strong> · Tempo:{" "}
-                          <strong className="font-mono">{formatSeconds(t.total_duration_seconds)}</strong>
-                        </span>
-                      </div>
-                      <button
-                        onClick={() =>
-                          triggerOvertimeAlert(
-                            t,
-                            t.total_duration_seconds,
-                            Math.max(1, Math.floor(t.total_duration_seconds / 3600))
-                          )
-                        }
-                        className="text-[11px] font-semibold bg-amber-600 hover:bg-amber-700 text-white px-3 py-1 rounded cursor-pointer shrink-0"
-                      >
-                        Ver Alerta / Reenviar Email
-                      </button>
-                    </div>
-                  ))}
-
-                  {activeTasksWithDeadline
-                    .filter((x) => x.deadline.level === "red")
-                    .map(({ task: t, deadline: d }) => (
-                      <div
-                        key={`red_${t.id}`}
-                        onClick={() => openTaskDetails(t)}
-                        className="p-3 rounded-lg bg-rose-50 border border-rose-200 flex flex-col sm:flex-row sm:items-center justify-between gap-2 text-xs cursor-pointer hover:bg-rose-100/70 transition-colors"
-                      >
-                        <div className="flex items-center gap-2 text-rose-900">
-                          <AlertCircle className="w-4 h-4 text-rose-600 shrink-0" />
-                          <span>
-                            <strong>Prazo Crítico ({d.formattedDate}):</strong> {t.title} ({t.client_name}) — Resp:{" "}
-                            <strong>{t.lawyer_name || "Pool"}</strong>
-                          </span>
-                        </div>
-                        <span className="text-[10px] font-bold bg-rose-600 text-white px-2.5 py-0.5 rounded-full shrink-0">
-                          {d.label}
-                        </span>
-                      </div>
-                    ))}
                 </div>
               )}
+
+              {/* Área Central Informativa: Tarefas em Curso & Prazos (8 col) + Equipa (4 col) */}
+              <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
+                {/* Lista Informativa de Tarefas (com link direto para Gestão de Tarefas) */}
+                <div className="lg:col-span-8 pcn-card p-6 flex flex-col justify-between">
+                  <div>
+                    <h2 className="text-base font-bold text-[#141414]">Tarefas em Curso & Prazos</h2>
+                    <div className="gold-accent-line w-full my-3.5" />
+
+                    {activeTasks.length === 0 ? (
+                      <div className="py-10 text-center text-xs text-[#888]">
+                        Não existem tarefas ativas de momento.
+                      </div>
+                    ) : (
+                      <div className="divide-y divide-[#F2EDE4]">
+                        {[...activeTasks]
+                          .sort((a, b) => {
+                            if (a.status === "in_progress" && b.status !== "in_progress") return -1;
+                            if (a.status !== "in_progress" && b.status === "in_progress") return 1;
+                            const da = getDeadlineInfo(a.due_date);
+                            const db = getDeadlineInfo(b.due_date);
+                            if (da && db) return da.diffDays - db.diffDays;
+                            if (da && !db) return -1;
+                            if (!da && db) return 1;
+                            return 0;
+                          })
+                          .slice(0, 8)
+                          .map((task) => {
+                            const dInfo = getDeadlineInfo(task.due_date);
+                            const isRunning = task.status === "in_progress";
+                            const isPaused = task.status === "paused";
+                            const isPool = task.status === "pool";
+                            const respName = isPool
+                              ? "Pool Partilhada"
+                              : task.lawyer_name && task.lawyer_name !== "—"
+                              ? task.lawyer_name.replace("Dr.ª ", "")
+                              : "Atribuída";
+
+                            return (
+                              <div
+                                key={task.id}
+                                onClick={() => {
+                                  setTaskStatusFilter("all");
+                                  switchTab("tasks");
+                                }}
+                                className="py-3 flex flex-col sm:flex-row sm:items-center justify-between gap-3 hover:bg-[#FAF8F5] px-2.5 -mx-2.5 rounded-lg transition-colors cursor-pointer group"
+                              >
+                                <div className="min-w-0 flex-1">
+                                  <div className="flex items-center gap-2">
+                                    <span className="text-[11px] font-bold text-[#92006F]">
+                                      {task.client_name}
+                                    </span>
+                                    <span className="text-[#D9D1C5]">·</span>
+                                    <span className="text-xs font-semibold text-[#141414] group-hover:text-[#92006F] truncate transition-colors">
+                                      {task.title}
+                                    </span>
+                                  </div>
+                                  <div className="flex items-center gap-2 mt-0.5 text-[11px] text-[#736B5E]">
+                                    <span>{respName}</span>
+                                    {dInfo && (
+                                      <>
+                                        <span>·</span>
+                                        <span
+                                          className={`inline-flex items-center gap-1 font-semibold ${
+                                            dInfo.level === "red"
+                                              ? "text-rose-700"
+                                              : dInfo.level === "yellow"
+                                              ? "text-amber-700"
+                                              : "text-emerald-700"
+                                          }`}
+                                        >
+                                          <span className={`w-1.5 h-1.5 rounded-full ${dInfo.dotClass}`} />
+                                          {dInfo.formattedDate} ({dInfo.label})
+                                        </span>
+                                      </>
+                                    )}
+                                  </div>
+                                </div>
+
+                                <div className="flex items-center gap-3 shrink-0">
+                                  {isRunning ? (
+                                    <span className="text-[10px] font-semibold bg-emerald-50 text-emerald-800 border border-emerald-200 px-2.5 py-0.5 rounded-full">
+                                      Em andamento
+                                    </span>
+                                  ) : isPaused ? (
+                                    <span className="text-[10px] font-semibold bg-amber-50 text-amber-800 border border-amber-200 px-2.5 py-0.5 rounded-full">
+                                      Em pausa
+                                    </span>
+                                  ) : isPool ? (
+                                    <span className="text-[10px] font-semibold bg-purple-50 text-[#92006F] border border-purple-200 px-2.5 py-0.5 rounded-full">
+                                      Na Pool
+                                    </span>
+                                  ) : (
+                                    <span className="text-[10px] font-semibold bg-[#FAF8F5] text-[#666] border border-[#E5DECF] px-2.5 py-0.5 rounded-full">
+                                      Aberta
+                                    </span>
+                                  )}
+
+                                  <span className="text-[11px] font-semibold text-[#92006F] group-hover:translate-x-0.5 transition-transform inline-flex items-center gap-1">
+                                    <span>Ir para tarefa</span>
+                                    <ArrowRight className="w-3 h-3" />
+                                  </span>
+                                </div>
+                              </div>
+                            );
+                          })}
+                      </div>
+                    )}
+                  </div>
+
+                  <div className="mt-4 pt-3 border-t border-[#F2EDE4] flex justify-end">
+                    <button
+                      onClick={() => {
+                        setTaskStatusFilter("all");
+                        switchTab("tasks");
+                      }}
+                      className="text-xs font-semibold text-[#92006F] hover:underline cursor-pointer"
+                    >
+                      Ver quadro completo →
+                    </button>
+                  </div>
+                </div>
+
+                {/* Coluna Direita (4 col): Equipa (Informativo, sem cronómetro) */}
+                <div className="lg:col-span-4 pcn-card p-6 flex flex-col justify-between">
+                  <div>
+                    <h2 className="text-base font-bold text-[#141414]">Equipa</h2>
+                    <div className="gold-accent-line w-full my-3.5" />
+
+                    <div className="divide-y divide-[#F2EDE4]">
+                      {usersList.map((u) => {
+                        const userTasks = tasks.filter(
+                          (t) =>
+                            t.status !== "archived" &&
+                            (t.assigned_to === u.id ||
+                              (t.lawyer_name &&
+                                t.lawyer_name.toLowerCase() === u.name.toLowerCase()))
+                        );
+                        const runningCnt = userTasks.filter((t) => t.status === "in_progress").length;
+                        const pausedCnt = userTasks.filter((t) => t.status === "paused").length;
+                        const activeCnt = userTasks.filter((t) => t.status !== "completed").length;
+
+                        return (
+                          <div key={u.id} className="py-2.5 flex items-center justify-between gap-2">
+                            <div className="flex items-center gap-2.5 min-w-0">
+                              <div className="w-7 h-7 rounded-full bg-[#92006F]/10 text-[#92006F] font-bold text-xs flex items-center justify-center shrink-0">
+                                {u.name.replace("Dr.ª ", "").charAt(0)}
+                              </div>
+                              <div className="min-w-0">
+                                <p className="text-xs font-semibold text-[#141414] truncate">{u.name}</p>
+                                <p className="text-[10px] text-[#736B5E]">
+                                  {runningCnt > 0
+                                    ? `${runningCnt} em andamento`
+                                    : pausedCnt > 0
+                                    ? `${pausedCnt} em pausa`
+                                    : "Sem tarefas em execução"}
+                                </p>
+                              </div>
+                            </div>
+
+                            <span className="text-xs font-semibold text-[#555] bg-[#FAF8F5] border border-[#ECE6DB] px-2.5 py-0.5 rounded-full shrink-0">
+                              {activeCnt} {activeCnt === 1 ? "ativa" : "ativas"}
+                            </span>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  </div>
+
+                  <div className="mt-4 pt-3 border-t border-[#F2EDE4]">
+                    <button
+                      onClick={() => switchTab("reports")}
+                      className="w-full bg-[#FAF8F5] hover:bg-[#F3EFE6] border border-[#D9D1C5] text-[#141414] text-xs font-semibold py-2 rounded-lg transition-colors cursor-pointer"
+                    >
+                      Relatório das 9h00 →
+                    </button>
+                  </div>
+                </div>
+              </div>
             </div>
-          </div>
         )}
 
         {/* ── CONTEÚDO DA TAB: GESTÃO DE TAREFAS ── */}
@@ -2739,6 +2983,7 @@ PCN Advogadas · Plataforma Forense`;
                     if (!taskFormClientId && clients.length > 0) {
                       setTaskFormClientId(clients[0].id);
                     }
+                    setTaskFormDueDate(getTodayDateString());
                     setIsNewTaskModalOpen(true);
                   }}
                   className="bg-[#92006F] hover:bg-[#7E0060] text-white text-xs font-semibold px-4 py-2 rounded-md shadow-xs flex items-center justify-center gap-2 transition-colors cursor-pointer w-full sm:w-auto"
@@ -3614,7 +3859,9 @@ PCN Advogadas · Plataforma Forense`;
                       <tbody className="divide-y divide-[#EFE9DE]">
                         {clientTasks.map((t) => (
                           <tr key={t.id} className="hover:bg-[#FAF8F5]">
-                            <td className="p-3 text-[#555]">{t.due_date || "16/10/2026"}</td>
+                            <td className="p-3 text-[#555]">
+                              {formatIsoToEuropean(t.due_date || getTodayDateString())}
+                            </td>
                             <td className="p-3 font-medium text-[#111]">{t.title}</td>
                             <td className="p-3 text-[#555]">{t.lawyer_name || "—"}</td>
                             <td className="p-3 font-mono font-semibold text-[#92006F]">
@@ -3725,10 +3972,9 @@ PCN Advogadas · Plataforma Forense`;
                   <label className="text-[11px] font-bold text-[#555] block mb-1">
                     Data da Notificação / Citação:
                   </label>
-                  <input
-                    type="date"
+                  <EuropeanDateInput
                     value={calcStartDate}
-                    onChange={(e) => setCalcStartDate(e.target.value)}
+                    onChange={setCalcStartDate}
                     className="w-full text-xs border border-[#D9D1C5] rounded p-2 bg-white focus:ring-1 focus:ring-[#92006F] outline-none"
                   />
                 </div>
@@ -4394,10 +4640,9 @@ PCN Advogadas · Plataforma Forense`;
                 <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 items-end">
                   <div>
                     <label className="font-bold text-[#333] block mb-1">Data Limite / Prazo</label>
-                    <input
-                      type="date"
+                    <EuropeanDateInput
                       value={taskFormDueDate}
-                      onChange={(e) => setTaskFormDueDate(e.target.value)}
+                      onChange={setTaskFormDueDate}
                       className="w-full bg-[#FAF8F5] border border-[#D9D1C5] rounded-md px-3 py-2 text-xs focus:ring-1 focus:ring-[#92006F] outline-none text-[#141414]"
                     />
                   </div>
@@ -4726,10 +4971,9 @@ PCN Advogadas · Plataforma Forense`;
 
                   <div>
                     <label className="font-bold text-[#333] block mb-1">Data Limite / Prazo</label>
-                    <input
-                      type="date"
+                    <EuropeanDateInput
                       value={detailsForm.due_date}
-                      onChange={(e) => setDetailsForm({ ...detailsForm, due_date: e.target.value })}
+                      onChange={(iso) => setDetailsForm({ ...detailsForm, due_date: iso })}
                       className="w-full bg-[#FAF8F5] border border-[#D9D1C5] rounded-md px-3 py-2 text-xs focus:ring-1 focus:ring-[#92006F] outline-none text-[#141414]"
                     />
                   </div>
@@ -4839,7 +5083,7 @@ PCN Advogadas · Plataforma Forense`;
                   </div>
                 </div>
                 <button
-                  onClick={() => setOvertimeAlert(null)}
+                  onClick={handleContinueOvertimeTask}
                   className="text-white/75 hover:text-white cursor-pointer"
                 >
                   <X className="w-5 h-5" />
@@ -4916,7 +5160,7 @@ PCN Advogadas · Plataforma Forense`;
                   </button>
                   <button
                     type="button"
-                    onClick={() => setOvertimeAlert(null)}
+                    onClick={handleContinueOvertimeTask}
                     className="flex-1 bg-[#92006F] hover:bg-[#7E0060] text-white font-semibold py-2 px-3 rounded-lg cursor-pointer transition-colors"
                   >
                     Continuar
