@@ -186,6 +186,23 @@ export async function completeTaskApi(taskId: string, token: string) {
   return apiFetch<any>(`/timer/${taskId}/complete`, { method: "POST", token });
 }
 
+export async function notifyTaskOvertimeApi(
+  taskId: string,
+  token: string,
+  durationSeconds?: number,
+  recipientEmail?: string
+) {
+  const params = new URLSearchParams();
+  if (durationSeconds !== undefined) params.set("duration_seconds", String(durationSeconds));
+  if (recipientEmail) params.set("recipient_email", recipientEmail);
+  const qs = params.toString() ? `?${params.toString()}` : "";
+  return apiFetch<any>(`/tasks/${taskId}/notify-overtime${qs}`, {
+    method: "POST",
+    token,
+  });
+}
+
+
 // ── Clientes & Tipos de Tarefa ──
 export async function getClientsApi(token: string) {
   return apiFetch<any[]>("/clients", { token });

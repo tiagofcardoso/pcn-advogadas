@@ -131,7 +131,7 @@ class TaskService:
             task.fee_amount = float(data.fee_amount)
 
         await self.session.commit()
-        return task
+        return await self.task_repo.get_by_id_with_relations(task.id)  # type: ignore[return-value]
 
     async def publish_to_pool(self, admin_user: User, task_id: str) -> Task:
         """Admin publishes a backlog task to the shared pool."""
@@ -173,11 +173,14 @@ class TaskService:
             task.status = TaskStatus.POOL
             task.assigned_to = None
         else:
-            task.status = TaskStatus.ASSIGNED
-            task.assigned_to = lawyer_id
+            assignee = await self.user_repo.get_by_id_or_alias(lawyer_id)
+            resolved_id = assignee.id if assignee else lawyer_id
+            if task.status == TaskStatus.POOL or task.status == TaskStatus.BACKLOG:
+                task.status = TaskStatus.ASSIGNED
+            task.assigned_to = resolved_id
 
         await self._audit(
-            AuditAction.TASK_TRANSITION, admin_user.id, task.id, f"Assigned to {lawyer_id}"
+            AuditAction.TASK_TRANSITION, admin_user.id, task.id, f"Assigned to {task.assigned_to}"
         )
         await self.session.commit()
         return await self.task_repo.get_by_id_with_relations(task.id)  # type: ignore[return-value]

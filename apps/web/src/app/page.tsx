@@ -65,6 +65,7 @@ import {
   archiveTaskApi,
   restoreTaskApi,
   deleteTaskApi,
+  notifyTaskOvertimeApi,
   calculateDeadlineApi,
   getMetricsSummaryApi,
   getFeeNotesApi,
@@ -88,7 +89,7 @@ export default function App() {
     "dashboard" | "tasks" | "archived" | "clients" | "calendar" | "feenotes" | "reports" | "users"
   >("dashboard");
 
-  // User Management State (Portal Admin)
+  // User Management State (Portal Admin & Seletores de Tarefas)
   const [usersList, setUsersList] = useState<any[]>(INITIAL_USERS);
   const [isLoadingUsers, setIsLoadingUsers] = useState<boolean>(false);
   const [isNewUserModalOpen, setIsNewUserModalOpen] = useState<boolean>(false);
@@ -110,10 +111,17 @@ export default function App() {
   const [isLoadingApi, setIsLoadingApi] = useState<boolean>(false);
   const [apiConnected, setApiConnected] = useState<boolean>(false);
 
-  // Active Timer State
+  // Active Timer State & 1-Hour Overtime Alert State
   const [activeTaskId, setActiveTaskId] = useState<string | null>(null);
   const [timerSeconds, setTimerSeconds] = useState<number>(0);
   const [isTimerRunning, setIsTimerRunning] = useState<boolean>(false);
+  const [overtimeAlert, setOvertimeAlert] = useState<{
+    task: Task;
+    hours: number;
+    emailSent: boolean;
+    recipientEmail: string;
+  } | null>(null);
+  const alertedHoursRef = useRef<Record<string, number>>({});
 
   // Search in Reports
   const [searchQuery, setSearchQuery] = useState<string>("");
@@ -193,6 +201,25 @@ export default function App() {
     setIsMobileMenuOpen(false);
   };
 
+  const resolveAssigneeValue = (task: Task): string => {
+    if (task.status === "pool" || (!task.assigned_to && !task.lawyer_name)) {
+      return "pool";
+    }
+    if (task.assigned_to) {
+      const exactMatch = usersList.find((u) => u.id === task.assigned_to);
+      if (exactMatch) return exactMatch.id;
+    }
+    if (task.lawyer_name && task.lawyer_name !== "—") {
+      const nameMatch = usersList.find(
+        (u) =>
+          u.name.toLowerCase() === task.lawyer_name?.toLowerCase() ||
+          u.name.toLowerCase().includes(task.lawyer_name?.toLowerCase() || "")
+      );
+      if (nameMatch) return nameMatch.id;
+    }
+    return task.assigned_to || (usersList[0]?.id ?? "usr_patricia");
+  };
+
   const openTaskDetails = (task: Task) => {
     if (typeof window !== "undefined") {
       window.history.pushState({ modal: "taskDetails" }, "");
@@ -201,7 +228,7 @@ export default function App() {
     setDetailsForm({
       title: task.title,
       description: task.description || "",
-      assigned_to: task.assigned_to || (task.status === "pool" ? "pool" : "usr_patricia"),
+      assigned_to: resolveAssigneeValue(task),
       due_date: task.due_date || "",
       status: task.status,
     });
@@ -377,6 +404,8 @@ export default function App() {
             if (parsedFee !== undefined && !isNaN(parsedFee)) {
               dbPrices[t.id] = parsedFee;
             }
+            const dur = t.total_duration_seconds || 0;
+            alertedHoursRef.current[t.id] = Math.floor(dur / 3600);
             return {
               id: t.id,
               title: t.title,
@@ -388,7 +417,7 @@ export default function App() {
               assigned_to: t.assigned_to,
               lawyer_name: t.assignee?.name || "—",
               due_date: t.due_date ? t.due_date.split("T")[0] : undefined,
-              total_duration_seconds: t.total_duration_seconds || 0,
+              total_duration_seconds: dur,
               fee_amount: parsedFee,
             };
           });
@@ -430,7 +459,24 @@ export default function App() {
         console.warn("Aviso ao carregar clientes:", e);
       }
 
-      // 3. Utilizadores e Notas de Honorários (se Direção / Admin)
+      // 3. Utilizadores (disponível para todos os seletores de atribuição/reatribuição)
+      try {
+        setIsLoadingUsers(true);
+        const apiUsers = await getUsersApi(token);
+        if (apiUsers && apiUsers.length > 0) {
+          setUsersList(apiUsers);
+          setTaskFormAssignee((prev) => {
+            const exists = apiUsers.some((u: any) => u.id === prev);
+            return exists ? prev : apiUsers[0].id;
+          });
+        }
+      } catch (e) {
+        console.warn("Aviso ao carregar utilizadoras:", e);
+      } finally {
+        setIsLoadingUsers(false);
+      }
+
+      // 4. Notas de Honorários (se Direção / Admin)
       const roleToCheck = userRole || currentUser?.role;
       if (roleToCheck === "admin_lawyer") {
         try {
@@ -456,18 +502,6 @@ export default function App() {
           }
         } catch (e) {
           console.warn("Aviso ao carregar notas de honorários:", e);
-        }
-
-        try {
-          setIsLoadingUsers(true);
-          const apiUsers = await getUsersApi(token);
-          if (apiUsers && apiUsers.length > 0) {
-            setUsersList(apiUsers);
-          }
-        } catch (e) {
-          console.warn("Aviso ao carregar utilizadoras:", e);
-        } finally {
-          setIsLoadingUsers(false);
         }
       }
 
@@ -698,24 +732,98 @@ export default function App() {
     }
   };
 
-  // 2. Live timer interval (supports multiple concurrent in_progress tasks)
+  // Disparo de Alerta de 1 Hora em Execução (Popup + Som + Notificação + Email)
+  const triggerOvertimeAlert = async (task: Task, durationSeconds: number, hoursCount: number) => {
+    const assignedUser = usersList.find(
+      (u) => u.id === task.assigned_to || u.name === task.lawyer_name
+    );
+    const recipientEmail = assignedUser?.email || currentUser.email || "direcao@pcnadvogadas.pt";
+
+    // 1. Alerta Sonoro Suave (Web Audio API)
+    if (typeof window !== "undefined") {
+      try {
+        const AudioCtx = window.AudioContext || (window as any).webkitAudioContext;
+        if (AudioCtx) {
+          const ctx = new AudioCtx();
+          const osc = ctx.createOscillator();
+          const gain = ctx.createGain();
+          osc.type = "sine";
+          osc.frequency.setValueAtTime(587.33, ctx.currentTime); // D5
+          osc.frequency.setValueAtTime(880, ctx.currentTime + 0.18); // A5
+          gain.gain.setValueAtTime(0.15, ctx.currentTime);
+          gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 0.6);
+          osc.connect(gain);
+          gain.connect(ctx.destination);
+          osc.start();
+          osc.stop(ctx.currentTime + 0.6);
+        }
+      } catch {}
+
+      // 2. Notificação Nativa do Browser (se autorizada)
+      try {
+        if ("Notification" in window && Notification.permission === "granted") {
+          new Notification(`⏰ Tarefa em andamento há ${hoursCount}h — PCN Advogadas`, {
+            body: `${task.title} (${task.client_name}) atingiu ${formatSeconds(durationSeconds)} em execução.`,
+          });
+        } else if ("Notification" in window && Notification.permission === "default") {
+          Notification.requestPermission();
+        }
+      } catch {}
+    }
+
+    // 3. Abre Popup Modal Imediato no Ecrã
+    setOvertimeAlert({
+      task: { ...task, total_duration_seconds: durationSeconds },
+      hours: hoursCount,
+      emailSent: false,
+      recipientEmail,
+    });
+
+    // 4. Envia Email via Backend API
+    if (authToken && apiConnected) {
+      try {
+        const res = await notifyTaskOvertimeApi(task.id, authToken, durationSeconds, recipientEmail);
+        setOvertimeAlert((prev) =>
+          prev && prev.task.id === task.id
+            ? {
+                ...prev,
+                emailSent: true,
+                recipientEmail: res?.recipient_email || recipientEmail,
+              }
+            : prev
+        );
+      } catch (e) {
+        console.warn("Aviso ao enviar email de alerta de 1h:", e);
+      }
+    }
+  };
+
+  // 2. Live timer interval (supports multiple concurrent in_progress tasks + 1-hour alert check)
   const hasRunningTasks = tasks.some((t) => t.status === "in_progress");
   useEffect(() => {
     if (!hasRunningTasks && !isTimerRunning) return;
     const interval = setInterval(() => {
       setTasks((prev) =>
-        prev.map((t) =>
-          t.status === "in_progress"
-            ? { ...t, total_duration_seconds: (t.total_duration_seconds || 0) + 1 }
-            : t
-        )
+        prev.map((t) => {
+          if (t.status !== "in_progress") return t;
+          const nextSec = (t.total_duration_seconds || 0) + 1;
+          const currentHours = Math.floor(nextSec / 3600);
+          const lastAlertedHour = alertedHoursRef.current[t.id] ?? 0;
+          if (currentHours >= 1 && currentHours > lastAlertedHour) {
+            alertedHoursRef.current[t.id] = currentHours;
+            setTimeout(() => {
+              triggerOvertimeAlert(t, nextSec, currentHours);
+            }, 0);
+          }
+          return { ...t, total_duration_seconds: nextSec };
+        })
       );
       if (isTimerRunning && activeTaskId) {
         setTimerSeconds((prev) => prev + 1);
       }
     }, 1000);
     return () => clearInterval(interval);
-  }, [hasRunningTasks, isTimerRunning, activeTaskId]);
+  }, [hasRunningTasks, isTimerRunning, activeTaskId, authToken, apiConnected, usersList, currentUser]);
 
   const formatSeconds = (sec: number) => {
     const h = Math.floor(sec / 3600);
@@ -736,6 +844,7 @@ export default function App() {
         console.error(e);
       }
     }
+    alertedHoursRef.current[task.id] = Math.floor((serverDuration || 0) / 3600);
     setActiveTaskId(task.id);
     setTimerSeconds(serverDuration);
     setIsTimerRunning(true);
@@ -905,17 +1014,24 @@ export default function App() {
     }
   };
 
+  const getLawyerNameById = (userId?: string): string => {
+    if (!userId || userId === "pool") return "—";
+    const found = usersList.find((u) => u.id === userId);
+    if (found) return found.name;
+    const fallbackMap: Record<string, string> = {
+      usr_patricia: "Dr.ª Patrícia",
+      usr_ines: "Dr.ª Inês",
+      usr_sofia: "Dr.ª Sofia",
+    };
+    return fallbackMap[userId] || "Advogada";
+  };
+
   const handleSaveTaskDetails = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!selectedTaskForDetails) return;
     setIsSubmittingDetails(true);
     try {
       const isPool = detailsForm.assigned_to === "pool";
-      const lawyerMap: Record<string, string> = {
-        usr_patricia: "Dr.ª Patrícia",
-        usr_ines: "Dr.ª Inês",
-        usr_sofia: "Dr.ª Sofia",
-      };
 
       const finalStatus: Task["status"] = isPool
         ? "pool"
@@ -923,10 +1039,11 @@ export default function App() {
         ? "assigned"
         : detailsForm.status;
 
+      let updatedFromServer: any = null;
       if (authToken && apiConnected) {
         if (isPool) {
           await assignTaskApi(selectedTaskForDetails.id, null, authToken);
-          await updateTaskApi(selectedTaskForDetails.id, authToken, {
+          updatedFromServer = await updateTaskApi(selectedTaskForDetails.id, authToken, {
             title: detailsForm.title,
             description: detailsForm.description,
             due_date: detailsForm.due_date ? `${detailsForm.due_date}T18:00:00` : null,
@@ -934,7 +1051,7 @@ export default function App() {
           });
         } else {
           await assignTaskApi(selectedTaskForDetails.id, detailsForm.assigned_to, authToken);
-          await updateTaskApi(selectedTaskForDetails.id, authToken, {
+          updatedFromServer = await updateTaskApi(selectedTaskForDetails.id, authToken, {
             title: detailsForm.title,
             description: detailsForm.description,
             due_date: detailsForm.due_date ? `${detailsForm.due_date}T18:00:00` : null,
@@ -942,6 +1059,10 @@ export default function App() {
           });
         }
       }
+
+      const resolvedLawyerName = isPool
+        ? undefined
+        : updatedFromServer?.assignee?.name || getLawyerNameById(detailsForm.assigned_to);
 
       setTasks((prev) =>
         prev.map((t) =>
@@ -951,9 +1072,9 @@ export default function App() {
                 title: detailsForm.title,
                 description: detailsForm.description,
                 status: finalStatus,
-                assigned_to: isPool ? undefined : detailsForm.assigned_to,
-                lawyer_name: isPool ? undefined : lawyerMap[detailsForm.assigned_to] || "Advogada",
-                due_date: detailsForm.due_date || t.due_date,
+                assigned_to: isPool ? undefined : updatedFromServer?.assigned_to || detailsForm.assigned_to,
+                lawyer_name: resolvedLawyerName,
+                due_date: detailsForm.due_date || undefined,
               }
             : t
         )
@@ -1108,12 +1229,10 @@ PCN Advogadas · Plataforma Forense`;
         tp_3: "Consultoria e Reuniões",
         tp_4: "Audiências e Julgamentos",
       };
-      const lawyerMap: Record<string, string> = {
-        usr_patricia: "Dr.ª Patrícia",
-        usr_ines: "Dr.ª Inês",
-        usr_sofia: "Dr.ª Sofia",
-      };
       const selectedClient = clients.find((c) => c.id === effectiveClientId);
+      const resolvedLawyerName = taskFormPublishToPool
+        ? undefined
+        : getLawyerNameById(taskFormAssignee);
 
       if (authToken && apiConnected) {
         const created = await createTaskApi(authToken, {
@@ -1135,8 +1254,8 @@ PCN Advogadas · Plataforma Forense`;
           client_name: selectedClient?.name || created.client?.name || "Cliente",
           task_type: typeMap[taskFormTypeId] || "Geral",
           status: taskFormPublishToPool ? "pool" : "assigned",
-          assigned_to: taskFormPublishToPool ? undefined : taskFormAssignee,
-          lawyer_name: taskFormPublishToPool ? undefined : lawyerMap[taskFormAssignee],
+          assigned_to: taskFormPublishToPool ? undefined : created.assigned_to || taskFormAssignee,
+          lawyer_name: taskFormPublishToPool ? undefined : created.assignee?.name || resolvedLawyerName,
           due_date: taskFormDueDate,
           total_duration_seconds: 0,
         };
@@ -1152,7 +1271,7 @@ PCN Advogadas · Plataforma Forense`;
           task_type: typeMap[taskFormTypeId] || "Peças Processuais",
           status: taskFormPublishToPool ? "pool" : "assigned",
           assigned_to: taskFormPublishToPool ? undefined : taskFormAssignee,
-          lawyer_name: taskFormPublishToPool ? undefined : lawyerMap[taskFormAssignee],
+          lawyer_name: resolvedLawyerName,
           due_date: taskFormDueDate,
           total_duration_seconds: 0,
         };
@@ -1348,11 +1467,117 @@ PCN Advogadas · Plataforma Forense`;
     }
   };
 
-  // Metrics calculations
+  // Sistema Semáforo de Prazos (Verde: >= 6/7 dias | Amarelo: 4 a 5 dias | Vermelho: <= 3 dias ou ultrapassado)
+  const getDeadlineInfo = (dueDate?: string) => {
+    if (!dueDate) return null;
+    const raw = dueDate.split("T")[0];
+    let year = 0,
+      month = 0,
+      day = 0;
+    if (/^\d{4}-\d{2}-\d{2}$/.test(raw)) {
+      const [y, m, d] = raw.split("-").map(Number);
+      year = y;
+      month = m;
+      day = d;
+    } else if (/^\d{2}\/\d{2}\/\d{4}$/.test(raw)) {
+      const [d, m, y] = raw.split("/").map(Number);
+      year = y;
+      month = m;
+      day = d;
+    } else {
+      return null;
+    }
+    const dueMidnight = new Date(year, month - 1, day);
+    const now = new Date();
+    const todayMidnight = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+    const diffDays = Math.round(
+      (dueMidnight.getTime() - todayMidnight.getTime()) / (1000 * 60 * 60 * 24)
+    );
+    const formattedDate = `${String(day).padStart(2, "0")}/${String(month).padStart(2, "0")}/${year}`;
+
+    if (diffDays < 0) {
+      const overdueDays = Math.abs(diffDays);
+      return {
+        diffDays,
+        formattedDate,
+        level: "red" as const,
+        isOverdue: true,
+        badgeClass: "bg-rose-100 text-rose-800 border-rose-300",
+        dotClass: "bg-rose-600 animate-pulse",
+        label: `Prazo ultrapassado há ${overdueDays} ${overdueDays === 1 ? "dia" : "dias"}`,
+      };
+    }
+    if (diffDays === 0) {
+      return {
+        diffDays,
+        formattedDate,
+        level: "red" as const,
+        isOverdue: false,
+        badgeClass: "bg-rose-100 text-rose-800 border-rose-300",
+        dotClass: "bg-rose-600 animate-pulse",
+        label: "Vence hoje (Urgente)",
+      };
+    }
+    if (diffDays <= 3) {
+      return {
+        diffDays,
+        formattedDate,
+        level: "red" as const,
+        isOverdue: false,
+        badgeClass: "bg-rose-50 text-rose-700 border-rose-200",
+        dotClass: "bg-rose-500",
+        label: `A vencer em ${diffDays} ${diffDays === 1 ? "dia" : "dias"}`,
+      };
+    }
+    if (diffDays <= 5) {
+      return {
+        diffDays,
+        formattedDate,
+        level: "yellow" as const,
+        isOverdue: false,
+        badgeClass: "bg-amber-50 text-amber-800 border-amber-200",
+        dotClass: "bg-amber-500",
+        label: `A vencer em ${diffDays} dias`,
+      };
+    }
+    return {
+      diffDays,
+      formattedDate,
+      level: "green" as const,
+      isOverdue: false,
+      badgeClass: "bg-emerald-50 text-emerald-800 border-emerald-200",
+      dotClass: "bg-emerald-500",
+      label: `A vencer em ${diffDays} dias`,
+    };
+  };
+
+  // Metrics calculations (Real-time from tasks & clients)
+  const activeTasks = tasks.filter((t) => t.status !== "completed" && t.status !== "archived");
   const archivedTasksCount = tasks.filter((t) => t.status === "archived").length;
-  const openTasksCount = tasks.filter((t) => t.status !== "completed" && t.status !== "archived").length;
+  const openTasksCount = activeTasks.length;
   const completedTasksCount = tasks.filter((t) => t.status === "completed").length;
   const poolTasksCount = tasks.filter((t) => t.status === "pool").length;
+  const pausedTasksCount = tasks.filter((t) => t.status === "paused").length;
+
+  const activeTasksWithDeadline = activeTasks
+    .map((t) => ({ task: t, deadline: getDeadlineInfo(t.due_date) }))
+    .filter((item) => item.deadline !== null) as {
+    task: Task;
+    deadline: NonNullable<ReturnType<typeof getDeadlineInfo>>;
+  }[];
+
+  const overdueTasksCount = activeTasksWithDeadline.filter((x) => x.deadline.isOverdue).length;
+  const redDeadlineCount = activeTasksWithDeadline.filter((x) => x.deadline.level === "red").length;
+  const yellowDeadlineCount = activeTasksWithDeadline.filter((x) => x.deadline.level === "yellow").length;
+  const greenDeadlineCount = activeTasksWithDeadline.filter((x) => x.deadline.level === "green").length;
+
+  const activeClientIds = new Set(activeTasks.map((t) => t.client_id).filter(Boolean));
+  const unbilledCompletedCount = tasks.filter(
+    (t) => t.status === "completed" && (!t.fee_amount || t.fee_amount <= 0)
+  ).length;
+  const overtimeRunningTasks = tasks.filter(
+    (t) => t.status === "in_progress" && (t.total_duration_seconds || 0) >= 3600
+  );
 
   // ── SE NÃO ESTIVER AUTENTICADO: ECRÃ DEDICADO DE LOGIN (BLOQUEIO TOTAL) ──
   if (!isAuthenticated) {
@@ -2101,7 +2326,7 @@ PCN Advogadas · Plataforma Forense`;
           <div className="gold-divider-ribbon absolute bottom-0 left-0 right-0" />
         </header>
 
-        {/* ── CONTEÚDO DA TAB: PAINEL DE DIREÇÃO (DESIGN EXATO DA IMAGEM) ── */}
+        {/* ── CONTEÚDO DA TAB: PAINEL DE DIREÇÃO (COM SEMÁFORO REAL DE PRAZOS) ── */}
         {activeTab === "dashboard" && (
           <div className="p-4 sm:p-6 lg:p-8 space-y-4 sm:space-y-6 max-w-7xl w-full mx-auto">
             {/* 1. Fileira de 4 Cartões KPI */}
@@ -2113,7 +2338,20 @@ PCN Advogadas · Plataforma Forense`;
 
               <div className="pcn-card p-3.5 sm:p-5">
                 <p className="text-[11px] sm:text-xs font-medium text-[#736B5E] mb-1">Prazos ultrapassados</p>
-                <p className="text-2xl sm:text-4xl font-bold text-[#92006F]">0</p>
+                <div className="flex items-baseline justify-between gap-2">
+                  <p
+                    className={`text-2xl sm:text-4xl font-bold ${
+                      overdueTasksCount > 0 ? "text-rose-600" : "text-[#92006F]"
+                    }`}
+                  >
+                    {overdueTasksCount}
+                  </p>
+                  {redDeadlineCount > 0 && (
+                    <span className="text-[10px] bg-rose-50 text-rose-700 border border-rose-200 px-2 py-0.5 rounded-full font-semibold">
+                      {redDeadlineCount} {redDeadlineCount === 1 ? "crítico (≤3d)" : "críticos (≤3d)"}
+                    </span>
+                  )}
+                </div>
               </div>
 
               <div className="pcn-card p-3.5 sm:p-5">
@@ -2129,30 +2367,85 @@ PCN Advogadas · Plataforma Forense`;
 
             {/* 2. Grelha Central de Dois Cartões */}
             <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
-              {/* Assuntos que exigem atenção */}
+              {/* Assuntos que exigem atenção (Prazos Reais com Semáforo 7d Verde / 5d Amarelo / 3d Vermelho) */}
               <div className="lg:col-span-7 pcn-card p-6 flex flex-col justify-between">
                 <div>
-                  <h2 className="text-base font-bold text-[#1F1F1F]">Assuntos que exigem atenção</h2>
+                  <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+                    <h2 className="text-base font-bold text-[#1F1F1F]">Assuntos que exigem atenção</h2>
+                    <div className="flex flex-wrap items-center gap-1.5 text-[10px] font-semibold">
+                      <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-emerald-50 text-emerald-800 border border-emerald-200">
+                        <span className="w-1.5 h-1.5 rounded-full bg-emerald-500" /> ≥7d ({greenDeadlineCount})
+                      </span>
+                      <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-amber-50 text-amber-800 border border-amber-200">
+                        <span className="w-1.5 h-1.5 rounded-full bg-amber-500" /> 5d ({yellowDeadlineCount})
+                      </span>
+                      <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-rose-50 text-rose-700 border border-rose-200">
+                        <span className="w-1.5 h-1.5 rounded-full bg-rose-500" /> ≤3d ({redDeadlineCount})
+                      </span>
+                    </div>
+                  </div>
                   <div className="gold-accent-line w-full my-3" />
 
-                  <div className="py-2 divide-y divide-[#F2EDE4]">
-                    <div className="py-2 text-xs text-[#333] flex items-center justify-between hover:bg-[#FAF8F5] px-2 rounded transition-colors">
-                      <span className="font-medium">
-                        <strong>Cliente A</strong> · Registo predial — Inês · 21/10/2026
-                      </span>
-                      <span className="text-[10px] bg-amber-50 text-amber-800 border border-amber-200 px-2 py-0.5 rounded-full font-semibold">
-                        A vencer em 5 dias
-                      </span>
-                    </div>
+                  <div className="py-1 divide-y divide-[#F2EDE4]">
+                    {(() => {
+                      const sortedAttention = [...activeTasks].sort((a, b) => {
+                        const da = getDeadlineInfo(a.due_date);
+                        const db = getDeadlineInfo(b.due_date);
+                        if (da && db) return da.diffDays - db.diffDays;
+                        if (da && !db) return -1;
+                        if (!da && db) return 1;
+                        if (a.status === "pool" && b.status !== "pool") return -1;
+                        return 0;
+                      });
 
-                    <div className="py-2 text-xs text-[#333] flex items-center justify-between hover:bg-[#FAF8F5] px-2 rounded transition-colors">
-                      <span className="font-medium">
-                        <strong>Cliente B</strong> · Certidão negativa de dívidas — Pool partilhada
-                      </span>
-                      <span className="text-[10px] bg-purple-50 text-[#92006F] border border-purple-200 px-2 py-0.5 rounded-full font-semibold">
-                        Disponível
-                      </span>
-                    </div>
+                      if (sortedAttention.length === 0) {
+                        return (
+                          <div className="py-6 text-center text-xs text-[#888] italic">
+                            Não existem tarefas ou prazos pendentes de momento.
+                          </div>
+                        );
+                      }
+
+                      return sortedAttention.slice(0, 6).map((task) => {
+                        const dInfo = getDeadlineInfo(task.due_date);
+                        const respLabel =
+                          task.status === "pool"
+                            ? "Pool partilhada"
+                            : task.lawyer_name && task.lawyer_name !== "—"
+                            ? task.lawyer_name.replace("Dr.ª ", "")
+                            : "Atribuída";
+                        return (
+                          <div
+                            key={task.id}
+                            onClick={() => openTaskDetails(task)}
+                            className="py-2.5 text-xs text-[#333] flex flex-col sm:flex-row sm:items-center justify-between gap-2 hover:bg-[#FAF8F5] px-2 rounded transition-colors cursor-pointer"
+                          >
+                            <span className="font-medium truncate">
+                              <strong>{task.client_name}</strong> · {task.title} — {respLabel}
+                              {dInfo ? ` · ${dInfo.formattedDate}` : ""}
+                            </span>
+                            <div className="flex items-center gap-1.5 shrink-0">
+                              {dInfo ? (
+                                <span
+                                  className={`text-[10px] border px-2.5 py-0.5 rounded-full font-semibold inline-flex items-center gap-1.5 ${dInfo.badgeClass}`}
+                                >
+                                  <span className={`w-1.5 h-1.5 rounded-full ${dInfo.dotClass}`} />
+                                  {dInfo.label}
+                                </span>
+                              ) : task.status === "pool" ? (
+                                <span className="text-[10px] bg-purple-50 text-[#92006F] border border-purple-200 px-2.5 py-0.5 rounded-full font-semibold">
+                                  Disponível na Pool
+                                </span>
+                              ) : (
+                                <span className="text-[10px] bg-[#FAF7F2] text-[#736B5E] border border-[#E5DECF] px-2.5 py-0.5 rounded-full font-semibold">
+                                  Sem prazo fixado
+                                </span>
+                              )}
+                            </div>
+                          </div>
+                        );
+                      });
+                    })()}
                   </div>
                 </div>
 
@@ -2172,29 +2465,29 @@ PCN Advogadas · Plataforma Forense`;
                   <h2 className="text-base font-bold text-[#1F1F1F]">Resumo operacional</h2>
                   <div className="gold-accent-line w-full my-3" />
 
-                  <ul className="space-y-2 text-xs text-[#444] py-1">
+                  <ul className="space-y-2.5 text-xs text-[#444] py-1">
                     <li className="flex items-center gap-2">
                       <span className="w-1.5 h-1.5 rounded-full bg-[#AA820A]"></span>
                       <span>
-                        <strong>1</strong> tarefas a aguardar cliente
+                        <strong>{pausedTasksCount}</strong> tarefas em pausa / a aguardar elementos
                       </span>
                     </li>
                     <li className="flex items-center gap-2">
                       <span className="w-1.5 h-1.5 rounded-full bg-[#AA820A]"></span>
                       <span>
-                        <strong>2</strong> clientes com assuntos ativos
+                        <strong>{activeClientIds.size || clients.length}</strong> clientes com assuntos ativos
                       </span>
                     </li>
                     <li className="flex items-center gap-2">
                       <span className="w-1.5 h-1.5 rounded-full bg-[#AA820A]"></span>
                       <span>
-                        <strong>1</strong> serviços concluídos ainda não faturados
+                        <strong>{unbilledCompletedCount}</strong> serviços concluídos ainda não faturados
                       </span>
                     </li>
                     <li className="flex items-center gap-2">
                       <span className="w-1.5 h-1.5 rounded-full bg-[#AA820A]"></span>
                       <span>
-                        <strong>2</strong> compromissos / prazos registados
+                        <strong>{activeTasksWithDeadline.length}</strong> compromissos / prazos registados
                       </span>
                     </li>
                   </ul>
@@ -2213,10 +2506,71 @@ PCN Advogadas · Plataforma Forense`;
 
             {/* 3. Bloco Inferior: Prioridades e Acompanhamento Externo */}
             <div className="pcn-card p-6">
-              <h2 className="text-base font-bold text-[#1F1F1F]">
-                Prioridades e acompanhamento externo
-              </h2>
-              <div className="py-3 text-xs text-[#736B5E]">Sem alertas adicionais.</div>
+              <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 mb-2">
+                <h2 className="text-base font-bold text-[#1F1F1F]">
+                  Prioridades e acompanhamento externo
+                </h2>
+                <span className="text-[10px] text-[#8C7D6B] font-semibold">
+                  Monitorização automática de prazos e tarefas em execução (&gt; 1h)
+                </span>
+              </div>
+
+              {overtimeRunningTasks.length === 0 && redDeadlineCount === 0 ? (
+                <div className="py-2 text-xs text-[#736B5E]">
+                  Sem alertas críticos de momento. O sistema notificará automaticamente por popup e email sempre que uma tarefa atingir 1 hora contínua em andamento.
+                </div>
+              ) : (
+                <div className="space-y-2 pt-2">
+                  {overtimeRunningTasks.map((t) => (
+                    <div
+                      key={`ot_${t.id}`}
+                      className="p-3 rounded-lg bg-amber-50 border border-amber-200 flex flex-col sm:flex-row sm:items-center justify-between gap-2 text-xs"
+                    >
+                      <div className="flex items-center gap-2 text-amber-900">
+                        <Clock className="w-4 h-4 text-amber-600 shrink-0 animate-spin" />
+                        <span>
+                          <strong>Em andamento há +1h:</strong> {t.title} ({t.client_name}) — Resp:{" "}
+                          <strong>{t.lawyer_name || "—"}</strong> · Tempo:{" "}
+                          <strong className="font-mono">{formatSeconds(t.total_duration_seconds)}</strong>
+                        </span>
+                      </div>
+                      <button
+                        onClick={() =>
+                          triggerOvertimeAlert(
+                            t,
+                            t.total_duration_seconds,
+                            Math.max(1, Math.floor(t.total_duration_seconds / 3600))
+                          )
+                        }
+                        className="text-[11px] font-semibold bg-amber-600 hover:bg-amber-700 text-white px-3 py-1 rounded cursor-pointer shrink-0"
+                      >
+                        Ver Alerta / Reenviar Email
+                      </button>
+                    </div>
+                  ))}
+
+                  {activeTasksWithDeadline
+                    .filter((x) => x.deadline.level === "red")
+                    .map(({ task: t, deadline: d }) => (
+                      <div
+                        key={`red_${t.id}`}
+                        onClick={() => openTaskDetails(t)}
+                        className="p-3 rounded-lg bg-rose-50 border border-rose-200 flex flex-col sm:flex-row sm:items-center justify-between gap-2 text-xs cursor-pointer hover:bg-rose-100/70 transition-colors"
+                      >
+                        <div className="flex items-center gap-2 text-rose-900">
+                          <AlertCircle className="w-4 h-4 text-rose-600 shrink-0" />
+                          <span>
+                            <strong>Prazo Crítico ({d.formattedDate}):</strong> {t.title} ({t.client_name}) — Resp:{" "}
+                            <strong>{t.lawyer_name || "Pool"}</strong>
+                          </span>
+                        </div>
+                        <span className="text-[10px] font-bold bg-rose-600 text-white px-2.5 py-0.5 rounded-full shrink-0">
+                          {d.label}
+                        </span>
+                      </div>
+                    ))}
+                </div>
+              )}
             </div>
           </div>
         )}
@@ -2301,50 +2655,63 @@ PCN Advogadas · Plataforma Forense`;
                   <div className="space-y-3 mt-3">
                     {tasks
                       .filter((t) => t.status === "pool")
-                      .map((task) => (
-                        <div
-                          key={task.id}
-                          className="bg-white border border-[#E5DECF] p-3 sm:p-3.5 rounded-lg shadow-xs space-y-2 hover:border-[#D4AF37] transition-all"
-                        >
-                          <div className="flex items-center justify-between">
-                            <span className="text-[10px] font-bold text-[#92006F] uppercase">
-                              {task.task_type}
-                            </span>
-                            <div className="flex items-center gap-1">
+                      .map((task) => {
+                        const dInfo = getDeadlineInfo(task.due_date);
+                        return (
+                          <div
+                            key={task.id}
+                            className="bg-white border border-[#E5DECF] p-3 sm:p-3.5 rounded-lg shadow-xs space-y-2 hover:border-[#D4AF37] transition-all"
+                          >
+                            <div className="flex items-center justify-between">
+                              <span className="text-[10px] font-bold text-[#92006F] uppercase">
+                                {task.task_type}
+                              </span>
+                              <div className="flex items-center gap-1">
+                                <button
+                                  onClick={() => openTaskDetails(task)}
+                                  className="text-[#888] hover:text-[#92006F] p-1 rounded cursor-pointer"
+                                  title="Detalhes & Reatribuir"
+                                >
+                                  <UserCheck className="w-3.5 h-3.5" />
+                                </button>
+                                <button
+                                  onClick={() => confirmDeleteTask(task)}
+                                  className="text-[#999] hover:text-rose-600 p-1 rounded cursor-pointer"
+                                  title="Eliminar Tarefa"
+                                >
+                                  <Trash2 className="w-3.5 h-3.5" />
+                                </button>
+                              </div>
+                            </div>
+                            <h4
+                              onClick={() => openTaskDetails(task)}
+                              className="text-xs font-bold text-[#141414] hover:text-[#92006F] cursor-pointer"
+                            >
+                              {task.title}
+                            </h4>
+                            <p className="text-[11px] text-[#666] line-clamp-2">{task.description}</p>
+                            {dInfo && (
+                              <div className="pt-0.5">
+                                <span
+                                  className={`text-[10px] border px-2 py-0.5 rounded-full font-semibold inline-flex items-center gap-1 ${dInfo.badgeClass}`}
+                                >
+                                  <span className={`w-1.5 h-1.5 rounded-full ${dInfo.dotClass}`} />
+                                  {dInfo.formattedDate} · {dInfo.label}
+                                </span>
+                              </div>
+                            )}
+                            <div className="pt-2 border-t border-[#F2ECE1] flex items-center justify-between text-[11px] text-[#888]">
+                              <span>{task.client_name}</span>
                               <button
-                                onClick={() => openTaskDetails(task)}
-                                className="text-[#888] hover:text-[#92006F] p-1 rounded cursor-pointer"
-                                title="Detalhes & Reatribuir"
+                                onClick={() => handleClaimTask(task)}
+                                className="bg-[#92006F] text-white text-[10px] font-semibold px-2.5 py-1 rounded hover:bg-[#7E0060] transition-colors cursor-pointer"
                               >
-                                <UserCheck className="w-3.5 h-3.5" />
-                              </button>
-                              <button
-                                onClick={() => confirmDeleteTask(task)}
-                                className="text-[#999] hover:text-rose-600 p-1 rounded cursor-pointer"
-                                title="Eliminar Tarefa"
-                              >
-                                <Trash2 className="w-3.5 h-3.5" />
+                                Assumir Tarefa
                               </button>
                             </div>
                           </div>
-                          <h4
-                            onClick={() => openTaskDetails(task)}
-                            className="text-xs font-bold text-[#141414] hover:text-[#92006F] cursor-pointer"
-                          >
-                            {task.title}
-                          </h4>
-                          <p className="text-[11px] text-[#666] line-clamp-2">{task.description}</p>
-                          <div className="pt-2 border-t border-[#F2ECE1] flex items-center justify-between text-[11px] text-[#888]">
-                            <span>{task.client_name}</span>
-                            <button
-                              onClick={() => handleClaimTask(task)}
-                              className="bg-[#92006F] text-white text-[10px] font-semibold px-2.5 py-1 rounded hover:bg-[#7E0060] transition-colors cursor-pointer"
-                            >
-                              Assumir Tarefa
-                            </button>
-                          </div>
-                        </div>
-                      ))}
+                        );
+                      })}
                     {tasks.filter((t) => t.status === "pool").length === 0 && (
                       <p className="text-xs text-[#888] text-center py-6 italic">
                         Nenhuma tarefa na Pool de momento.
@@ -2377,6 +2744,7 @@ PCN Advogadas · Plataforma Forense`;
                       )
                       .map((task) => {
                         const isRunningThis = task.status === "in_progress";
+                        const dInfo = getDeadlineInfo(task.due_date);
                         return (
                           <div
                             key={task.id}
@@ -2431,6 +2799,17 @@ PCN Advogadas · Plataforma Forense`;
                               <span>Cliente: <strong>{task.client_name}</strong></span>
                               <span>Resp: <strong>{task.lawyer_name || "—"}</strong></span>
                             </div>
+
+                            {dInfo && (
+                              <div>
+                                <span
+                                  className={`text-[10px] border px-2 py-0.5 rounded-full font-semibold inline-flex items-center gap-1 ${dInfo.badgeClass}`}
+                                >
+                                  <span className={`w-1.5 h-1.5 rounded-full ${dInfo.dotClass}`} />
+                                  {dInfo.formattedDate} · {dInfo.label}
+                                </span>
+                              </div>
+                            )}
 
                             <div className="bg-[#FAF7F2] p-2 rounded border border-[#EFE8DD] flex items-center justify-between text-xs font-mono">
                               <span className="text-[#666]">Tempo acumulado:</span>
@@ -2490,74 +2869,88 @@ PCN Advogadas · Plataforma Forense`;
                   <div className="space-y-3 mt-3">
                     {tasks
                       .filter((t) => t.status === "paused")
-                      .map((task) => (
-                        <div
-                          key={task.id}
-                          className="bg-white border border-[#E5DECF] p-3 sm:p-3.5 rounded-lg shadow-xs space-y-2.5 hover:border-[#D4AF37] transition-all"
-                        >
-                          <div className="flex items-center justify-between">
-                            <span className="text-[10px] font-bold text-[#92006F] uppercase">
-                              {task.task_type}
-                            </span>
-                            <span className="text-[10px] bg-amber-100 text-[#AA820A] font-bold px-1.5 py-0.5 rounded flex items-center gap-1">
-                              <Pause className="w-2.5 h-2.5" /> Pausada
-                            </span>
-                          </div>
+                      .map((task) => {
+                        const dInfo = getDeadlineInfo(task.due_date);
+                        return (
+                          <div
+                            key={task.id}
+                            className="bg-white border border-[#E5DECF] p-3 sm:p-3.5 rounded-lg shadow-xs space-y-2.5 hover:border-[#D4AF37] transition-all"
+                          >
+                            <div className="flex items-center justify-between">
+                              <span className="text-[10px] font-bold text-[#92006F] uppercase">
+                                {task.task_type}
+                              </span>
+                              <span className="text-[10px] bg-amber-100 text-[#AA820A] font-bold px-1.5 py-0.5 rounded flex items-center gap-1">
+                                <Pause className="w-2.5 h-2.5" /> Pausada
+                              </span>
+                            </div>
 
-                          <div className="flex items-start justify-between gap-2">
-                            <h4
-                              onClick={() => openTaskDetails(task)}
-                              className="text-xs font-bold text-[#141414] hover:text-[#92006F] cursor-pointer"
-                            >
-                              {task.title}
-                            </h4>
-                            <div className="flex items-center gap-1 shrink-0">
-                              <button
+                            <div className="flex items-start justify-between gap-2">
+                              <h4
                                 onClick={() => openTaskDetails(task)}
-                                className="text-[#888] hover:text-[#92006F] p-1 rounded cursor-pointer"
-                                title="Detalhes & Reatribuir"
+                                className="text-xs font-bold text-[#141414] hover:text-[#92006F] cursor-pointer"
                               >
-                                <UserCheck className="w-3.5 h-3.5" />
-                              </button>
+                                {task.title}
+                              </h4>
+                              <div className="flex items-center gap-1 shrink-0">
+                                <button
+                                  onClick={() => openTaskDetails(task)}
+                                  className="text-[#888] hover:text-[#92006F] p-1 rounded cursor-pointer"
+                                  title="Detalhes & Reatribuir"
+                                >
+                                  <UserCheck className="w-3.5 h-3.5" />
+                                </button>
+                                <button
+                                  onClick={() => confirmDeleteTask(task)}
+                                  className="text-[#999] hover:text-rose-600 p-1 rounded cursor-pointer"
+                                  title="Eliminar Tarefa"
+                                >
+                                  <Trash2 className="w-3.5 h-3.5" />
+                                </button>
+                              </div>
+                            </div>
+
+                            <div className="text-[11px] text-[#777] flex items-center justify-between">
+                              <span>Cliente: <strong>{task.client_name}</strong></span>
+                              <span>Resp: <strong>{task.lawyer_name || "—"}</strong></span>
+                            </div>
+
+                            {dInfo && (
+                              <div>
+                                <span
+                                  className={`text-[10px] border px-2 py-0.5 rounded-full font-semibold inline-flex items-center gap-1 ${dInfo.badgeClass}`}
+                                >
+                                  <span className={`w-1.5 h-1.5 rounded-full ${dInfo.dotClass}`} />
+                                  {dInfo.formattedDate} · {dInfo.label}
+                                </span>
+                              </div>
+                            )}
+
+                            <div className="bg-[#FAF7F2] p-2 rounded border border-[#EFE8DD] flex items-center justify-between text-xs font-mono">
+                              <span className="text-[#666]">Tempo acumulado:</span>
+                              <span className="font-bold text-[#141414]">
+                                {formatSeconds(task.total_duration_seconds)}
+                              </span>
+                            </div>
+
+                            <div className="pt-2 border-t border-[#F2ECE1] flex items-center justify-between gap-2">
                               <button
-                                onClick={() => confirmDeleteTask(task)}
-                                className="text-[#999] hover:text-rose-600 p-1 rounded cursor-pointer"
-                                title="Eliminar Tarefa"
+                                onClick={() => handleStartTimer(task)}
+                                className="w-full bg-[#92006F] hover:bg-[#7E0060] text-white text-[11px] font-semibold py-1.5 rounded flex items-center justify-center gap-1 cursor-pointer transition-colors"
                               >
-                                <Trash2 className="w-3.5 h-3.5" />
+                                <Play className="w-3 h-3 fill-current" /> Iniciar
+                              </button>
+
+                              <button
+                                onClick={() => handleCompleteTask(task)}
+                                className="bg-emerald-600 hover:bg-emerald-700 text-white text-[11px] font-semibold px-3 py-1.5 rounded cursor-pointer transition-colors"
+                              >
+                                Concluir
                               </button>
                             </div>
                           </div>
-
-                          <div className="text-[11px] text-[#777] flex items-center justify-between">
-                            <span>Cliente: <strong>{task.client_name}</strong></span>
-                            <span>Resp: <strong>{task.lawyer_name || "—"}</strong></span>
-                          </div>
-
-                          <div className="bg-[#FAF7F2] p-2 rounded border border-[#EFE8DD] flex items-center justify-between text-xs font-mono">
-                            <span className="text-[#666]">Tempo acumulado:</span>
-                            <span className="font-bold text-[#141414]">
-                              {formatSeconds(task.total_duration_seconds)}
-                            </span>
-                          </div>
-
-                          <div className="pt-2 border-t border-[#F2ECE1] flex items-center justify-between gap-2">
-                            <button
-                              onClick={() => handleStartTimer(task)}
-                              className="w-full bg-[#92006F] hover:bg-[#7E0060] text-white text-[11px] font-semibold py-1.5 rounded flex items-center justify-center gap-1 cursor-pointer transition-colors"
-                            >
-                              <Play className="w-3 h-3 fill-current" /> Iniciar
-                            </button>
-
-                            <button
-                              onClick={() => handleCompleteTask(task)}
-                              className="bg-emerald-600 hover:bg-emerald-700 text-white text-[11px] font-semibold px-3 py-1.5 rounded cursor-pointer transition-colors"
-                            >
-                              Concluir
-                            </button>
-                          </div>
-                        </div>
-                      ))}
+                        );
+                      })}
                     {tasks.filter((t) => t.status === "paused").length === 0 && (
                       <p className="text-xs text-[#888] text-center py-6 italic">
                         Nenhuma tarefa pausada de momento.
@@ -2662,69 +3055,82 @@ PCN Advogadas · Plataforma Forense`;
                 <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
                   {tasks
                     .filter((t) => t.status === taskStatusFilter)
-                    .map((task) => (
-                      <div
-                        key={task.id}
-                        className="bg-white border border-[#E5DECF] p-4 rounded-xl shadow-xs space-y-3 hover:border-[#D4AF37] transition-all"
-                      >
-                        <div className="flex items-center justify-between">
-                          <span className="text-[10px] font-bold text-[#92006F] uppercase">
-                            {task.task_type}
-                          </span>
-                          <div className="flex items-center gap-1">
-                            <button
-                              onClick={() => openTaskDetails(task)}
-                              className="text-[#888] hover:text-[#92006F] p-1 rounded cursor-pointer"
-                              title="Detalhes & Reatribuir"
-                            >
-                              <UserCheck className="w-3.5 h-3.5" />
-                            </button>
-                            <button
-                              onClick={() => confirmDeleteTask(task)}
-                              className="text-[#999] hover:text-rose-600 p-1 rounded cursor-pointer"
-                              title="Eliminar Tarefa"
-                            >
-                              <Trash2 className="w-3.5 h-3.5" />
-                            </button>
-                          </div>
-                        </div>
-
-                        <h4
-                          onClick={() => openTaskDetails(task)}
-                          className={`text-xs sm:text-sm font-bold text-[#141414] hover:text-[#92006F] cursor-pointer ${
-                            task.status === "completed" ? "line-through text-[#777]" : ""
-                          }`}
+                    .map((task) => {
+                      const dInfo = getDeadlineInfo(task.due_date);
+                      return (
+                        <div
+                          key={task.id}
+                          className="bg-white border border-[#E5DECF] p-4 rounded-xl shadow-xs space-y-3 hover:border-[#D4AF37] transition-all"
                         >
-                          {task.title}
-                        </h4>
+                          <div className="flex items-center justify-between">
+                            <span className="text-[10px] font-bold text-[#92006F] uppercase">
+                              {task.task_type}
+                            </span>
+                            <div className="flex items-center gap-1">
+                              <button
+                                onClick={() => openTaskDetails(task)}
+                                className="text-[#888] hover:text-[#92006F] p-1 rounded cursor-pointer"
+                                title="Detalhes & Reatribuir"
+                              >
+                                <UserCheck className="w-3.5 h-3.5" />
+                              </button>
+                              <button
+                                onClick={() => confirmDeleteTask(task)}
+                                className="text-[#999] hover:text-rose-600 p-1 rounded cursor-pointer"
+                                title="Eliminar Tarefa"
+                              >
+                                <Trash2 className="w-3.5 h-3.5" />
+                              </button>
+                            </div>
+                          </div>
 
-                        <div className="bg-[#FAF7F2] p-2.5 rounded-lg border border-[#EFE8DD] text-xs space-y-1">
-                          <div className="flex justify-between text-[#666]">
-                            <span>Cliente:</span>
-                            <strong className="text-[#333]">{task.client_name}</strong>
-                          </div>
-                          <div className="flex justify-between text-[#666]">
-                            <span>Advogada:</span>
-                            <span className="text-[#333] font-medium">{task.lawyer_name || "—"}</span>
-                          </div>
-                          <div className="flex justify-between text-[#666]">
-                            <span>Tempo acumulado:</span>
-                            <strong className="font-mono text-[#141414]">
-                              {formatSeconds(task.total_duration_seconds)}
-                            </strong>
-                          </div>
-                        </div>
+                          <h4
+                            onClick={() => openTaskDetails(task)}
+                            className={`text-xs sm:text-sm font-bold text-[#141414] hover:text-[#92006F] cursor-pointer ${
+                              task.status === "completed" ? "line-through text-[#777]" : ""
+                            }`}
+                          >
+                            {task.title}
+                          </h4>
 
-                        {/* Ações contextuais por estado */}
-                        <div className="pt-2 border-t border-[#F2ECE1] flex items-center justify-between gap-2">
-                          {task.status === "pool" && (
-                            <button
-                              onClick={() => handleClaimTask(task)}
-                              className="w-full bg-[#92006F] hover:bg-[#7E0060] text-white text-xs font-semibold py-1.5 rounded-md cursor-pointer transition-colors"
-                            >
-                              Assumir Tarefa
-                            </button>
+                          {dInfo && task.status !== "completed" && (
+                            <div>
+                              <span
+                                className={`text-[10px] border px-2 py-0.5 rounded-full font-semibold inline-flex items-center gap-1 ${dInfo.badgeClass}`}
+                              >
+                                <span className={`w-1.5 h-1.5 rounded-full ${dInfo.dotClass}`} />
+                                {dInfo.formattedDate} · {dInfo.label}
+                              </span>
+                            </div>
                           )}
+
+                          <div className="bg-[#FAF7F2] p-2.5 rounded-lg border border-[#EFE8DD] text-xs space-y-1">
+                            <div className="flex justify-between text-[#666]">
+                              <span>Cliente:</span>
+                              <strong className="text-[#333]">{task.client_name}</strong>
+                            </div>
+                            <div className="flex justify-between text-[#666]">
+                              <span>Advogada:</span>
+                              <span className="text-[#333] font-medium">{task.lawyer_name || "—"}</span>
+                            </div>
+                            <div className="flex justify-between text-[#666]">
+                              <span>Tempo acumulado:</span>
+                              <strong className="font-mono text-[#141414]">
+                                {formatSeconds(task.total_duration_seconds)}
+                              </strong>
+                            </div>
+                          </div>
+
+                          {/* Ações contextuais por estado */}
+                          <div className="pt-2 border-t border-[#F2ECE1] flex items-center justify-between gap-2">
+                            {task.status === "pool" && (
+                              <button
+                                onClick={() => handleClaimTask(task)}
+                                className="w-full bg-[#92006F] hover:bg-[#7E0060] text-white text-xs font-semibold py-1.5 rounded-md cursor-pointer transition-colors"
+                              >
+                                Assumir Tarefa
+                              </button>
+                            )}
 
                           {task.status === "assigned" && (
                             <>
@@ -2789,7 +3195,8 @@ PCN Advogadas · Plataforma Forense`;
                           )}
                         </div>
                       </div>
-                    ))}
+                    );
+                  })}
                   {tasks.filter((t) => t.status === taskStatusFilter).length === 0 && (
                     <div className="col-span-full p-8 text-center bg-white rounded-xl border border-dashed border-[#D9D1C5]">
                       <p className="text-xs text-[#777]">
@@ -3867,15 +4274,19 @@ PCN Advogadas · Plataforma Forense`;
 
                 {!taskFormPublishToPool && (
                   <div>
-                    <label className="font-bold text-[#333] block mb-1">Atribuir a Advogada</label>
+                    <label className="font-bold text-[#333] block mb-1">Atribuir a Advogada / Responsável</label>
                     <select
                       value={taskFormAssignee}
                       onChange={(e) => setTaskFormAssignee(e.target.value)}
                       className="w-full bg-[#FAF8F5] border border-[#D9D1C5] rounded-md px-3 py-2 text-xs focus:ring-1 focus:ring-[#92006F] outline-none text-[#141414]"
                     >
-                      <option value="usr_patricia">Dr.ª Patrícia (Direção)</option>
-                      <option value="usr_ines">Dr.ª Inês (Advogada)</option>
-                      <option value="usr_sofia">Dr.ª Sofia (Advogada)</option>
+                      {(usersList && usersList.length > 0 ? usersList : INITIAL_USERS)
+                        .filter((u: any) => u.is_active !== false)
+                        .map((u: any) => (
+                          <option key={u.id} value={u.id}>
+                            {u.name} ({u.role === "admin_lawyer" ? "Direção / Admin" : "Advogada"})
+                          </option>
+                        ))}
                     </select>
                   </div>
                 )}
@@ -4125,10 +4536,10 @@ PCN Advogadas · Plataforma Forense`;
                   />
                 </div>
 
-                {/* Secção de Reatribuição (Reassign) */}
+                {/* Secção de Reatribuição (Reassign Dinâmico com Todas as Utilizadoras / Tiago) */}
                 <div className="p-3 bg-[#FCF8EE] border border-[#F1E5C7] rounded-lg space-y-2">
                   <label className="font-bold text-[#AA820A] block flex items-center gap-1.5">
-                    <UserCheck className="w-4 h-4 text-[#AA820A]" /> Reatribuir Advogada Responsável:
+                    <UserCheck className="w-4 h-4 text-[#AA820A]" /> Reatribuir Advogada / Responsável:
                   </label>
                   <select
                     value={detailsForm.assigned_to}
@@ -4136,12 +4547,16 @@ PCN Advogadas · Plataforma Forense`;
                     className="w-full bg-white border border-[#D9D1C5] rounded-md px-3 py-2 text-xs focus:ring-1 focus:ring-[#92006F] outline-none text-[#141414] font-semibold cursor-pointer"
                   >
                     <option value="pool">Pool Partilhada (Livre / Sem Advogada)</option>
-                    <option value="usr_patricia">Dr.ª Patrícia Candeias Neto (Direção)</option>
-                    <option value="usr_ines">Dr.ª Inês Ramos (Advogada)</option>
-                    <option value="usr_sofia">Dr.ª Sofia Lima (Advogada)</option>
+                    {(usersList && usersList.length > 0 ? usersList : INITIAL_USERS)
+                      .filter((u: any) => u.is_active !== false)
+                      .map((u: any) => (
+                        <option key={u.id} value={u.id}>
+                          {u.name} ({u.role === "admin_lawyer" ? "Direção / Admin" : "Advogada"})
+                        </option>
+                      ))}
                   </select>
                   <p className="text-[10px] text-[#777]">
-                    Ao reatribuir, a tarefa passará a constar imediatamente no painel da advogada selecionada.
+                    Ao reatribuir, a tarefa passará a constar imediatamente no painel do utilizador selecionado.
                   </p>
                 </div>
 
@@ -4253,6 +4668,113 @@ PCN Advogadas · Plataforma Forense`;
                   <Trash2 className="w-3.5 h-3.5" />
                   <span>{isDeletingTask ? "A eliminar..." : "Sim, Eliminar Definitivamente"}</span>
                 </button>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* ── MODAL POPUP: ALERTA DE 1 HORA DE TAREFA EM ANDAMENTO + NOTIFICAÇÃO POR EMAIL ── */}
+        {overtimeAlert && (
+          <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/65 backdrop-blur-xs p-4 overflow-y-auto animate-in fade-in duration-200">
+            <div className="bg-white border-2 border-[#D4AF37] rounded-2xl shadow-2xl max-w-md w-full overflow-hidden">
+              <div className="bg-gradient-to-r from-[#92006F] to-[#5E0047] text-white px-5 py-4 flex items-center justify-between">
+                <div className="flex items-center gap-2.5">
+                  <div className="w-9 h-9 rounded-full bg-white/15 flex items-center justify-center">
+                    <Clock className="w-5 h-5 text-amber-300 animate-pulse" />
+                  </div>
+                  <div>
+                    <h3 className="text-sm font-bold tracking-wide">
+                      Alerta de Execução · {overtimeAlert.hours}h em Andamento
+                    </h3>
+                    <p className="text-[11px] text-white/80">
+                      Controlo de Tempo & Notificação Automática PCN
+                    </p>
+                  </div>
+                </div>
+                <button
+                  onClick={() => setOvertimeAlert(null)}
+                  className="text-white/75 hover:text-white cursor-pointer"
+                >
+                  <X className="w-5 h-5" />
+                </button>
+              </div>
+
+              <div className="p-5 space-y-4 text-xs">
+                <div className="p-3.5 bg-amber-50 border border-amber-200 rounded-xl text-amber-900 space-y-1">
+                  <p className="font-bold text-xs flex items-center gap-1.5">
+                    <AlertCircle className="w-4 h-4 text-amber-600 shrink-0" />
+                    <span>Esta tarefa atingiu {overtimeAlert.hours} hora(s) em execução!</span>
+                  </p>
+                  <p className="text-[11px] text-amber-800 leading-relaxed">
+                    Verifique se ainda se encontra a trabalhar neste assunto ou se deseja pausar/concluir o cronómetro.
+                  </p>
+                </div>
+
+                <div className="bg-[#FAF8F5] border border-[#ECE6DB] rounded-xl p-3.5 space-y-1.5">
+                  <div className="flex justify-between">
+                    <span className="text-[#736B5E]">Tarefa:</span>
+                    <strong className="text-[#141414] text-right">{overtimeAlert.task.title}</strong>
+                  </div>
+                  <div className="flex justify-between">
+                    <span className="text-[#736B5E]">Cliente:</span>
+                    <strong className="text-[#141414]">{overtimeAlert.task.client_name}</strong>
+                  </div>
+                  <div className="flex justify-between">
+                    <span className="text-[#736B5E]">Responsável:</span>
+                    <span className="font-semibold text-[#333]">{overtimeAlert.task.lawyer_name || currentUser.name}</span>
+                  </div>
+                  <div className="flex justify-between pt-1 border-t border-[#ECE6DB]">
+                    <span className="text-[#736B5E]">Tempo Acumulado:</span>
+                    <strong className="font-mono text-sm text-[#92006F]">
+                      {formatSeconds(
+                        tasks.find((t) => t.id === overtimeAlert.task.id)?.total_duration_seconds ??
+                          overtimeAlert.task.total_duration_seconds
+                      )}
+                    </strong>
+                  </div>
+                </div>
+
+                <div className="p-2.5 rounded-lg bg-emerald-50 border border-emerald-200 text-[11px] text-emerald-800 flex items-center gap-2">
+                  <CheckCircle2 className="w-4 h-4 text-emerald-600 shrink-0" />
+                  <span>
+                    Alerta enviado para o correio eletrónico:{" "}
+                    <strong>{overtimeAlert.recipientEmail}</strong>
+                  </span>
+                </div>
+
+                <div className="pt-2 border-t border-[#ECE6DB] flex flex-col sm:flex-row items-stretch sm:items-center justify-end gap-2">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      const target = tasks.find((t) => t.id === overtimeAlert.task.id) || overtimeAlert.task;
+                      setOvertimeAlert(null);
+                      handlePauseTimer(target);
+                    }}
+                    className="flex-1 bg-amber-500 hover:bg-amber-600 text-white font-semibold py-2 px-3 rounded-lg flex items-center justify-center gap-1.5 cursor-pointer transition-colors"
+                  >
+                    <Pause className="w-3.5 h-3.5" />
+                    <span>Pausar Tarefa</span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      const target = tasks.find((t) => t.id === overtimeAlert.task.id) || overtimeAlert.task;
+                      setOvertimeAlert(null);
+                      handleCompleteTask(target);
+                    }}
+                    className="flex-1 bg-emerald-600 hover:bg-emerald-700 text-white font-semibold py-2 px-3 rounded-lg flex items-center justify-center gap-1.5 cursor-pointer transition-colors"
+                  >
+                    <Check className="w-3.5 h-3.5" />
+                    <span>Concluir</span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setOvertimeAlert(null)}
+                    className="flex-1 bg-[#92006F] hover:bg-[#7E0060] text-white font-semibold py-2 px-3 rounded-lg cursor-pointer transition-colors"
+                  >
+                    Continuar
+                  </button>
+                </div>
               </div>
             </div>
           </div>

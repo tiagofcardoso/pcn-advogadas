@@ -5,7 +5,7 @@ from typing import Annotated
 from fastapi import APIRouter, Depends, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from pcn.api.deps import require_admin
+from pcn.api.deps import require_admin, require_full_access
 from pcn.core.database import get_session
 from pcn.models.user import User
 from pcn.schemas.user import UserCreate, UserCreateResponse, UserRead, UserUpdate
@@ -16,7 +16,7 @@ router = APIRouter(prefix="/users", tags=["Gestão de Utilizadoras"])
 
 @router.get("", response_model=list[UserRead])
 async def list_users(
-    admin: Annotated[User, Depends(require_admin)],
+    _current_user: Annotated[User, Depends(require_full_access)],
     session: Annotated[AsyncSession, Depends(get_session)],
 ) -> list[UserRead]:
     user_svc = UserService(session)

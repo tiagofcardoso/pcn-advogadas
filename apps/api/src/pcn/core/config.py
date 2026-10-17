@@ -55,6 +55,14 @@ class Settings(BaseSettings):
     FEE_NOTE_PREFIX: str = Field(default="NH", pattern=r"^[A-Z]{1,6}$")
     LOGO_PATH: str | None = None
 
+    # ── Email / Alert Notifications ──
+    SMTP_HOST: str | None = None
+    SMTP_PORT: int = 587
+    SMTP_USER: str | None = None
+    SMTP_PASSWORD: str | None = None
+    SMTP_FROM: str = "notificacoes@pcnadvogadas.pt"
+    RESEND_API_KEY: str | None = None
+
     @field_validator("BACKEND_CORS_ORIGINS", mode="before")
     @classmethod
     def _split_origins(cls, value: object) -> object:

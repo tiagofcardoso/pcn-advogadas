@@ -204,3 +204,24 @@ async def delete_task(
     """Permanently delete a task."""
     task_svc = TaskService(session)
     await task_svc.delete_task(user, task_id)
+
+
+@router.post("/{task_id}/notify-overtime")
+async def notify_task_overtime(
+    task_id: str,
+    user: Annotated[User, Depends(require_full_access)],
+    session: Annotated[AsyncSession, Depends(get_session)],
+    duration_seconds: int | None = None,
+    recipient_email: str | None = None,
+) -> dict[str, object]:
+    """Dispara alerta de email e registo de auditoria quando a tarefa atinge 1 hora em andamento."""
+    from pcn.services.email_service import EmailNotificationService
+
+    email_svc = EmailNotificationService(session)
+    return await email_svc.send_task_overtime_alert(
+        actor=user,
+        task_id=task_id,
+        duration_seconds=duration_seconds,
+        recipient_email=recipient_email,
+    )
+
