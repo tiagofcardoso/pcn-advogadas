@@ -139,6 +139,7 @@ export async function updateTaskApi(
     is_urgent_deadline?: boolean;
     fee_amount?: number;
     status?: string;
+    total_duration_seconds?: number;
   }
 ) {
   return apiFetch<any>(`/tasks/${taskId}`, {
@@ -178,12 +179,41 @@ export async function startTimerApi(taskId: string, token: string) {
   return apiFetch<any>(`/timer/${taskId}/start`, { method: "POST", token });
 }
 
-export async function pauseTimerApi(taskId: string, token: string) {
-  return apiFetch<any>(`/timer/${taskId}/pause`, { method: "POST", token });
+export async function pauseTimerApi(
+  taskId: string,
+  token: string,
+  clientDurationSeconds?: number
+) {
+  const qs =
+    clientDurationSeconds !== undefined
+      ? `?client_duration_seconds=${Math.max(0, Math.floor(clientDurationSeconds))}`
+      : "";
+  return apiFetch<any>(`/timer/${taskId}/pause${qs}`, { method: "POST", token });
 }
 
-export async function completeTaskApi(taskId: string, token: string) {
-  return apiFetch<any>(`/timer/${taskId}/complete`, { method: "POST", token });
+export async function completeTaskApi(
+  taskId: string,
+  token: string,
+  clientDurationSeconds?: number
+) {
+  const qs =
+    clientDurationSeconds !== undefined
+      ? `?client_duration_seconds=${Math.max(0, Math.floor(clientDurationSeconds))}`
+      : "";
+  return apiFetch<any>(`/timer/${taskId}/complete${qs}`, { method: "POST", token });
+}
+
+export async function syncTimersApi(
+  token: string,
+  tasks: Array<{ task_id: string; total_duration_seconds: number }>,
+  keepalive: boolean = false
+) {
+  return apiFetch<any[]>("/timer/sync", {
+    method: "POST",
+    token,
+    keepalive,
+    body: JSON.stringify({ tasks }),
+  });
 }
 
 export async function notifyTaskOvertimeApi(

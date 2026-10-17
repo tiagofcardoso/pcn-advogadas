@@ -40,6 +40,19 @@ class TimeSessionRepository(BaseRepository[TaskTimeSession]):
         )
         return result.scalars().first()
 
+    async def get_active_sessions_for_task(self, task_id: str) -> Sequence[TaskTimeSession]:
+        """Returns all open sessions for a given task ordered newest first."""
+        result = await self.session.execute(
+            select(TaskTimeSession)
+            .where(
+                TaskTimeSession.task_id == task_id,
+                TaskTimeSession.ended_at.is_(None),
+            )
+            .order_by(TaskTimeSession.started_at.desc())
+            .options(selectinload(TaskTimeSession.task))
+        )
+        return result.scalars().all()
+
     async def list_by_task(self, task_id: str) -> Sequence[TaskTimeSession]:
         result = await self.session.execute(
             select(TaskTimeSession)

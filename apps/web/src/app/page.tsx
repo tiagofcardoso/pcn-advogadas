@@ -58,6 +58,7 @@ import {
   startTimerApi,
   pauseTimerApi,
   completeTaskApi,
+  syncTimersApi,
   claimTaskApi,
   createTaskApi,
   assignTaskApi,
@@ -107,6 +108,8 @@ export default function App() {
   const [isSubmittingUser, setIsSubmittingUser] = useState<boolean>(false);
 
   const [tasks, setTasks] = useState<Task[]>([]);
+  const tasksRef = useRef<Task[]>([]);
+  tasksRef.current = tasks;
   const [clients, setClients] = useState<Client[]>([]);
   const [isLoadingApi, setIsLoadingApi] = useState<boolean>(false);
   const [apiConnected, setApiConnected] = useState<boolean>(false);
@@ -399,12 +402,34 @@ export default function App() {
       try {
         const apiTasks = await getDirectionBoard(token);
         if (apiTasks) {
+          let localTimers: Record<string, { seconds: number; updatedAt: number }> = {};
+          if (typeof window !== "undefined") {
+            try {
+              const raw = localStorage.getItem("pcn_running_timers");
+              if (raw) localTimers = JSON.parse(raw);
+            } catch {}
+          }
+
+          const toSyncWithServer: Array<{ task_id: string; total_duration_seconds: number }> = [];
+          const nowMs = Date.now();
+
           const mappedTasks = apiTasks.map((t: any) => {
             const parsedFee = t.fee_amount !== null && t.fee_amount !== undefined ? parseFloat(t.fee_amount) : undefined;
             if (parsedFee !== undefined && !isNaN(parsedFee)) {
               dbPrices[t.id] = parsedFee;
             }
-            const dur = t.total_duration_seconds || 0;
+            let dur = t.total_duration_seconds || 0;
+            if (t.status === "in_progress" && localTimers[t.id]) {
+              const elapsedSinceLocal = Math.max(
+                0,
+                Math.floor((nowMs - (localTimers[t.id].updatedAt || nowMs)) / 1000)
+              );
+              const candidate = (localTimers[t.id].seconds || 0) + elapsedSinceLocal;
+              if (candidate > dur) {
+                dur = candidate;
+                toSyncWithServer.push({ task_id: t.id, total_duration_seconds: dur });
+              }
+            }
             alertedHoursRef.current[t.id] = Math.floor(dur / 3600);
             return {
               id: t.id,
@@ -422,6 +447,17 @@ export default function App() {
             };
           });
           setTasks(mappedTasks);
+
+          const runningList = mappedTasks.filter((t: Task) => t.status === "in_progress");
+          if (runningList.length > 0) {
+            setActiveTaskId(runningList[0].id);
+            setTimerSeconds(runningList[0].total_duration_seconds || 0);
+            setIsTimerRunning(true);
+          }
+
+          if (toSyncWithServer.length > 0) {
+            syncTimersApi(token, toSyncWithServer).catch(() => {});
+          }
         }
       } catch (e) {
         console.warn("Aviso ao carregar tarefas:", e);
@@ -431,9 +467,17 @@ export default function App() {
       try {
         const activeTimer = await getActiveTimerApi(token);
         if (activeTimer && activeTimer.is_active && activeTimer.task_id) {
+          const accSec = activeTimer.total_accumulated_seconds || 0;
           setActiveTaskId(activeTimer.task_id);
-          setTimerSeconds(activeTimer.total_accumulated_seconds || 0);
           setIsTimerRunning(true);
+          setTasks((prev) =>
+            prev.map((t) => {
+              if (t.id !== activeTimer.task_id) return t;
+              const bestSec = Math.max(t.total_duration_seconds || 0, accSec);
+              setTimerSeconds(bestSec);
+              return { ...t, total_duration_seconds: bestSec };
+            })
+          );
         }
       } catch (e) {
         console.warn("Aviso ao verificar cronómetro ativo:", e);
@@ -511,7 +555,34 @@ export default function App() {
     }
   };
 
+  const flushRunningTimersToServer = (tokenToUse?: string | null) => {
+    const effectiveToken = tokenToUse || authToken;
+    const currentTasks = tasksRef.current;
+    const running = currentTasks.filter((t) => t.status === "in_progress");
+    if (typeof window !== "undefined") {
+      try {
+        const raw = localStorage.getItem("pcn_running_timers");
+        const map: Record<string, { seconds: number; updatedAt: number }> = raw
+          ? JSON.parse(raw)
+          : {};
+        const nowMs = Date.now();
+        for (const r of running) {
+          map[r.id] = { seconds: r.total_duration_seconds || 0, updatedAt: nowMs };
+        }
+        localStorage.setItem("pcn_running_timers", JSON.stringify(map));
+      } catch {}
+    }
+    if (effectiveToken && running.length > 0) {
+      const payload = running.map((t) => ({
+        task_id: t.id,
+        total_duration_seconds: t.total_duration_seconds || 0,
+      }));
+      syncTimersApi(effectiveToken, payload, true).catch(() => {});
+    }
+  };
+
   const handleLogout = (notice?: string) => {
+    flushRunningTimersToServer(authToken);
     if (typeof window !== "undefined") {
       localStorage.removeItem("pcn_session_token");
       localStorage.removeItem("pcn_session_expiry");
@@ -803,10 +874,20 @@ export default function App() {
   useEffect(() => {
     if (!hasRunningTasks && !isTimerRunning) return;
     const interval = setInterval(() => {
-      setTasks((prev) =>
-        prev.map((t) => {
+      const nowMs = Date.now();
+      let localMap: Record<string, { seconds: number; updatedAt: number }> = {};
+      if (typeof window !== "undefined") {
+        try {
+          const raw = localStorage.getItem("pcn_running_timers");
+          if (raw) localMap = JSON.parse(raw);
+        } catch {}
+      }
+
+      setTasks((prev) => {
+        const nextList = prev.map((t) => {
           if (t.status !== "in_progress") return t;
           const nextSec = (t.total_duration_seconds || 0) + 1;
+          localMap[t.id] = { seconds: nextSec, updatedAt: nowMs };
           const currentHours = Math.floor(nextSec / 3600);
           const lastAlertedHour = alertedHoursRef.current[t.id] ?? 0;
           if (currentHours >= 1 && currentHours > lastAlertedHour) {
@@ -816,14 +897,63 @@ export default function App() {
             }, 0);
           }
           return { ...t, total_duration_seconds: nextSec };
-        })
-      );
+        });
+
+        if (typeof window !== "undefined") {
+          try {
+            localStorage.setItem("pcn_running_timers", JSON.stringify(localMap));
+          } catch {}
+        }
+        return nextList;
+      });
       if (isTimerRunning && activeTaskId) {
         setTimerSeconds((prev) => prev + 1);
       }
     }, 1000);
     return () => clearInterval(interval);
   }, [hasRunningTasks, isTimerRunning, activeTaskId, authToken, apiConnected, usersList, currentUser]);
+
+  // 2.b Sincronização automática contínua com o PostgreSQL (a cada 8s + ao fechar/atualizar separador)
+  useEffect(() => {
+    if (!hasRunningTasks || !authToken || !apiConnected) return;
+
+    const syncInterval = setInterval(() => {
+      flushRunningTimersToServer(authToken);
+    }, 8000);
+
+    const handleBeforeUnload = () => {
+      flushRunningTimersToServer(authToken);
+    };
+    const handleVisibilityChange = () => {
+      if (document.visibilityState === "hidden") {
+        flushRunningTimersToServer(authToken);
+      }
+    };
+
+    if (typeof window !== "undefined") {
+      window.addEventListener("beforeunload", handleBeforeUnload);
+      document.addEventListener("visibilitychange", handleVisibilityChange);
+    }
+
+    return () => {
+      clearInterval(syncInterval);
+      if (typeof window !== "undefined") {
+        window.removeEventListener("beforeunload", handleBeforeUnload);
+        document.removeEventListener("visibilitychange", handleVisibilityChange);
+      }
+    };
+  }, [hasRunningTasks, authToken, apiConnected]);
+
+  const removeTaskFromLocalTimers = (taskId: string) => {
+    if (typeof window === "undefined") return;
+    try {
+      const raw = localStorage.getItem("pcn_running_timers");
+      if (!raw) return;
+      const map = JSON.parse(raw);
+      delete map[taskId];
+      localStorage.setItem("pcn_running_timers", JSON.stringify(map));
+    } catch {}
+  };
 
   const formatSeconds = (sec: number) => {
     const h = Math.floor(sec / 3600);
@@ -833,16 +963,24 @@ export default function App() {
   };
 
   const handleStartTimer = async (task: Task) => {
-    let serverDuration = task.total_duration_seconds;
+    let serverDuration = task.total_duration_seconds || 0;
     if (authToken && apiConnected) {
       try {
         const updated = await startTimerApi(task.id, authToken);
         if (updated && typeof updated.total_duration_seconds === "number") {
-          serverDuration = updated.total_duration_seconds;
+          serverDuration = Math.max(serverDuration, updated.total_duration_seconds);
         }
       } catch (e) {
         console.error(e);
       }
+    }
+    if (typeof window !== "undefined") {
+      try {
+        const raw = localStorage.getItem("pcn_running_timers");
+        const map = raw ? JSON.parse(raw) : {};
+        map[task.id] = { seconds: serverDuration, updatedAt: Date.now() };
+        localStorage.setItem("pcn_running_timers", JSON.stringify(map));
+      } catch {}
     }
     alertedHoursRef.current[task.id] = Math.floor((serverDuration || 0) / 3600);
     setActiveTaskId(task.id);
@@ -866,14 +1004,16 @@ export default function App() {
 
     if (authToken && apiConnected) {
       try {
-        const updated = await pauseTimerApi(targetId, authToken);
+        const updated = await pauseTimerApi(targetId, authToken, finalSeconds);
         if (updated && typeof updated.total_duration_seconds === "number") {
-          finalSeconds = updated.total_duration_seconds;
+          finalSeconds = Math.max(finalSeconds, updated.total_duration_seconds);
         }
       } catch (e) {
         console.error(e);
       }
     }
+
+    removeTaskFromLocalTimers(targetId);
 
     const otherRunning = tasks.find((t) => t.id !== targetId && t.status === "in_progress");
     if (targetId === activeTaskId) {
@@ -901,14 +1041,15 @@ export default function App() {
     let finalSeconds = currentTask.total_duration_seconds;
     if (authToken && apiConnected) {
       try {
-        const updated = await completeTaskApi(task.id, authToken);
+        const updated = await completeTaskApi(task.id, authToken, finalSeconds);
         if (updated && typeof updated.total_duration_seconds === "number") {
-          finalSeconds = updated.total_duration_seconds;
+          finalSeconds = Math.max(finalSeconds, updated.total_duration_seconds);
         }
       } catch (e) {
         console.error(e);
       }
     }
+    removeTaskFromLocalTimers(task.id);
     if (activeTaskId === task.id) {
       const otherRunning = tasks.find((t) => t.id !== task.id && t.status === "in_progress");
       if (otherRunning) {
@@ -1039,6 +1180,7 @@ export default function App() {
         ? "assigned"
         : detailsForm.status;
 
+      const liveTask = tasks.find((t) => t.id === selectedTaskForDetails.id) || selectedTaskForDetails;
       let updatedFromServer: any = null;
       if (authToken && apiConnected) {
         if (isPool) {
@@ -1048,6 +1190,7 @@ export default function App() {
             description: detailsForm.description,
             due_date: detailsForm.due_date ? `${detailsForm.due_date}T18:00:00` : null,
             status: finalStatus,
+            total_duration_seconds: liveTask.total_duration_seconds,
           });
         } else {
           await assignTaskApi(selectedTaskForDetails.id, detailsForm.assigned_to, authToken);
@@ -1056,8 +1199,12 @@ export default function App() {
             description: detailsForm.description,
             due_date: detailsForm.due_date ? `${detailsForm.due_date}T18:00:00` : null,
             status: finalStatus,
+            total_duration_seconds: liveTask.total_duration_seconds,
           });
         }
+      }
+      if (finalStatus !== "in_progress") {
+        removeTaskFromLocalTimers(selectedTaskForDetails.id);
       }
 
       const resolvedLawyerName = isPool

@@ -30,6 +30,16 @@ class TaskUpdate(BaseModel):
     is_urgent_deadline: bool | None = None
     fee_amount: Decimal | None = None
     status: TaskStatus | None = None
+    total_duration_seconds: int | None = Field(None, ge=0)
+
+
+class TimerSyncItem(BaseModel):
+    task_id: str
+    total_duration_seconds: int = Field(ge=0)
+
+
+class TimerSyncRequest(BaseModel):
+    tasks: list[TimerSyncItem] = Field(default_factory=list)
 
 
 class TaskAssignRequest(BaseModel):

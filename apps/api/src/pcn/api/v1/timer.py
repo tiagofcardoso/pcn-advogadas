@@ -8,7 +8,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from pcn.api.deps import require_full_access
 from pcn.core.database import get_session
 from pcn.models.user import User
-from pcn.schemas.task import TaskRead
+from pcn.schemas.task import TaskRead, TimerSyncRequest
 from pcn.schemas.time_session import ActiveTimerResponse
 from pcn.services.task_service import TaskService
 
@@ -25,13 +25,25 @@ async def get_active_timer(
     return await task_svc.get_active_timer(user.id)
 
 
+@router.post("/sync", response_model=list[TaskRead])
+async def sync_timers(
+    body: TimerSyncRequest,
+    user: Annotated[User, Depends(require_full_access)],
+    session: Annotated[AsyncSession, Depends(get_session)],
+) -> list[TaskRead]:
+    """Sincroniza e persiste na base de dados PostgreSQL os segundos acumulados das tarefas em execução."""
+    task_svc = TaskService(session)
+    tasks = await task_svc.sync_timers(user, body.tasks)
+    return [TaskRead.model_validate(t) for t in tasks]
+
+
 @router.post("/{task_id}/start", response_model=TaskRead)
 async def start_timer(
     task_id: str,
     user: Annotated[User, Depends(require_full_access)],
     session: Annotated[AsyncSession, Depends(get_session)],
 ) -> TaskRead:
-    """Inicia a contagem de tempo. Pausa automaticamente qualquer outro cronómetro ativo da mesma advogada."""
+    """Inicia a contagem de tempo. Permite múltiplas tarefas em simultâneo."""
     task_svc = TaskService(session)
     task = await task_svc.start_timer(user, task_id)
     return TaskRead.model_validate(task)
@@ -42,10 +54,11 @@ async def pause_timer(
     task_id: str,
     user: Annotated[User, Depends(require_full_access)],
     session: Annotated[AsyncSession, Depends(get_session)],
+    client_duration_seconds: int | None = None,
 ) -> TaskRead:
     """Pausa a contagem de tempo e soma os segundos acumulados na tarefa."""
     task_svc = TaskService(session)
-    task = await task_svc.pause_timer(user, task_id)
+    task = await task_svc.pause_timer(user, task_id, client_duration_seconds)
     return TaskRead.model_validate(task)
 
 
@@ -54,8 +67,9 @@ async def complete_task(
     task_id: str,
     user: Annotated[User, Depends(require_full_access)],
     session: Annotated[AsyncSession, Depends(get_session)],
+    client_duration_seconds: int | None = None,
 ) -> TaskRead:
     """Conclui a tarefa, encerra o cronómetro ativo e disponibiliza-a imediatamente para a Nota de Honorários."""
     task_svc = TaskService(session)
-    task = await task_svc.complete_task(user, task_id)
+    task = await task_svc.complete_task(user, task_id, client_duration_seconds)
     return TaskRead.model_validate(task)

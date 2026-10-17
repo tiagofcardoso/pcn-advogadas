@@ -16,7 +16,7 @@ from pcn.repositories.client_repository import ClientRepository, TaskTypeReposit
 from pcn.repositories.task_repository import TaskRepository
 from pcn.repositories.time_session_repository import TimeSessionRepository
 from pcn.repositories.user_repository import UserRepository
-from pcn.schemas.task import TaskCreate, TaskUpdate
+from pcn.schemas.task import TaskCreate, TaskUpdate, TimerSyncItem
 from pcn.schemas.time_session import ActiveTimerResponse
 
 
@@ -101,13 +101,16 @@ class TaskService:
         return await self.task_repo.get_by_id_with_relations(task.id)  # type: ignore[return-value]
 
     async def update_task(self, user: User, task_id: str, data: TaskUpdate) -> Task:
-        task = await self.task_repo.get_by_id_with_relations(task_id)
+        now = system_clock.now()
+        task = await self.task_repo.get_by_id_for_update(task_id)
         if not task:
             raise NotFound("Tarefa não encontrada.")
 
         # Lawyers can only update tasks assigned to them (and cannot change fee_amount)
         if user.role != UserRole.ADMIN and task.assigned_to != user.id:
             raise PermissionDenied("Não tem permissão para editar esta tarefa.")
+
+        previous_status = task.status
 
         if data.title is not None:
             task.title = data.title.strip()
@@ -121,10 +124,31 @@ class TaskService:
             task.due_date = data.due_date
         if data.is_urgent_deadline is not None:
             task.is_urgent_deadline = data.is_urgent_deadline
+        if data.total_duration_seconds is not None:
+            task.total_duration_seconds = max(
+                task.total_duration_seconds or 0, data.total_duration_seconds
+            )
+
         if data.status is not None:
+            if data.status == TaskStatus.IN_PROGRESS:
+                open_sessions = await self.session_repo.get_active_sessions_for_task(task.id)
+                if not open_sessions:
+                    await self.session_repo.add(
+                        TaskTimeSession(
+                            task_id=task.id,
+                            user_id=task.assigned_to or user.id,
+                            started_at=now,
+                            active_marker=None,
+                        )
+                    )
+            elif previous_status == TaskStatus.IN_PROGRESS and data.status != TaskStatus.IN_PROGRESS:
+                await self._close_active_session_for_task(
+                    task, now, data.total_duration_seconds
+                )
+
             task.status = data.status
             if data.status == TaskStatus.COMPLETED and not task.completed_at:
-                task.completed_at = system_clock.now()
+                task.completed_at = now
 
         # Fee amount can only be edited by Admin/Patrícia
         if data.fee_amount is not None and user.role == UserRole.ADMIN:
@@ -193,15 +217,32 @@ class TaskService:
         s = started_at if started_at.tzinfo else started_at.replace(tzinfo=UTC)
         return max(0, int((n - s).total_seconds()))
 
-    async def _close_active_session_for_task(self, task: Task, now: datetime) -> None:
-        """Closes any already running session for this specific task and accumulates duration."""
-        active_session = await self.session_repo.get_active_session_for_task(task.id)
-        if active_session:
-            duration = self._calc_seconds(now, active_session.started_at)
-            active_session.ended_at = now
-            active_session.duration_seconds = duration
-            active_session.active_marker = None
-            task.total_duration_seconds += duration
+    async def _close_active_session_for_task(
+        self,
+        task: Task,
+        now: datetime,
+        client_duration_seconds: int | None = None,
+    ) -> None:
+        """Closes all open sessions for this specific task and accumulates duration into PostgreSQL."""
+        open_sessions = await self.session_repo.get_active_sessions_for_task(task.id)
+        if open_sessions:
+            primary = open_sessions[0]
+            duration = self._calc_seconds(now, primary.started_at)
+            primary.ended_at = now
+            primary.duration_seconds = (primary.duration_seconds or 0) + duration
+            primary.active_marker = None
+            task.total_duration_seconds = (task.total_duration_seconds or 0) + duration
+
+            for dup in open_sessions[1:]:
+                dup.ended_at = now
+                dup.duration_seconds = dup.duration_seconds or 0
+                dup.active_marker = None
+
+        if (
+            client_duration_seconds is not None
+            and client_duration_seconds > (task.total_duration_seconds or 0)
+        ):
+            task.total_duration_seconds = client_duration_seconds
 
     async def start_timer(self, user: User, task_id: str) -> Task:
         """Starts time tracking for a task without auto-pausing other tasks."""
@@ -223,6 +264,7 @@ class TaskService:
             task_id=task.id,
             user_id=session_user_id,
             started_at=now,
+            duration_seconds=0,
             active_marker=None,
         )
         await self.session_repo.add(new_session)
@@ -231,7 +273,12 @@ class TaskService:
         await self.session.commit()
         return await self.task_repo.get_by_id_with_relations(task.id)  # type: ignore[return-value]
 
-    async def pause_timer(self, user: User, task_id: str) -> Task:
+    async def pause_timer(
+        self,
+        user: User,
+        task_id: str,
+        client_duration_seconds: int | None = None,
+    ) -> Task:
         """Pauses time tracking for a task."""
         now = system_clock.now()
         task = await self.task_repo.get_by_id_for_update(task_id)
@@ -243,13 +290,18 @@ class TaskService:
         else:
             task.status = TaskStatus.PAUSED
 
-        await self._close_active_session_for_task(task, now)
+        await self._close_active_session_for_task(task, now, client_duration_seconds)
 
         await self._audit(AuditAction.TASK_TRANSITION, user.id, task.id, "Timer paused")
         await self.session.commit()
         return await self.task_repo.get_by_id_with_relations(task.id)  # type: ignore[return-value]
 
-    async def complete_task(self, user: User, task_id: str) -> Task:
+    async def complete_task(
+        self,
+        user: User,
+        task_id: str,
+        client_duration_seconds: int | None = None,
+    ) -> Task:
         """Completes a task and consolidates final duration."""
         now = system_clock.now()
         task = await self.task_repo.get_by_id_for_update(task_id)
@@ -260,11 +312,49 @@ class TaskService:
             task.status = next_status(task.status, TaskAction.COMPLETE)
         task.completed_at = now
 
-        await self._close_active_session_for_task(task, now)
+        await self._close_active_session_for_task(task, now, client_duration_seconds)
 
         await self._audit(AuditAction.TASK_TRANSITION, user.id, task.id, "Task completed")
         await self.session.commit()
         return await self.task_repo.get_by_id_with_relations(task.id)  # type: ignore[return-value]
+
+    async def sync_timers(self, user: User, items: list[TimerSyncItem]) -> list[Task]:
+        """Checkpoints all active sessions and syncs client durations into PostgreSQL."""
+        await self.task_repo.checkpoint_active_sessions()
+        now = system_clock.now()
+        updated_tasks: list[Task] = []
+
+        for item in items:
+            task = await self.task_repo.get_by_id_for_update(item.task_id)
+            if not task:
+                continue
+            if item.total_duration_seconds > (task.total_duration_seconds or 0):
+                delta = item.total_duration_seconds - (task.total_duration_seconds or 0)
+                task.total_duration_seconds = item.total_duration_seconds
+                open_sessions = await self.session_repo.get_active_sessions_for_task(task.id)
+                if open_sessions:
+                    primary = open_sessions[0]
+                    primary.duration_seconds = (primary.duration_seconds or 0) + delta
+                    primary.started_at = now
+                elif task.status == TaskStatus.IN_PROGRESS:
+                    await self.session_repo.add(
+                        TaskTimeSession(
+                            task_id=task.id,
+                            user_id=task.assigned_to or user.id,
+                            started_at=now,
+                            duration_seconds=delta,
+                            active_marker=None,
+                        )
+                    )
+            updated_tasks.append(task)
+
+        await self.session.commit()
+        result: list[Task] = []
+        for t in updated_tasks:
+            reloaded = await self.task_repo.get_by_id_with_relations(t.id)
+            if reloaded:
+                result.append(reloaded)
+        return result
 
     async def archive_task(self, user: User, task_id: str) -> Task:
         """Archives a completed task so it leaves the active board."""
@@ -298,12 +388,13 @@ class TaskService:
 
     async def get_active_timer(self, user_id: str) -> ActiveTimerResponse:
         """Returns the active timer and elapsed seconds computed against server clock."""
+        await self.task_repo.checkpoint_active_sessions()
         now = system_clock.now()
         session = await self.session_repo.get_active_session_for_user(user_id)
         if not session or not session.task:
             return ActiveTimerResponse(is_active=False, server_time=now)
 
-        elapsed = int((now - session.started_at).total_seconds())
+        elapsed = self._calc_seconds(now, session.started_at)
         client_name = session.task.client.name if session.task.client else None
 
         return ActiveTimerResponse(
@@ -313,6 +404,6 @@ class TaskService:
             client_name=client_name,
             started_at=session.started_at,
             server_time=now,
-            elapsed_seconds=max(0, elapsed),
-            total_accumulated_seconds=session.task.total_duration_seconds + max(0, elapsed),
+            elapsed_seconds=(session.duration_seconds or 0) + elapsed,
+            total_accumulated_seconds=(session.task.total_duration_seconds or 0) + elapsed,
         )

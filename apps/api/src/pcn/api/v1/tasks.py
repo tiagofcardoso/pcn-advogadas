@@ -119,6 +119,7 @@ async def get_task(
     session: Annotated[AsyncSession, Depends(get_session)],
 ) -> TaskRead:
     repo = TaskRepository(session)
+    await repo.checkpoint_active_sessions()
     task = await repo.get_by_id_with_relations(task_id)
     if not task:
         raise NotFound("Tarefa não encontrada.")
