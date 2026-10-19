@@ -1,8 +1,8 @@
 """Pydantic schemas for User management (Admin exclusive)."""
 
-from datetime import datetime
+from datetime import UTC, datetime
 
-from pydantic import BaseModel, ConfigDict, EmailStr, Field
+from pydantic import BaseModel, ConfigDict, EmailStr, Field, field_validator
 
 from pcn.domain.enums import UserRole
 
@@ -11,7 +11,7 @@ class UserCreate(BaseModel):
     name: str = Field(min_length=2, max_length=150)
     email: EmailStr
     role: UserRole = UserRole.LAWYER
-    password: str | None = None
+    password: str | None = Field(None, max_length=128)
     must_change_password: bool = True
 
 
@@ -27,7 +27,7 @@ class UserUpdate(BaseModel):
     name: str | None = Field(None, min_length=2, max_length=150)
     role: UserRole | None = None
     is_active: bool | None = None
-    password: str | None = None
+    password: str | None = Field(None, max_length=128)
     must_change_password: bool | None = None
 
 
@@ -41,5 +41,14 @@ class UserRead(BaseModel):
     is_totp_enabled: bool
     must_change_password: bool
     is_active: bool
+    locked_until: datetime | None = None
+    failed_login_attempts: int = 0
     last_login_at: datetime | None = None
     created_at: datetime
+
+    @field_validator("locked_until", "last_login_at", "created_at")
+    @classmethod
+    def _assume_utc(cls, value: datetime | None) -> datetime | None:
+        if value is not None and value.tzinfo is None:
+            return value.replace(tzinfo=UTC)
+        return value

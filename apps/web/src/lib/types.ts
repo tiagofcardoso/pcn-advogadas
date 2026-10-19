@@ -36,6 +36,17 @@ export interface Task {
 export interface UserProfile {
   id: string;
   name: string;
-  role: "admin_lawyer" | "lawyer";
+  role: "master" | "admin_lawyer" | "lawyer";
   email: string;
 }
+
+/** Direção (admin_lawyer) and IT (master) have full management access. */
+export function isAdminRole(role?: string | null): boolean {
+  return role === "admin_lawyer" || role === "master";
+}
+
+export const ROLE_LABELS: Record<string, string> = {
+  master: "Master (TI)",
+  admin_lawyer: "Direção / Administradora",
+  lawyer: "Advogada Associada",
+};

@@ -47,6 +47,21 @@ async def create_admin(name: str, email: str) -> None:
         print("No primeiro login ser-lhe-á exigido alterar a palavra-passe e ativar o 2FA.\n")
 
 
+async def set_role(email: str, role: str) -> None:
+    """Changes a user's role from the server shell (e.g. promote IT to master)."""
+    target_role = UserRole(role)
+    session_factory = get_session_factory()
+    async with session_factory() as session:
+        result = await session.execute(select(User).where(User.email == email.strip().lower()))
+        user = result.scalar_one_or_none()
+        if not user:
+            print(f"[!] Erro: Nenhuma conta com o email {email}")
+            sys.exit(1)
+        user.role = target_role
+        await session.commit()
+        print(f"[+] {user.email} agora tem o perfil '{target_role.value}'.")
+
+
 async def seed_task_types() -> None:
     default_types = [
         {
@@ -98,12 +113,18 @@ def main() -> None:
 
     subparsers.add_parser("seed-task-types", help="Semeia os tipos de tarefa jurídica padrão")
 
+    role_parser = subparsers.add_parser("set-role", help="Altera o perfil de uma conta")
+    role_parser.add_argument("--email", required=True)
+    role_parser.add_argument("--role", required=True, choices=[r.value for r in UserRole])
+
     args = parser.parse_args()
 
     if args.command == "create-admin":
         asyncio.run(create_admin(args.name, args.email))
     elif args.command == "seed-task-types":
         asyncio.run(seed_task_types())
+    elif args.command == "set-role":
+        asyncio.run(set_role(args.email, args.role))
 
 
 if __name__ == "__main__":

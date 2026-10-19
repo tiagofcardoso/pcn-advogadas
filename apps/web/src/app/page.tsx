@@ -44,6 +44,10 @@ import {
   UserPlus,
   ShieldAlert,
   KeyRound,
+  Lock,
+  Unlock,
+  Ban,
+  Smartphone as PhoneIcon,
 } from "lucide-react";
 import {
   INITIAL_USERS,
@@ -51,11 +55,17 @@ import {
   INITIAL_TASKS,
   INITIAL_SERVICE_CATEGORIES,
 } from "@/lib/mockData";
-import { Task, Client, UserProfile, ServiceCategory } from "@/lib/types";
+import { Task, Client, UserProfile, ServiceCategory, isAdminRole, ROLE_LABELS } from "@/lib/types";
 import { detectPlatform, PlatformInfo } from "@/lib/platform";
 import {
   loginApi,
   changePasswordApi,
+  verifyMfaLoginApi,
+  setup2faApi,
+  verify2faApi,
+  unlockUserApi,
+  resetUserMfaApi,
+  resetUserPasswordApi,
   getDirectionBoard,
   getClientsApi,
   createClientApi,
@@ -144,7 +154,7 @@ function EuropeanDateInput({
           datePickerRef.current.focus();
           datePickerRef.current.click();
         }
-      } catch {}
+      } catch { }
     }
   };
 
@@ -188,6 +198,9 @@ function EuropeanDateInput({
 export default function App() {
   const [currentUser, setCurrentUser] = useState<UserProfile>(INITIAL_USERS[0]);
   const [authToken, setAuthToken] = useState<string | null>(null);
+  // Direção/Master manage everything; lawyers only create tasks and work on their own.
+  const isAdmin = isAdminRole(currentUser?.role);
+  const canWorkOn = (task: Task) => isAdmin || task.assigned_to === currentUser?.id;
   const [isAuthenticated, setIsAuthenticated] = useState<boolean>(false);
   const [sessionExpiry, setSessionExpiry] = useState<number | null>(null);
   const [sessionNotice, setSessionNotice] = useState<string | null>(null);
@@ -210,7 +223,7 @@ export default function App() {
   const [newUserForm, setNewUserForm] = useState<{
     name: string;
     email: string;
-    role: "admin_lawyer" | "lawyer";
+    role: "master" | "admin_lawyer" | "lawyer";
     password: string;
   }>({
     name: "",
@@ -313,7 +326,7 @@ export default function App() {
       if (savedRounding === "6" || savedRounding === "15" || savedRounding === "0") {
         setBillingRoundingMinutes(parseInt(savedRounding, 10) as 0 | 6 | 15);
       }
-    } catch {}
+    } catch { }
   }, []);
 
   const persistCategoriesLocal = (cats: ServiceCategory[]) => {
@@ -321,7 +334,7 @@ export default function App() {
     if (typeof window !== "undefined") {
       try {
         localStorage.setItem("pcn_service_categories", JSON.stringify(cats));
-      } catch {}
+      } catch { }
     }
   };
 
@@ -355,7 +368,7 @@ export default function App() {
       if (typeof window !== "undefined") {
         try {
           localStorage.setItem("pcn_client_hourly_rates", JSON.stringify(next));
-        } catch {}
+        } catch { }
       }
       return next;
     });
@@ -368,7 +381,7 @@ export default function App() {
       if (typeof window !== "undefined") {
         try {
           localStorage.setItem("pcn_client_retainer_hours", JSON.stringify(next));
-        } catch {}
+        } catch { }
       }
       return next;
     });
@@ -379,7 +392,7 @@ export default function App() {
     if (typeof window !== "undefined") {
       try {
         localStorage.setItem("pcn_billing_rounding", String(mins));
-      } catch {}
+      } catch { }
     }
   };
 
@@ -466,6 +479,13 @@ export default function App() {
       | "reports"
       | "users"
   ) => {
+    if ((tab === "feenotes" || tab === "services" || tab === "users") && !isAdmin) {
+      return;
+    }
+    if (tab === "users") {
+      // Fresh lock/suspension status every time the panel is opened.
+      refreshUsers().catch(() => { });
+    }
     if (typeof window !== "undefined") {
       window.history.pushState({ tab }, "");
     }
@@ -512,6 +532,7 @@ export default function App() {
   };
 
   const confirmDeleteTask = (task: Task) => {
+    if (!isAdmin) { setModalFeedback("Ação reservada à Direção do escritório."); setTimeout(() => setModalFeedback(null), 3500); return; }
     if (typeof window !== "undefined") {
       window.history.pushState({ modal: "deleteConfirm" }, "");
     }
@@ -586,7 +607,7 @@ export default function App() {
     };
     try {
       mq.addEventListener("change", handler);
-    } catch {}
+    } catch { }
 
     const beforeInstallHandler = (e: Event) => {
       e.preventDefault();
@@ -597,7 +618,7 @@ export default function App() {
     return () => {
       try {
         mq.removeEventListener("change", handler);
-      } catch {}
+      } catch { }
       window.removeEventListener("beforeinstallprompt", beforeInstallHandler);
     };
   }, []);
@@ -680,6 +701,15 @@ export default function App() {
   const [isChangingPassword, setIsChangingPassword] = useState(false);
   const [pendingUserProfile, setPendingUserProfile] = useState<UserProfile | null>(null);
 
+  // 2FA: code at login (mfaToken) and mandatory enrolment on first access (mustSetup2fa)
+  const [mfaToken, setMfaToken] = useState<string | null>(null);
+  const [mfaCode, setMfaCode] = useState("");
+  const [mustSetup2fa, setMustSetup2fa] = useState(false);
+  const [twoFaSetup, setTwoFaSetup] = useState<{ secret: string; qr_svg_data_uri: string } | null>(null);
+  const [twoFaCode, setTwoFaCode] = useState("");
+  const [twoFaError, setTwoFaError] = useState<string | null>(null);
+  const [isVerifying2fa, setIsVerifying2fa] = useState(false);
+
   const loadAllData = async (token: string, userRole?: string) => {
     setIsLoadingApi(true);
     try {
@@ -696,7 +726,7 @@ export default function App() {
             try {
               const raw = localStorage.getItem("pcn_running_timers");
               if (raw) localTimers = JSON.parse(raw);
-            } catch {}
+            } catch { }
           }
 
           const toSyncWithServer: Array<{ task_id: string; total_duration_seconds: number }> = [];
@@ -707,7 +737,7 @@ export default function App() {
             try {
               const rawThresh = localStorage.getItem("pcn_overtime_thresholds");
               if (rawThresh) savedThresholds = JSON.parse(rawThresh);
-            } catch {}
+            } catch { }
           }
 
           const mappedTasks: Task[] = apiTasks.map((t: any) => {
@@ -757,7 +787,7 @@ export default function App() {
           }
 
           if (toSyncWithServer.length > 0) {
-            syncTimersApi(token, toSyncWithServer).catch(() => {});
+            syncTimersApi(token, toSyncWithServer).catch(() => { });
           }
         }
       } catch (e) {
@@ -792,7 +822,7 @@ export default function App() {
             try {
               const rawCats = localStorage.getItem("pcn_service_categories");
               if (rawCats) localCats = JSON.parse(rawCats);
-            } catch {}
+            } catch { }
           }
           const defaultRateMap: Record<string, number> = {
             "Certidões e Registos": 90,
@@ -864,6 +894,7 @@ export default function App() {
         if (apiUsers && apiUsers.length > 0) {
           loadedUsers = apiUsers;
           setUsersList(apiUsers);
+          setUsersFetchedAt(Date.now());
           setTaskFormAssignee((prev) => {
             const exists = apiUsers.some((u: any) => u.id === prev);
             return exists ? prev : apiUsers[0].id;
@@ -954,11 +985,11 @@ export default function App() {
         } else if (typeof window !== "undefined") {
           localStorage.removeItem("pcn_overtime_alert");
         }
-      } catch {}
+      } catch { }
 
       // 4. Notas de Honorários (se Direção / Admin)
       const roleToCheck = userRole || currentUser?.role;
-      if (roleToCheck === "admin_lawyer") {
+      if (isAdminRole(roleToCheck)) {
         try {
           const savedNotes = await getFeeNotesApi(token);
           if (savedNotes && savedNotes.length > 0) {
@@ -1006,14 +1037,14 @@ export default function App() {
           map[r.id] = { seconds: r.total_duration_seconds || 0, updatedAt: nowMs };
         }
         localStorage.setItem("pcn_running_timers", JSON.stringify(map));
-      } catch {}
+      } catch { }
     }
     if (effectiveToken && running.length > 0) {
       const payload = running.map((t) => ({
         task_id: t.id,
         total_duration_seconds: t.total_duration_seconds || 0,
       }));
-      syncTimersApi(effectiveToken, payload, true).catch(() => {});
+      syncTimersApi(effectiveToken, payload, true).catch(() => { });
     }
   };
 
@@ -1036,6 +1067,83 @@ export default function App() {
     setActiveTab("dashboard");
   };
 
+  const buildProfile = (res: any, email: string): UserProfile => {
+    const matched = INITIAL_USERS.find((u) => u.email.toLowerCase() === email.toLowerCase());
+    const role = (res.role || "lawyer") as UserProfile["role"];
+    return {
+      id: res.user_id,
+      name:
+        res.name ||
+        matched?.name ||
+        (role === "admin_lawyer" ? "Dr.ª Patrícia" : role === "master" ? "Equipa de TI" : "Advogada Associada"),
+      role,
+      email,
+    };
+  };
+
+  // Final step: session stored only after password + 2FA are done.
+  const completeLogin = (token: string, userProfile: UserProfile) => {
+    const expiry = Date.now() + 30 * 60 * 1000; // 30 minutos exatos
+    if (typeof window !== "undefined") {
+      localStorage.setItem("pcn_session_token", token);
+      localStorage.setItem("pcn_session_expiry", expiry.toString());
+      localStorage.setItem("pcn_session_user", JSON.stringify(userProfile));
+    }
+    setAuthToken(token);
+    setSessionExpiry(expiry);
+    setCurrentUser(userProfile);
+    setPendingUserProfile(null);
+    setMfaToken(null);
+    setMfaCode("");
+    setMustChangePassword(false);
+    setMustSetup2fa(false);
+    setTwoFaSetup(null);
+    setTwoFaCode("");
+    setLoginPassword("");
+    setIsAuthenticated(true);
+    setApiConnected(true);
+    loadAllData(token, userProfile.role);
+  };
+
+  const start2faSetup = async (token: string, userProfile: UserProfile) => {
+    setAuthToken(token);
+    setPendingUserProfile(userProfile);
+    setMustChangePassword(false);
+    setMustSetup2fa(true);
+    setTwoFaError(null);
+    setTwoFaCode("");
+    try {
+      setTwoFaSetup(await setup2faApi(token));
+    } catch (err: any) {
+      setTwoFaError(err.message || "Não foi possível iniciar a configuração do 2FA.");
+    }
+  };
+
+  // Routes any auth response to the right next screen.
+  const routeAuthResponse = async (res: any, email: string, password?: string) => {
+    if (!res.access_token) {
+      setLoginError("Resposta inesperada do servidor de autenticação.");
+      return;
+    }
+    const userProfile = buildProfile(res, email);
+    setAuthToken(res.access_token);
+
+    if (res.must_change_password) {
+      setCurrentPasswordForReset(password || "");
+      setPendingUserProfile(userProfile);
+      setMustChangePassword(true);
+      setPasswordChangeError(null);
+      setNewPassword("");
+      setConfirmPassword("");
+      return;
+    }
+    if (res.must_setup_2fa) {
+      await start2faSetup(res.access_token, userProfile);
+      return;
+    }
+    completeLogin(res.access_token, userProfile);
+  };
+
   const handleLoginSubmit = async (e?: React.FormEvent) => {
     if (e) e.preventDefault();
     setIsLoggingIn(true);
@@ -1043,54 +1151,63 @@ export default function App() {
     setSessionNotice(null);
     try {
       const loginRes = await loginApi(loginEmail, loginPassword);
-      if (loginRes.access_token) {
-        const expiry = Date.now() + 30 * 60 * 1000; // 30 minutos exatos
-        const matched = INITIAL_USERS.find(
-          (u) => u.email.toLowerCase() === loginEmail.toLowerCase()
-        );
-        const userProfile: UserProfile = {
-          id: loginRes.user_id,
-          name:
-            loginRes.name ||
-            matched?.name ||
-            (loginRes.role === "admin_lawyer" ? "Dr.ª Patrícia" : "Advogada Associada"),
-          role: loginRes.role === "admin_lawyer" ? "admin_lawyer" : "lawyer",
-          email: loginEmail,
-        };
-
-        setAuthToken(loginRes.access_token);
-
-        // Se for o primeiro login e exigir alteração de senha obrigatória:
-        if (loginRes.must_change_password) {
-          setCurrentPasswordForReset(loginPassword);
-          setPendingUserProfile(userProfile);
-          setMustChangePassword(true);
-          setPasswordChangeError(null);
-          setNewPassword("");
-          setConfirmPassword("");
-          return;
-        }
-
-        if (typeof window !== "undefined") {
-          localStorage.setItem("pcn_session_token", loginRes.access_token);
-          localStorage.setItem("pcn_session_expiry", expiry.toString());
-          localStorage.setItem("pcn_session_user", JSON.stringify(userProfile));
-        }
-
-        setSessionExpiry(expiry);
-        setCurrentUser(userProfile);
-        setIsAuthenticated(true);
-        setApiConnected(true);
-
-        loadAllData(loginRes.access_token, userProfile.role);
-      } else {
-        setLoginError("Resposta inesperada do servidor de autenticação.");
+      if (loginRes.requires_2fa && loginRes.mfa_token) {
+        setMfaToken(loginRes.mfa_token);
+        setMfaCode("");
+        return;
       }
+      await routeAuthResponse(loginRes, loginEmail, loginPassword);
     } catch (err: any) {
       setLoginError(err.message || "Credenciais inválidas ou erro de ligação à base de dados.");
     } finally {
       setIsLoggingIn(false);
     }
+  };
+
+  const handleMfaLoginSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!mfaToken) return;
+    setIsLoggingIn(true);
+    setLoginError(null);
+    try {
+      const res = await verifyMfaLoginApi(mfaToken, mfaCode);
+      setMfaToken(null);
+      await routeAuthResponse(res, loginEmail, loginPassword);
+    } catch (err: any) {
+      setLoginError(err.message || "Código inválido ou expirado.");
+      setMfaCode("");
+    } finally {
+      setIsLoggingIn(false);
+    }
+  };
+
+  const handleVerify2faSetup = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!authToken || !pendingUserProfile) return;
+    setIsVerifying2fa(true);
+    setTwoFaError(null);
+    try {
+      const res = await verify2faApi(authToken, twoFaCode);
+      completeLogin(res.access_token, buildProfile(res, pendingUserProfile.email));
+      setModalFeedback("Autenticação de dois fatores ativada. Bem-vinda à plataforma!");
+      setTimeout(() => setModalFeedback(null), 4000);
+    } catch (err: any) {
+      setTwoFaError(err.message || "Código incorreto. Confirme a hora do telemóvel e tente de novo.");
+      setTwoFaCode("");
+    } finally {
+      setIsVerifying2fa(false);
+    }
+  };
+
+  const cancelOnboarding = () => {
+    setMfaToken(null);
+    setMfaCode("");
+    setMustChangePassword(false);
+    setMustSetup2fa(false);
+    setTwoFaSetup(null);
+    setPendingUserProfile(null);
+    setAuthToken(null);
+    setLoginPassword("");
   };
 
   const handleChangePasswordSubmit = async (e: React.FormEvent) => {
@@ -1123,27 +1240,17 @@ export default function App() {
     setIsChangingPassword(true);
     try {
       const res = await changePasswordApi(authToken, currentPasswordForReset, newPassword);
-      const effectiveToken = res.access_token || authToken;
-      const expiry = Date.now() + 30 * 60 * 1000;
       const userProfile = pendingUserProfile || currentUser;
-
-      if (typeof window !== "undefined") {
-        localStorage.setItem("pcn_session_token", effectiveToken);
-        localStorage.setItem("pcn_session_expiry", expiry.toString());
-        localStorage.setItem("pcn_session_user", JSON.stringify(userProfile));
+      setCurrentPasswordForReset("");
+      setNewPassword("");
+      setConfirmPassword("");
+      if (res.must_setup_2fa) {
+        await start2faSetup(res.access_token, userProfile);
+      } else {
+        completeLogin(res.access_token, userProfile);
+        setModalFeedback("Palavra-passe pessoal definida com sucesso! Bem-vinda à plataforma.");
+        setTimeout(() => setModalFeedback(null), 4000);
       }
-
-      setAuthToken(effectiveToken);
-      setSessionExpiry(expiry);
-      setCurrentUser(userProfile);
-      setMustChangePassword(false);
-      setIsAuthenticated(true);
-      setApiConnected(true);
-
-      setModalFeedback("Palavra-passe pessoal definida com sucesso! Bem-vinda à plataforma.");
-      setTimeout(() => setModalFeedback(null), 4000);
-
-      loadAllData(effectiveToken, userProfile.role);
     } catch (err: any) {
       setPasswordChangeError(err.message || "Erro ao definir nova palavra-passe.");
     } finally {
@@ -1178,7 +1285,7 @@ export default function App() {
           );
         }
       }
-    } catch {}
+    } catch { }
   }, []);
 
   // Monitorização em tempo real do limite de 30 minutos e 401s
@@ -1215,13 +1322,89 @@ export default function App() {
   }, [isAuthenticated, sessionExpiry]);
 
   // Criação de Nova Utilizadora (Portal Admin)
+  const isMaster = currentUser?.role === "master";
+
+  // Direção manages lawyers; only Master manages Direção/Master accounts; nobody manages self.
+  const canManageUser = (u: any) =>
+    isAdmin && u.id !== currentUser.id && (isMaster || !isAdminRole(u.role));
+
+  // Lock status is evaluated against the moment the list was last fetched (keeps render pure).
+  const [usersFetchedAt, setUsersFetchedAt] = useState(0);
+  const isUserLocked = (u: any) =>
+    !!u.locked_until && new Date(u.locked_until).getTime() > usersFetchedAt;
+
+  const refreshUsers = async () => {
+    if (!authToken) return;
+    const updated = await getUsersApi(authToken);
+    if (updated) {
+      setUsersList(updated);
+      setUsersFetchedAt(Date.now());
+    }
+  };
+
+  const runUserAction = async (action: () => Promise<any>, success: string) => {
+    try {
+      await action();
+      await refreshUsers();
+      setModalFeedback(success);
+      setTimeout(() => setModalFeedback(null), 3500);
+    } catch (err: any) {
+      alert(err.message || "Não foi possível concluir a operação.");
+    }
+  };
+
+  const handleToggleUserActive = (u: any) => {
+    if (!authToken) return;
+    const suspending = u.is_active;
+    const question = suspending
+      ? `Suspender a conta de ${u.name}? A utilizadora perde o acesso imediatamente.`
+      : `Reativar a conta de ${u.name}?`;
+    if (!window.confirm(question)) return;
+    runUserAction(
+      () => updateUserApi(authToken, u.id, { is_active: !suspending }),
+      suspending ? `Conta de ${u.name} suspensa.` : `Conta de ${u.name} reativada.`
+    );
+  };
+
+  const handleUnlockUser = (u: any) => {
+    if (!authToken) return;
+    runUserAction(() => unlockUserApi(authToken, u.id), `Conta de ${u.name} desbloqueada.`);
+  };
+
+  const handleResetUserMfa = (u: any) => {
+    if (!authToken) return;
+    if (!window.confirm(`Repor o 2FA de ${u.name}? No próximo login terá de ler um novo código QR.`)) return;
+    runUserAction(() => resetUserMfaApi(authToken, u.id), `2FA de ${u.name} reposto.`);
+  };
+
+  const handleResetUserPassword = async (u: any) => {
+    if (!authToken) return;
+    if (!window.confirm(`Gerar uma nova palavra-passe temporária para ${u.name}?`)) return;
+    try {
+      const res = await resetUserPasswordApi(authToken, u.id);
+      await refreshUsers();
+      window.prompt(
+        `Palavra-passe temporária de ${u.name} (copie e envie por um canal seguro; será pedida a troca no 1.º login):`,
+        res.temporary_password
+      );
+    } catch (err: any) {
+      alert(err.message || "Não foi possível repor a palavra-passe.");
+    }
+  };
+
   const handleCreateUserSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!authToken) return;
     setIsSubmittingUser(true);
     try {
-      await createUserApi(authToken, newUserForm);
-      setModalFeedback("Nova utilizadora criada com sucesso no PostgreSQL!");
+      const created = await createUserApi(authToken, newUserForm);
+      if (created?.temporary_password) {
+        window.prompt(
+          `Conta criada. Palavra-passe temporária de ${created.name} (copie e envie por um canal seguro; será pedida a troca e a ativação do 2FA no 1.º login):`,
+          created.temporary_password
+        );
+      }
+      setModalFeedback("Nova utilizadora criada com sucesso!");
       setIsNewUserModalOpen(false);
       setNewUserForm({
         name: "",
@@ -1264,7 +1447,7 @@ export default function App() {
           osc.start();
           osc.stop(ctx.currentTime + 0.6);
         }
-      } catch {}
+      } catch { }
 
       // 2. Notificação Nativa do Browser (se autorizada)
       try {
@@ -1275,7 +1458,7 @@ export default function App() {
         } else if ("Notification" in window && Notification.permission === "default") {
           Notification.requestPermission();
         }
-      } catch {}
+      } catch { }
     }
 
     // 3. Abre Popup Modal Imediato no Ecrã e Persiste no LocalStorage (para sobreviver a queda de sessão / novo login)
@@ -1296,7 +1479,7 @@ export default function App() {
             recipientEmail,
           })
         );
-      } catch {}
+      } catch { }
     }
 
     // 4. Envia Email via Backend API
@@ -1307,10 +1490,10 @@ export default function App() {
         setOvertimeAlert((prev) =>
           prev && prev.task.id === task.id
             ? {
-                ...prev,
-                emailSent: true,
-                recipientEmail: resolvedRecipient,
-              }
+              ...prev,
+              emailSent: true,
+              recipientEmail: resolvedRecipient,
+            }
             : prev
         );
         if (typeof window !== "undefined") {
@@ -1324,7 +1507,7 @@ export default function App() {
                 recipientEmail: resolvedRecipient,
               })
             );
-          } catch {}
+          } catch { }
         }
       } catch (e) {
         console.warn("Aviso ao enviar email de alerta de 1h:", e);
@@ -1343,7 +1526,7 @@ export default function App() {
         try {
           const raw = localStorage.getItem("pcn_running_timers");
           if (raw) localMap = JSON.parse(raw);
-        } catch {}
+        } catch { }
       }
 
       setTasks((prev) => {
@@ -1365,7 +1548,7 @@ export default function App() {
         if (typeof window !== "undefined") {
           try {
             localStorage.setItem("pcn_running_timers", JSON.stringify(localMap));
-          } catch {}
+          } catch { }
         }
         return nextList;
       });
@@ -1416,7 +1599,7 @@ export default function App() {
         delete map[taskId];
         localStorage.setItem("pcn_running_timers", JSON.stringify(map));
       }
-    } catch {}
+    } catch { }
     try {
       const rawAlert = localStorage.getItem("pcn_overtime_alert");
       if (rawAlert) {
@@ -1426,7 +1609,7 @@ export default function App() {
           try {
             const rawThresh = localStorage.getItem("pcn_overtime_thresholds");
             if (rawThresh) savedThresholds = JSON.parse(rawThresh);
-          } catch {}
+          } catch { }
           const otherOvertime = tasksRef.current.find(
             (t) =>
               t.id !== taskId &&
@@ -1452,7 +1635,7 @@ export default function App() {
           }
         }
       }
-    } catch {}
+    } catch { }
     setOvertimeAlert((prev) => (prev?.task.id === taskId ? null : prev));
   };
 
@@ -1472,7 +1655,7 @@ export default function App() {
         threshMap[taskId] = nextThreshold;
         localStorage.setItem("pcn_overtime_thresholds", JSON.stringify(threshMap));
         localStorage.removeItem("pcn_overtime_alert");
-      } catch {}
+      } catch { }
     }
 
     setOvertimeAlert(null);
@@ -1488,6 +1671,7 @@ export default function App() {
   };
 
   const handleStartTimer = async (task: Task) => {
+    if (!canWorkOn(task)) { setModalFeedback("Só pode trabalhar nas tarefas atribuídas a si."); setTimeout(() => setModalFeedback(null), 3500); return; }
     let serverDuration = task.total_duration_seconds || 0;
     if (authToken && apiConnected) {
       try {
@@ -1511,7 +1695,7 @@ export default function App() {
         const threshMap: Record<string, number> = rawThresh ? JSON.parse(rawThresh) : {};
         threshMap[task.id] = nextThreshold;
         localStorage.setItem("pcn_overtime_thresholds", JSON.stringify(threshMap));
-      } catch {}
+      } catch { }
     }
     alertedHoursRef.current[task.id] = nextThreshold;
     setActiveTaskId(task.id);
@@ -1527,6 +1711,7 @@ export default function App() {
   };
 
   const handlePauseTimer = async (taskToPause?: Task) => {
+    if (taskToPause && !canWorkOn(taskToPause)) { setModalFeedback("Só pode trabalhar nas tarefas atribuídas a si."); setTimeout(() => setModalFeedback(null), 3500); return; }
     const targetId = taskToPause?.id || activeTaskId;
     if (!targetId) return;
 
@@ -1568,6 +1753,7 @@ export default function App() {
   };
 
   const handleCompleteTask = async (task: Task) => {
+    if (!canWorkOn(task)) { setModalFeedback("Só pode trabalhar nas tarefas atribuídas a si."); setTimeout(() => setModalFeedback(null), 3500); return; }
     const currentTask = tasks.find((t) => t.id === task.id) || task;
     let finalSeconds = currentTask.total_duration_seconds;
     if (authToken && apiConnected) {
@@ -1596,10 +1782,10 @@ export default function App() {
       prev.map((t) =>
         t.id === task.id
           ? {
-              ...t,
-              status: "completed",
-              total_duration_seconds: finalSeconds,
-            }
+            ...t,
+            status: "completed",
+            total_duration_seconds: finalSeconds,
+          }
           : t
       )
     );
@@ -1617,17 +1803,18 @@ export default function App() {
       prev.map((t) =>
         t.id === task.id
           ? {
-              ...t,
-              status: "assigned",
-              assigned_to: currentUser.id,
-              lawyer_name: currentUser.name,
-            }
+            ...t,
+            status: "assigned",
+            assigned_to: currentUser.id,
+            lawyer_name: currentUser.name,
+          }
           : t
       )
     );
   };
 
   const handleArchiveTask = async (task: Task) => {
+    if (!isAdmin) { setModalFeedback("Ação reservada à Direção do escritório."); setTimeout(() => setModalFeedback(null), 3500); return; }
     if (authToken && apiConnected) {
       try {
         await archiveTaskApi(task.id, authToken);
@@ -1648,6 +1835,7 @@ export default function App() {
   };
 
   const handleRestoreTask = async (task: Task) => {
+    if (!isAdmin) { setModalFeedback("Ação reservada à Direção do escritório."); setTimeout(() => setModalFeedback(null), 3500); return; }
     if (authToken && apiConnected) {
       try {
         await restoreTaskApi(task.id, authToken);
@@ -1710,14 +1898,14 @@ export default function App() {
       const finalStatus: Task["status"] = isPool
         ? "pool"
         : detailsForm.status === "pool"
-        ? "assigned"
-        : detailsForm.status;
+          ? "assigned"
+          : detailsForm.status;
 
       const manualDurationSeconds = Math.max(
         0,
         (Number(detailsForm.duration_hours) || 0) * 3600 +
-          (Number(detailsForm.duration_minutes) || 0) * 60 +
-          (Number(detailsForm.duration_seconds) || 0)
+        (Number(detailsForm.duration_minutes) || 0) * 60 +
+        (Number(detailsForm.duration_seconds) || 0)
       );
 
       let updatedFromServer: any = null;
@@ -1753,7 +1941,7 @@ export default function App() {
             updatedAt: Date.now(),
           };
           localStorage.setItem("pcn_running_timers", JSON.stringify(map));
-        } catch {}
+        } catch { }
       }
       if (activeTaskId === selectedTaskForDetails.id) {
         setTimerSeconds(manualDurationSeconds);
@@ -1767,15 +1955,15 @@ export default function App() {
         prev.map((t) =>
           t.id === selectedTaskForDetails.id
             ? {
-                ...t,
-                title: detailsForm.title,
-                description: detailsForm.description,
-                status: finalStatus,
-                assigned_to: isPool ? undefined : updatedFromServer?.assigned_to || detailsForm.assigned_to,
-                lawyer_name: resolvedLawyerName,
-                due_date: detailsForm.due_date || undefined,
-                total_duration_seconds: manualDurationSeconds,
-              }
+              ...t,
+              title: detailsForm.title,
+              description: detailsForm.description,
+              status: finalStatus,
+              assigned_to: isPool ? undefined : updatedFromServer?.assigned_to || detailsForm.assigned_to,
+              lawyer_name: resolvedLawyerName,
+              due_date: detailsForm.due_date || undefined,
+              total_duration_seconds: manualDurationSeconds,
+            }
             : t
         )
       );
@@ -2124,7 +2312,7 @@ PCN Advogadas · Plataforma Forense`;
     );
     persistCategoriesLocal(nextList);
     if (authToken && apiConnected) {
-      updateTaskTypeApi(authToken, cat.id, { hourly_rate: cleanRate }).catch(() => {});
+      updateTaskTypeApi(authToken, cat.id, { hourly_rate: cleanRate }).catch(() => { });
     }
 
     // Atualiza dinamicamente os honorários das tarefas associadas a esta categoria e guarda na base
@@ -2150,7 +2338,7 @@ PCN Advogadas · Plataforma Forense`;
     autoSaveTimerRef.current = setTimeout(() => {
       for (const cId of affectedClients) {
         const useW = applyWithholdingByClient[cId] ?? true;
-        saveFeeNoteToDb(cId, nextPrices, useW, true).catch(() => {});
+        saveFeeNoteToDb(cId, nextPrices, useW, true).catch(() => { });
       }
     }, 600);
   };
@@ -2174,7 +2362,7 @@ PCN Advogadas · Plataforma Forense`;
     const nextList = serviceCategories.filter((c) => c.id !== cat.id);
     persistCategoriesLocal(nextList);
     if (authToken && apiConnected) {
-      deleteTaskTypeApi(authToken, cat.id).catch(() => {});
+      deleteTaskTypeApi(authToken, cat.id).catch(() => { });
     }
     setModalFeedback(`Categoria de serviço "${cat.name}" removida com sucesso.`);
     setTimeout(() => setModalFeedback(null), 3500);
@@ -2257,7 +2445,7 @@ PCN Advogadas · Plataforma Forense`;
     if (saveInFlightRef.current) {
       try {
         await saveInFlightRef.current;
-      } catch {}
+      } catch { }
     }
 
     const pricesSource = overridePrices || feeTaskPrices;
@@ -2580,11 +2768,10 @@ PCN Advogadas · Plataforma Forense`;
           <strong style="color:#333; display:block; margin-bottom:4px;">Notas Fiscais e Condições Forenses:</strong>
           • Valores calculados de acordo com a Tabela de Serviços e Categorias Forenses da sociedade.<br/>
           • IVA aplicável à taxa legal em vigor de 23% (CIVA).<br/>
-          ${
-            useWithholding
-              ? "• Sujeito a Retenção na Fonte de IRS à taxa de 23%, nos termos do Art. 101.º, n.º 1, alínea b) do CIRS."
-              : "• Sem retenção na fonte de IRS (entidade sem contabilidade organizada ou dispensa legal aplicável)."
-          }
+          ${useWithholding
+        ? "• Sujeito a Retenção na Fonte de IRS à taxa de 23%, nos termos do Art. 101.º, n.º 1, alínea b) do CIRS."
+        : "• Sem retenção na fonte de IRS (entidade sem contabilidade organizada ou dispensa legal aplicável)."
+      }
         </div>
 
         <div style="width:270px; border:1px solid #D9D1C5; border-radius:6px; overflow:hidden;">
@@ -2616,7 +2803,7 @@ PCN Advogadas · Plataforma Forense`;
       </div>
       <div style="text-align:center; width:210px;">
         <div style="border-bottom:1px solid #888; height:28px; margin-bottom:5px;"></div>
-        <strong style="color:#333;">A Direção · Dr.ª Patrícia</strong><br/>
+        <strong style="color:#333;">A Direção · Dr.ª Patrícia da Costa Neto</strong><br/>
         <span>PCN Advogadas</span>
       </div>
     </div>
@@ -2737,9 +2924,9 @@ PCN Advogadas · Plataforma Forense`;
   const activeTasksWithDeadline = activeTasks
     .map((t) => ({ task: t, deadline: getDeadlineInfo(t.due_date) }))
     .filter((item) => item.deadline !== null) as {
-    task: Task;
-    deadline: NonNullable<ReturnType<typeof getDeadlineInfo>>;
-  }[];
+      task: Task;
+      deadline: NonNullable<ReturnType<typeof getDeadlineInfo>>;
+    }[];
 
   const overdueTasksCount = activeTasksWithDeadline.filter((x) => x.deadline.isOverdue).length;
   const redDeadlineCount = activeTasksWithDeadline.filter((x) => x.deadline.level === "red").length;
@@ -2793,7 +2980,138 @@ PCN Advogadas · Plataforma Forense`;
           <div className="bg-white border border-[#D9D1C5] rounded-2xl shadow-xl max-w-md w-full p-6 sm:p-8 space-y-6 relative">
             <div className="gold-divider-ribbon absolute top-0 left-6 right-6" />
 
-            {mustChangePassword ? (
+            {mfaToken ? (
+              // ── CÓDIGO 2FA NO LOGIN ──
+              <div className="space-y-5">
+                <div className="text-center pt-2">
+                  <div className="w-12 h-12 rounded-full bg-[#92006F]/10 text-[#92006F] flex items-center justify-center mx-auto mb-2.5">
+                    <ShieldCheck className="w-6 h-6" />
+                  </div>
+                  <h1 className="text-xl sm:text-2xl font-bold text-[#141414] tracking-tight">
+                    Código de Verificação
+                  </h1>
+                  <p className="text-xs text-[#666] mt-1.5 leading-relaxed">
+                    Abra a aplicação autenticadora (Google ou Microsoft Authenticator) e introduza o código de 6 dígitos.
+                  </p>
+                </div>
+                {loginError && (
+                  <div className="p-3.5 bg-rose-50 border border-rose-200 rounded-xl text-xs text-rose-800 flex items-start gap-2.5 shadow-2xs animate-in fade-in">
+                    <AlertCircle className="w-4 h-4 text-rose-600 shrink-0 mt-0.5" />
+                    <span className="leading-relaxed">{loginError}</span>
+                  </div>
+                )}
+                <form onSubmit={handleMfaLoginSubmit} className="space-y-4">
+                  <input
+                    type="text"
+                    inputMode="numeric"
+                    pattern="[0-9]{6}"
+                    maxLength={6}
+                    autoFocus
+                    autoComplete="one-time-code"
+                    value={mfaCode}
+                    onChange={(e) => setMfaCode(e.target.value.replace(/\D/g, ""))}
+                    placeholder="000000"
+                    required
+                    className="w-full text-center tracking-[0.5em] font-mono text-lg bg-[#FAF8F5] border border-[#D9D1C5] rounded-xl px-3.5 py-2.5 text-[#141414] focus:outline-none focus:ring-2 focus:ring-[#92006F]/30 focus:border-[#92006F] transition-all"
+                  />
+                  <div className="flex gap-2 pt-1">
+                    <button
+                      type="button"
+                      onClick={cancelOnboarding}
+                      className="px-4 py-2.5 rounded-xl border border-[#D9D1C5] text-xs font-semibold text-[#666] hover:bg-[#FAF8F5] transition-colors cursor-pointer"
+                    >
+                      Voltar
+                    </button>
+                    <button
+                      type="submit"
+                      disabled={isLoggingIn || mfaCode.length !== 6}
+                      className="flex-1 bg-[#92006F] hover:bg-[#7E0060] text-white font-bold text-sm py-2.5 rounded-xl flex items-center justify-center gap-2 shadow-md hover:shadow-lg transition-all cursor-pointer disabled:opacity-50"
+                    >
+                      {isLoggingIn ? <RefreshCw className="w-4 h-4 animate-spin" /> : <LogIn className="w-4 h-4" />}
+                      <span>Verificar e Entrar</span>
+                    </button>
+                  </div>
+                </form>
+              </div>
+            ) : mustSetup2fa ? (
+              // ── CONFIGURAÇÃO OBRIGATÓRIA DO 2FA (PRIMEIRO ACESSO) ──
+              <div className="space-y-5">
+                <div className="text-center pt-2">
+                  <div className="w-12 h-12 rounded-full bg-[#92006F]/10 text-[#92006F] flex items-center justify-center mx-auto mb-2.5">
+                    <PhoneIcon className="w-6 h-6" />
+                  </div>
+                  <h1 className="text-xl sm:text-2xl font-bold text-[#141414] tracking-tight">
+                    Ativar Verificação em 2 Passos
+                  </h1>
+                  <p className="text-xs text-[#666] mt-1.5 leading-relaxed">
+                    Obrigatório para proteger os dados dos clientes. Leia o código QR com a aplicação
+                    Google Authenticator ou Microsoft Authenticator no telemóvel.
+                  </p>
+                </div>
+                {twoFaError && (
+                  <div className="p-3.5 bg-rose-50 border border-rose-200 rounded-xl text-xs text-rose-800 flex items-start gap-2.5 shadow-2xs animate-in fade-in">
+                    <AlertCircle className="w-4 h-4 text-rose-600 shrink-0 mt-0.5" />
+                    <span className="leading-relaxed">{twoFaError}</span>
+                  </div>
+                )}
+                {twoFaSetup ? (
+                  <div className="flex flex-col items-center gap-3">
+                    {/* eslint-disable-next-line @next/next/no-img-element */}
+                    <img
+                      src={twoFaSetup.qr_svg_data_uri}
+                      alt="Código QR para a aplicação autenticadora"
+                      className="w-44 h-44 bg-white p-2 border border-[#ECE6DB] rounded-xl"
+                    />
+                    <div className="w-full p-3 bg-[#FAF8F5] border border-[#ECE6DB] rounded-xl text-[11px] text-[#666]">
+                      <p className="font-semibold text-[#333] mb-1">Não consegue ler o QR? Introduza esta chave:</p>
+                      <code className="block font-mono text-xs text-[#141414] break-all select-all">
+                        {twoFaSetup.secret}
+                      </code>
+                    </div>
+                  </div>
+                ) : (
+                  !twoFaError && (
+                    <div className="flex justify-center py-6 text-[#92006F]">
+                      <RefreshCw className="w-6 h-6 animate-spin" />
+                    </div>
+                  )
+                )}
+                <form onSubmit={handleVerify2faSetup} className="space-y-4">
+                  <label className="block text-xs font-semibold text-[#444]">
+                    Código de 6 dígitos mostrado na aplicação:
+                  </label>
+                  <input
+                    type="text"
+                    inputMode="numeric"
+                    pattern="[0-9]{6}"
+                    maxLength={6}
+                    autoComplete="one-time-code"
+                    value={twoFaCode}
+                    onChange={(e) => setTwoFaCode(e.target.value.replace(/\D/g, ""))}
+                    placeholder="000000"
+                    required
+                    className="w-full text-center tracking-[0.5em] font-mono text-lg bg-[#FAF8F5] border border-[#D9D1C5] rounded-xl px-3.5 py-2.5 text-[#141414] focus:outline-none focus:ring-2 focus:ring-[#92006F]/30 focus:border-[#92006F] transition-all"
+                  />
+                  <div className="flex gap-2 pt-1">
+                    <button
+                      type="button"
+                      onClick={cancelOnboarding}
+                      className="px-4 py-2.5 rounded-xl border border-[#D9D1C5] text-xs font-semibold text-[#666] hover:bg-[#FAF8F5] transition-colors cursor-pointer"
+                    >
+                      Cancelar
+                    </button>
+                    <button
+                      type="submit"
+                      disabled={isVerifying2fa || !twoFaSetup || twoFaCode.length !== 6}
+                      className="flex-1 bg-[#92006F] hover:bg-[#7E0060] text-white font-bold text-sm py-2.5 rounded-xl flex items-center justify-center gap-2 shadow-md hover:shadow-lg transition-all cursor-pointer disabled:opacity-50"
+                    >
+                      {isVerifying2fa ? <RefreshCw className="w-4 h-4 animate-spin" /> : <Check className="w-4 h-4" />}
+                      <span>Ativar 2FA e Entrar</span>
+                    </button>
+                  </div>
+                </form>
+              </div>
+            ) : mustChangePassword ? (
               // ── ECRÃ DE REDEFINIÇÃO OBRIGATÓRIA NO PRIMEIRO LOGIN ──
               <div className="space-y-5">
                 <div className="text-center pt-2">
@@ -2863,11 +3181,7 @@ PCN Advogadas · Plataforma Forense`;
                   <div className="flex gap-2 pt-1">
                     <button
                       type="button"
-                      onClick={() => {
-                        setMustChangePassword(false);
-                        setAuthToken(null);
-                        setLoginPassword("");
-                      }}
+                      onClick={cancelOnboarding}
                       className="px-4 py-2.5 rounded-xl border border-[#D9D1C5] text-xs font-semibold text-[#666] hover:bg-[#FAF8F5] transition-colors cursor-pointer"
                     >
                       Cancelar
@@ -2885,7 +3199,7 @@ PCN Advogadas · Plataforma Forense`;
                       ) : (
                         <>
                           <Check className="w-4 h-4" />
-                          <span>Guardar e Entrar</span>
+                          <span>Guardar e Continuar</span>
                         </>
                       )}
                     </button>
@@ -3026,11 +3340,10 @@ PCN Advogadas · Plataforma Forense`;
               <nav className="p-3 space-y-1 mt-1">
                 <button
                   onClick={() => switchTab("dashboard")}
-                  className={`w-full flex items-center gap-3 px-3.5 py-2.5 rounded-lg text-sm font-medium transition-all ${
-                    activeTab === "dashboard"
+                  className={`w-full flex items-center gap-3 px-3.5 py-2.5 rounded-lg text-sm font-medium transition-all ${activeTab === "dashboard"
                       ? "bg-[#FDF2F8] text-[#92006F] font-semibold border border-[#FBCFE8]"
                       : "text-[#555] hover:bg-[#F9F6F0]"
-                  }`}
+                    }`}
                 >
                   <span className="text-[#92006F] text-base">✦</span>
                   <span>Painel de Direção</span>
@@ -3038,11 +3351,10 @@ PCN Advogadas · Plataforma Forense`;
 
                 <button
                   onClick={() => switchTab("tasks")}
-                  className={`w-full flex items-center gap-3 px-3.5 py-2.5 rounded-lg text-sm font-medium transition-all ${
-                    activeTab === "tasks"
+                  className={`w-full flex items-center gap-3 px-3.5 py-2.5 rounded-lg text-sm font-medium transition-all ${activeTab === "tasks"
                       ? "bg-[#FDF2F8] text-[#92006F] font-semibold border border-[#FBCFE8]"
                       : "text-[#555] hover:bg-[#F9F6F0]"
-                  }`}
+                    }`}
                 >
                   <Kanban className="w-4 h-4 text-[#888]" />
                   <span>Gestão de Tarefas</span>
@@ -3050,11 +3362,10 @@ PCN Advogadas · Plataforma Forense`;
 
                 <button
                   onClick={() => switchTab("archived")}
-                  className={`w-full flex items-center justify-between px-3.5 py-2.5 rounded-lg text-sm font-medium transition-all ${
-                    activeTab === "archived"
+                  className={`w-full flex items-center justify-between px-3.5 py-2.5 rounded-lg text-sm font-medium transition-all ${activeTab === "archived"
                       ? "bg-[#FDF2F8] text-[#92006F] font-semibold border border-[#FBCFE8]"
                       : "text-[#555] hover:bg-[#F9F6F0]"
-                  }`}
+                    }`}
                 >
                   <div className="flex items-center gap-3">
                     <Archive className="w-4 h-4 text-[#888]" />
@@ -3069,11 +3380,10 @@ PCN Advogadas · Plataforma Forense`;
 
                 <button
                   onClick={() => switchTab("clients")}
-                  className={`w-full flex items-center gap-3 px-3.5 py-2.5 rounded-lg text-sm font-medium transition-all ${
-                    activeTab === "clients"
+                  className={`w-full flex items-center gap-3 px-3.5 py-2.5 rounded-lg text-sm font-medium transition-all ${activeTab === "clients"
                       ? "bg-[#FDF2F8] text-[#92006F] font-semibold border border-[#FBCFE8]"
                       : "text-[#555] hover:bg-[#F9F6F0]"
-                  }`}
+                    }`}
                 >
                   <Users className="w-4 h-4 text-[#888]" />
                   <span>Clientes PCN</span>
@@ -3081,49 +3391,47 @@ PCN Advogadas · Plataforma Forense`;
 
                 <button
                   onClick={() => switchTab("calendar")}
-                  className={`w-full flex items-center gap-3 px-3.5 py-2.5 rounded-lg text-sm font-medium transition-all ${
-                    activeTab === "calendar"
+                  className={`w-full flex items-center gap-3 px-3.5 py-2.5 rounded-lg text-sm font-medium transition-all ${activeTab === "calendar"
                       ? "bg-[#FDF2F8] text-[#92006F] font-semibold border border-[#FBCFE8]"
                       : "text-[#555] hover:bg-[#F9F6F0]"
-                  }`}
+                    }`}
                 >
                   <Scale className="w-4 h-4 text-[#888]" />
                   <span>Agendas e Prazos</span>
                 </button>
 
-                <button
-                  onClick={() => switchTab("feenotes")}
-                  className={`w-full flex items-center gap-3 px-3.5 py-2.5 rounded-lg text-sm font-medium transition-all ${
-                    activeTab === "feenotes"
-                      ? "bg-[#FDF2F8] text-[#92006F] font-semibold border border-[#FBCFE8]"
-                      : "text-[#555] hover:bg-[#F9F6F0]"
-                  }`}
-                >
-                  <CreditCard className="w-4 h-4 text-[#888]" />
-                  <span>Notas de Honorários</span>
-                </button>
+                <>{isAdmin && (
+                  <button
+                    onClick={() => switchTab("feenotes")}
+                    className={`w-full flex items-center gap-3 px-3.5 py-2.5 rounded-lg text-sm font-medium transition-all ${activeTab === "feenotes"
+                        ? "bg-[#FDF2F8] text-[#92006F] font-semibold border border-[#FBCFE8]"
+                        : "text-[#555] hover:bg-[#F9F6F0]"
+                      }`}
+                  >
+                    <CreditCard className="w-4 h-4 text-[#888]" />
+                    <span>Notas de Honorários</span>
+                  </button>
+                )}</>
 
                 <button
                   onClick={() => switchTab("reports")}
-                  className={`w-full flex items-center gap-3 px-3.5 py-2.5 rounded-lg text-sm font-medium transition-all ${
-                    activeTab === "reports"
+                  className={`w-full flex items-center gap-3 px-3.5 py-2.5 rounded-lg text-sm font-medium transition-all ${activeTab === "reports"
                       ? "bg-[#FDF2F8] text-[#92006F] font-semibold border border-[#FBCFE8]"
                       : "text-[#555] hover:bg-[#F9F6F0]"
-                  }`}
+                    }`}
                 >
                   <Clock className="w-4 h-4 text-[#888]" />
                   <span>Relatório PCN</span>
                 </button>
 
-                {currentUser.role === "admin_lawyer" && (
+                {isAdmin && (
                   <>
                     <button
                       onClick={() => switchTab("services")}
-                      className={`w-full flex items-center justify-between px-3.5 py-2.5 rounded-lg text-sm font-medium transition-all ${
-                        activeTab === "services"
+                      className={`w-full flex items-center justify-between px-3.5 py-2.5 rounded-lg text-sm font-medium transition-all ${activeTab === "services"
                           ? "bg-[#FDF2F8] text-[#92006F] font-semibold border border-[#FBCFE8]"
                           : "text-[#555] hover:bg-[#F9F6F0]"
-                      }`}
+                        }`}
                     >
                       <div className="flex items-center gap-3">
                         <SlidersHorizontal className="w-4 h-4 text-[#92006F]" />
@@ -3136,11 +3444,10 @@ PCN Advogadas · Plataforma Forense`;
 
                     <button
                       onClick={() => switchTab("users")}
-                      className={`w-full flex items-center justify-between px-3.5 py-2.5 rounded-lg text-sm font-medium transition-all ${
-                        activeTab === "users"
+                      className={`w-full flex items-center justify-between px-3.5 py-2.5 rounded-lg text-sm font-medium transition-all ${activeTab === "users"
                           ? "bg-[#FDF2F8] text-[#92006F] font-semibold border border-[#FBCFE8]"
                           : "text-[#555] hover:bg-[#F9F6F0]"
-                      }`}
+                        }`}
                     >
                       <div className="flex items-center gap-3">
                         <ShieldCheck className="w-4 h-4 text-[#92006F]" />
@@ -3185,7 +3492,7 @@ PCN Advogadas · Plataforma Forense`;
                   <div className="truncate text-left leading-tight">
                     <p className="text-[11px] font-bold text-[#141414] truncate">{currentUser.name}</p>
                     <p className="text-[9px] text-[#777] truncate">
-                      {currentUser.role === "admin_lawyer" ? "Direção (Admin)" : "Advogada Associada"}
+                      {ROLE_LABELS[currentUser.role] || "Advogada Associada"}
                     </p>
                   </div>
                 </div>
@@ -3210,9 +3517,8 @@ PCN Advogadas · Plataforma Forense`;
 
       {/* ── BARRA LATERAL ESQUERDA DESKTOP (SIDEBAR) ── */}
       <aside
-        className={`${
-          isStandalone || isSidebarCollapsed ? "hidden" : "hidden lg:flex"
-        } w-64 bg-white border-r border-[#ECE6DB] flex-col justify-between select-none shadow-[1px_0_10px_rgba(0,0,0,0.02)] shrink-0 transition-all`}
+        className={`${isStandalone || isSidebarCollapsed ? "hidden" : "hidden lg:flex"
+          } w-64 bg-white border-r border-[#ECE6DB] flex-col justify-between select-none shadow-[1px_0_10px_rgba(0,0,0,0.02)] shrink-0 transition-all`}
       >
         <div>
           {/* Brand Header */}
@@ -3245,11 +3551,10 @@ PCN Advogadas · Plataforma Forense`;
           <nav className="p-3 space-y-1.5 mt-2">
             <button
               onClick={() => switchTab("dashboard")}
-              className={`w-full flex items-center gap-3 px-3.5 py-2.5 rounded-lg text-sm font-medium transition-all ${
-                activeTab === "dashboard"
+              className={`w-full flex items-center gap-3 px-3.5 py-2.5 rounded-lg text-sm font-medium transition-all ${activeTab === "dashboard"
                   ? "bg-[#FDF2F8] text-[#92006F] font-semibold shadow-xs border border-[#FBCFE8]"
                   : "text-[#555] hover:bg-[#F9F6F0] hover:text-[#111]"
-              }`}
+                }`}
             >
               <span className="text-[#92006F] text-base">✦</span>
               <span>Painel de Direção</span>
@@ -3257,11 +3562,10 @@ PCN Advogadas · Plataforma Forense`;
 
             <button
               onClick={() => switchTab("tasks")}
-              className={`w-full flex items-center gap-3 px-3.5 py-2.5 rounded-lg text-sm font-medium transition-all ${
-                activeTab === "tasks"
+              className={`w-full flex items-center gap-3 px-3.5 py-2.5 rounded-lg text-sm font-medium transition-all ${activeTab === "tasks"
                   ? "bg-[#FDF2F8] text-[#92006F] font-semibold shadow-xs border border-[#FBCFE8]"
                   : "text-[#555] hover:bg-[#F9F6F0] hover:text-[#111]"
-              }`}
+                }`}
             >
               <Kanban className="w-4 h-4 text-[#888]" />
               <span>Gestão de Tarefas</span>
@@ -3269,11 +3573,10 @@ PCN Advogadas · Plataforma Forense`;
 
             <button
               onClick={() => switchTab("archived")}
-              className={`w-full flex items-center justify-between px-3.5 py-2.5 rounded-lg text-sm font-medium transition-all ${
-                activeTab === "archived"
+              className={`w-full flex items-center justify-between px-3.5 py-2.5 rounded-lg text-sm font-medium transition-all ${activeTab === "archived"
                   ? "bg-[#FDF2F8] text-[#92006F] font-semibold shadow-xs border border-[#FBCFE8]"
                   : "text-[#555] hover:bg-[#F9F6F0] hover:text-[#111]"
-              }`}
+                }`}
             >
               <div className="flex items-center gap-3">
                 <Archive className="w-4 h-4 text-[#888]" />
@@ -3288,11 +3591,10 @@ PCN Advogadas · Plataforma Forense`;
 
             <button
               onClick={() => switchTab("clients")}
-              className={`w-full flex items-center gap-3 px-3.5 py-2.5 rounded-lg text-sm font-medium transition-all ${
-                activeTab === "clients"
+              className={`w-full flex items-center gap-3 px-3.5 py-2.5 rounded-lg text-sm font-medium transition-all ${activeTab === "clients"
                   ? "bg-[#FDF2F8] text-[#92006F] font-semibold shadow-xs border border-[#FBCFE8]"
                   : "text-[#555] hover:bg-[#F9F6F0] hover:text-[#111]"
-              }`}
+                }`}
             >
               <Users className="w-4 h-4 text-[#888]" />
               <span>Clientes PCN</span>
@@ -3300,49 +3602,47 @@ PCN Advogadas · Plataforma Forense`;
 
             <button
               onClick={() => switchTab("calendar")}
-              className={`w-full flex items-center gap-3 px-3.5 py-2.5 rounded-lg text-sm font-medium transition-all ${
-                activeTab === "calendar"
+              className={`w-full flex items-center gap-3 px-3.5 py-2.5 rounded-lg text-sm font-medium transition-all ${activeTab === "calendar"
                   ? "bg-[#FDF2F8] text-[#92006F] font-semibold shadow-xs border border-[#FBCFE8]"
                   : "text-[#555] hover:bg-[#F9F6F0] hover:text-[#111]"
-              }`}
+                }`}
             >
               <Scale className="w-4 h-4 text-[#888]" />
               <span>Agendas e Prazos</span>
             </button>
 
-            <button
-              onClick={() => switchTab("feenotes")}
-              className={`w-full flex items-center gap-3 px-3.5 py-2.5 rounded-lg text-sm font-medium transition-all ${
-                activeTab === "feenotes"
-                  ? "bg-[#FDF2F8] text-[#92006F] font-semibold shadow-xs border border-[#FBCFE8]"
-                  : "text-[#555] hover:bg-[#F9F6F0] hover:text-[#111]"
-              }`}
-            >
-              <CreditCard className="w-4 h-4 text-[#888]" />
-              <span>Notas de Honorários</span>
-            </button>
+            <>{isAdmin && (
+              <button
+                onClick={() => switchTab("feenotes")}
+                className={`w-full flex items-center gap-3 px-3.5 py-2.5 rounded-lg text-sm font-medium transition-all ${activeTab === "feenotes"
+                    ? "bg-[#FDF2F8] text-[#92006F] font-semibold shadow-xs border border-[#FBCFE8]"
+                    : "text-[#555] hover:bg-[#F9F6F0] hover:text-[#111]"
+                  }`}
+              >
+                <CreditCard className="w-4 h-4 text-[#888]" />
+                <span>Notas de Honorários</span>
+              </button>
+            )}</>
 
             <button
               onClick={() => switchTab("reports")}
-              className={`w-full flex items-center gap-3 px-3.5 py-2.5 rounded-lg text-sm font-medium transition-all ${
-                activeTab === "reports"
+              className={`w-full flex items-center gap-3 px-3.5 py-2.5 rounded-lg text-sm font-medium transition-all ${activeTab === "reports"
                   ? "bg-[#FDF2F8] text-[#92006F] font-semibold shadow-xs border border-[#FBCFE8]"
                   : "text-[#555] hover:bg-[#F9F6F0] hover:text-[#111]"
-              }`}
+                }`}
             >
               <Clock className="w-4 h-4 text-[#888]" />
               <span>Relatório PCN</span>
             </button>
 
-            {currentUser.role === "admin_lawyer" && (
+            {isAdmin && (
               <>
                 <button
                   onClick={() => switchTab("services")}
-                  className={`w-full flex items-center justify-between px-3.5 py-2.5 rounded-lg text-sm font-medium transition-all ${
-                    activeTab === "services"
+                  className={`w-full flex items-center justify-between px-3.5 py-2.5 rounded-lg text-sm font-medium transition-all ${activeTab === "services"
                       ? "bg-[#FDF2F8] text-[#92006F] font-semibold shadow-xs border border-[#FBCFE8]"
                       : "text-[#555] hover:bg-[#F9F6F0] hover:text-[#111]"
-                  }`}
+                    }`}
                 >
                   <div className="flex items-center gap-3">
                     <SlidersHorizontal className="w-4 h-4 text-[#92006F]" />
@@ -3355,11 +3655,10 @@ PCN Advogadas · Plataforma Forense`;
 
                 <button
                   onClick={() => switchTab("users")}
-                  className={`w-full flex items-center justify-between px-3.5 py-2.5 rounded-lg text-sm font-medium transition-all ${
-                    activeTab === "users"
+                  className={`w-full flex items-center justify-between px-3.5 py-2.5 rounded-lg text-sm font-medium transition-all ${activeTab === "users"
                       ? "bg-[#FDF2F8] text-[#92006F] font-semibold shadow-xs border border-[#FBCFE8]"
                       : "text-[#555] hover:bg-[#F9F6F0] hover:text-[#111]"
-                  }`}
+                    }`}
                 >
                   <div className="flex items-center gap-3">
                     <ShieldCheck className="w-4 h-4 text-[#92006F]" />
@@ -3404,7 +3703,7 @@ PCN Advogadas · Plataforma Forense`;
               <div className="truncate text-left leading-tight">
                 <p className="text-[11px] font-bold text-[#141414] truncate">{currentUser.name}</p>
                 <p className="text-[9px] text-[#777] truncate">
-                  {currentUser.role === "admin_lawyer" ? "Direção (Admin)" : "Advogada Associada"}
+                  {ROLE_LABELS[currentUser.role] || "Advogada Associada"}
                 </p>
               </div>
             </div>
@@ -3429,9 +3728,8 @@ PCN Advogadas · Plataforma Forense`;
       <main className="flex-1 flex flex-col min-w-0 overflow-y-auto pb-16 lg:pb-0">
         {/* Barra Superior Mobile / Tablet / PWA com Botão Hamburguer */}
         <div
-          className={`${
-            isStandalone || isSidebarCollapsed ? "flex" : "flex lg:hidden"
-          } bg-white border-b border-[#ECE6DB] px-3 sm:px-4 py-2.5 items-center justify-between sticky top-0 z-30 shadow-xs`}
+          className={`${isStandalone || isSidebarCollapsed ? "flex" : "flex lg:hidden"
+            } bg-white border-b border-[#ECE6DB] px-3 sm:px-4 py-2.5 items-center justify-between sticky top-0 z-30 shadow-xs`}
         >
           <div className="flex items-center gap-2 sm:gap-3">
             <button
@@ -3529,7 +3827,7 @@ PCN Advogadas · Plataforma Forense`;
                     {currentUser.name}
                   </p>
                   <p className="text-[10px] text-[#888] font-medium mt-0.5">
-                    {currentUser.role === "admin_lawyer" ? "Direção (Admin)" : "Advogada Associada"}
+                    {ROLE_LABELS[currentUser.role] || "Advogada Associada"}
                   </p>
                 </div>
               </div>
@@ -3542,202 +3840,201 @@ PCN Advogadas · Plataforma Forense`;
 
         {/* ── CONTEÚDO DA TAB: PAINEL DE DIREÇÃO (ESTRITAMENTE INFORMATIVO) ── */}
         {activeTab === "dashboard" && (
-            <div className="p-4 sm:p-6 lg:p-8 space-y-6 max-w-6xl w-full mx-auto">
-              {/* Se o menu lateral estiver recolhido no desktop, botão discreto para reabrir */}
-              {isSidebarCollapsed && (
+          <div className="p-4 sm:p-6 lg:p-8 space-y-6 max-w-6xl w-full mx-auto">
+            {/* Se o menu lateral estiver recolhido no desktop, botão discreto para reabrir */}
+            {isSidebarCollapsed && (
+              <div>
+                <button
+                  onClick={() => setIsSidebarCollapsed(false)}
+                  className="inline-flex items-center gap-1.5 text-xs font-semibold text-[#92006F] bg-white border border-[#ECE6DB] px-3 py-1.5 rounded-lg hover:bg-[#FDF2F8] transition-colors cursor-pointer shadow-2xs"
+                >
+                  <PanelLeftOpen className="w-3.5 h-3.5" />
+                  <span>Mostrar Menu Lateral</span>
+                </button>
+              </div>
+            )}
+
+            {/* Área Central Informativa: Tarefas em Curso & Prazos (8 col) + Equipa (4 col) */}
+            <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
+              {/* Lista Informativa de Tarefas (com link direto para Gestão de Tarefas) */}
+              <div className="lg:col-span-8 pcn-card p-6 flex flex-col justify-between">
                 <div>
-                  <button
-                    onClick={() => setIsSidebarCollapsed(false)}
-                    className="inline-flex items-center gap-1.5 text-xs font-semibold text-[#92006F] bg-white border border-[#ECE6DB] px-3 py-1.5 rounded-lg hover:bg-[#FDF2F8] transition-colors cursor-pointer shadow-2xs"
-                  >
-                    <PanelLeftOpen className="w-3.5 h-3.5" />
-                    <span>Mostrar Menu Lateral</span>
-                  </button>
-                </div>
-              )}
+                  <h2 className="text-base font-bold text-[#141414]">Tarefas em Curso & Prazos</h2>
+                  <div className="gold-accent-line w-full my-3.5" />
 
-              {/* Área Central Informativa: Tarefas em Curso & Prazos (8 col) + Equipa (4 col) */}
-              <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
-                {/* Lista Informativa de Tarefas (com link direto para Gestão de Tarefas) */}
-                <div className="lg:col-span-8 pcn-card p-6 flex flex-col justify-between">
-                  <div>
-                    <h2 className="text-base font-bold text-[#141414]">Tarefas em Curso & Prazos</h2>
-                    <div className="gold-accent-line w-full my-3.5" />
-
-                    {activeTasks.length === 0 ? (
-                      <div className="py-10 text-center text-xs text-[#888]">
-                        Não existem tarefas ativas de momento.
-                      </div>
-                    ) : (
-                      <div className="space-y-2.5">
-                        {[...activeTasks]
-                          .sort((a, b) => {
-                            if (a.status === "in_progress" && b.status !== "in_progress") return -1;
-                            if (a.status !== "in_progress" && b.status === "in_progress") return 1;
-                            const da = getDeadlineInfo(a.due_date);
-                            const db = getDeadlineInfo(b.due_date);
-                            if (da && db) return da.diffDays - db.diffDays;
-                            if (da && !db) return -1;
-                            if (!da && db) return 1;
-                            return 0;
-                          })
-                          .slice(0, 8)
-                          .map((task) => {
-                            const dInfo = getDeadlineInfo(task.due_date);
-                            const isRunning = task.status === "in_progress";
-                            const isPaused = task.status === "paused";
-                            const isPool = task.status === "pool";
-                            const respName = isPool
-                              ? "Pool Partilhada"
-                              : task.lawyer_name && task.lawyer_name !== "—"
+                  {activeTasks.length === 0 ? (
+                    <div className="py-10 text-center text-xs text-[#888]">
+                      Não existem tarefas ativas de momento.
+                    </div>
+                  ) : (
+                    <div className="space-y-2.5">
+                      {[...activeTasks]
+                        .sort((a, b) => {
+                          if (a.status === "in_progress" && b.status !== "in_progress") return -1;
+                          if (a.status !== "in_progress" && b.status === "in_progress") return 1;
+                          const da = getDeadlineInfo(a.due_date);
+                          const db = getDeadlineInfo(b.due_date);
+                          if (da && db) return da.diffDays - db.diffDays;
+                          if (da && !db) return -1;
+                          if (!da && db) return 1;
+                          return 0;
+                        })
+                        .slice(0, 8)
+                        .map((task) => {
+                          const dInfo = getDeadlineInfo(task.due_date);
+                          const isRunning = task.status === "in_progress";
+                          const isPaused = task.status === "paused";
+                          const isPool = task.status === "pool";
+                          const respName = isPool
+                            ? "Pool Partilhada"
+                            : task.lawyer_name && task.lawyer_name !== "—"
                               ? task.lawyer_name.replace("Dr.ª ", "")
                               : "Atribuída";
 
-                            return (
-                              <div
-                                key={task.id}
-                                onClick={() => {
-                                  setTaskStatusFilter("all");
-                                  switchTab("tasks");
-                                }}
-                                className="p-3 sm:px-3.5 sm:py-3 flex flex-col sm:flex-row sm:items-center justify-between gap-3 bg-[#F8F5EE] border border-[#E5DEC9] shadow-xs hover:bg-white hover:border-[#D4AF37] hover:shadow-md rounded-xl transition-all cursor-pointer group"
-                              >
-                                <div className="min-w-0 flex-1">
-                                  <div className="flex items-center gap-2">
-                                    <span className="text-[11px] font-bold text-[#92006F]">
-                                      {task.client_name}
-                                    </span>
-                                    <span className="text-[#D9D1C5]">·</span>
-                                    <span className="text-xs font-semibold text-[#141414] group-hover:text-[#92006F] truncate transition-colors">
-                                      {task.title}
-                                    </span>
-                                  </div>
-                                  <div className="flex items-center gap-2 mt-0.5 text-[11px] text-[#736B5E]">
-                                    <span>{respName}</span>
-                                    {dInfo && (
-                                      <>
-                                        <span>·</span>
-                                        <span
-                                          className={`inline-flex items-center gap-1 font-semibold ${
-                                            dInfo.level === "red"
-                                              ? "text-rose-700"
-                                              : dInfo.level === "yellow"
+                          return (
+                            <div
+                              key={task.id}
+                              onClick={() => {
+                                setTaskStatusFilter("all");
+                                switchTab("tasks");
+                              }}
+                              className="p-3 sm:px-3.5 sm:py-3 flex flex-col sm:flex-row sm:items-center justify-between gap-3 bg-[#F8F5EE] border border-[#E5DEC9] shadow-xs hover:bg-white hover:border-[#D4AF37] hover:shadow-md rounded-xl transition-all cursor-pointer group"
+                            >
+                              <div className="min-w-0 flex-1">
+                                <div className="flex items-center gap-2">
+                                  <span className="text-[11px] font-bold text-[#92006F]">
+                                    {task.client_name}
+                                  </span>
+                                  <span className="text-[#D9D1C5]">·</span>
+                                  <span className="text-xs font-semibold text-[#141414] group-hover:text-[#92006F] truncate transition-colors">
+                                    {task.title}
+                                  </span>
+                                </div>
+                                <div className="flex items-center gap-2 mt-0.5 text-[11px] text-[#736B5E]">
+                                  <span>{respName}</span>
+                                  {dInfo && (
+                                    <>
+                                      <span>·</span>
+                                      <span
+                                        className={`inline-flex items-center gap-1 font-semibold ${dInfo.level === "red"
+                                            ? "text-rose-700"
+                                            : dInfo.level === "yellow"
                                               ? "text-amber-700"
                                               : "text-emerald-700"
                                           }`}
-                                        >
-                                          <span className={`w-1.5 h-1.5 rounded-full ${dInfo.dotClass}`} />
-                                          {dInfo.formattedDate} ({dInfo.label})
-                                        </span>
-                                      </>
-                                    )}
-                                  </div>
-                                </div>
-
-                                <div className="flex items-center gap-3 shrink-0">
-                                  {isRunning ? (
-                                    <span className="text-[10px] font-semibold bg-emerald-50 text-emerald-800 border border-emerald-200 px-2.5 py-0.5 rounded-full">
-                                      Em andamento
-                                    </span>
-                                  ) : isPaused ? (
-                                    <span className="text-[10px] font-semibold bg-amber-50 text-amber-800 border border-amber-200 px-2.5 py-0.5 rounded-full">
-                                      Em pausa
-                                    </span>
-                                  ) : isPool ? (
-                                    <span className="text-[10px] font-semibold bg-purple-50 text-[#92006F] border border-purple-200 px-2.5 py-0.5 rounded-full">
-                                      Na Pool
-                                    </span>
-                                  ) : (
-                                    <span className="text-[10px] font-semibold bg-white text-[#666] border border-[#E5DECF] px-2.5 py-0.5 rounded-full">
-                                      Aberta
-                                    </span>
+                                      >
+                                        <span className={`w-1.5 h-1.5 rounded-full ${dInfo.dotClass}`} />
+                                        {dInfo.formattedDate} ({dInfo.label})
+                                      </span>
+                                    </>
                                   )}
-
-                                  <span className="text-[11px] font-semibold text-[#92006F] group-hover:translate-x-0.5 transition-transform inline-flex items-center gap-1">
-                                    <span>Ir para tarefa</span>
-                                    <ArrowRight className="w-3 h-3" />
-                                  </span>
                                 </div>
                               </div>
-                            );
-                          })}
-                      </div>
-                    )}
-                  </div>
 
-                  <div className="mt-4 pt-3 border-t border-[#F2EDE4] flex justify-end">
-                    <button
-                      onClick={() => {
-                        setTaskStatusFilter("all");
-                        switchTab("tasks");
-                      }}
-                      className="text-xs font-semibold text-[#92006F] hover:underline cursor-pointer"
-                    >
-                      Ver quadro completo →
-                    </button>
+                              <div className="flex items-center gap-3 shrink-0">
+                                {isRunning ? (
+                                  <span className="text-[10px] font-semibold bg-emerald-50 text-emerald-800 border border-emerald-200 px-2.5 py-0.5 rounded-full">
+                                    Em andamento
+                                  </span>
+                                ) : isPaused ? (
+                                  <span className="text-[10px] font-semibold bg-amber-50 text-amber-800 border border-amber-200 px-2.5 py-0.5 rounded-full">
+                                    Em pausa
+                                  </span>
+                                ) : isPool ? (
+                                  <span className="text-[10px] font-semibold bg-purple-50 text-[#92006F] border border-purple-200 px-2.5 py-0.5 rounded-full">
+                                    Na Pool
+                                  </span>
+                                ) : (
+                                  <span className="text-[10px] font-semibold bg-white text-[#666] border border-[#E5DECF] px-2.5 py-0.5 rounded-full">
+                                    Aberta
+                                  </span>
+                                )}
+
+                                <span className="text-[11px] font-semibold text-[#92006F] group-hover:translate-x-0.5 transition-transform inline-flex items-center gap-1">
+                                  <span>Ir para tarefa</span>
+                                  <ArrowRight className="w-3 h-3" />
+                                </span>
+                              </div>
+                            </div>
+                          );
+                        })}
+                    </div>
+                  )}
+                </div>
+
+                <div className="mt-4 pt-3 border-t border-[#F2EDE4] flex justify-end">
+                  <button
+                    onClick={() => {
+                      setTaskStatusFilter("all");
+                      switchTab("tasks");
+                    }}
+                    className="text-xs font-semibold text-[#92006F] hover:underline cursor-pointer"
+                  >
+                    Ver quadro completo →
+                  </button>
+                </div>
+              </div>
+
+              {/* Coluna Direita (4 col): Equipa (Informativo, sem cronómetro) */}
+              <div className="lg:col-span-4 pcn-card p-6 flex flex-col justify-between">
+                <div>
+                  <h2 className="text-base font-bold text-[#141414]">Equipa</h2>
+                  <div className="gold-accent-line w-full my-3.5" />
+
+                  <div className="space-y-2.5">
+                    {usersList.map((u) => {
+                      const userTasks = tasks.filter(
+                        (t) =>
+                          t.status !== "archived" &&
+                          (t.assigned_to === u.id ||
+                            (t.lawyer_name &&
+                              t.lawyer_name.toLowerCase() === u.name.toLowerCase()))
+                      );
+                      const runningCnt = userTasks.filter((t) => t.status === "in_progress").length;
+                      const pausedCnt = userTasks.filter((t) => t.status === "paused").length;
+                      const activeCnt = userTasks.filter((t) => t.status !== "completed").length;
+
+                      return (
+                        <div
+                          key={u.id}
+                          className="p-2.5 px-3 bg-[#F8F5EE] border border-[#E5DEC9] shadow-2xs rounded-xl flex items-center justify-between gap-2"
+                        >
+                          <div className="flex items-center gap-2.5 min-w-0">
+                            <div className="w-7 h-7 rounded-full bg-[#92006F]/10 text-[#92006F] font-bold text-xs flex items-center justify-center shrink-0">
+                              {u.name.replace("Dr.ª ", "").charAt(0)}
+                            </div>
+                            <div className="min-w-0">
+                              <p className="text-xs font-semibold text-[#141414] truncate">{u.name}</p>
+                              <p className="text-[10px] text-[#736B5E]">
+                                {runningCnt > 0
+                                  ? `${runningCnt} em andamento`
+                                  : pausedCnt > 0
+                                    ? `${pausedCnt} em pausa`
+                                    : "Sem tarefas em execução"}
+                              </p>
+                            </div>
+                          </div>
+
+                          <span className="text-xs font-semibold text-[#555] bg-white border border-[#E5DEC9] px-2.5 py-0.5 rounded-full shrink-0 shadow-2xs">
+                            {activeCnt} {activeCnt === 1 ? "ativa" : "ativas"}
+                          </span>
+                        </div>
+                      );
+                    })}
                   </div>
                 </div>
 
-                {/* Coluna Direita (4 col): Equipa (Informativo, sem cronómetro) */}
-                <div className="lg:col-span-4 pcn-card p-6 flex flex-col justify-between">
-                  <div>
-                    <h2 className="text-base font-bold text-[#141414]">Equipa</h2>
-                    <div className="gold-accent-line w-full my-3.5" />
-
-                    <div className="space-y-2.5">
-                      {usersList.map((u) => {
-                        const userTasks = tasks.filter(
-                          (t) =>
-                            t.status !== "archived" &&
-                            (t.assigned_to === u.id ||
-                              (t.lawyer_name &&
-                                t.lawyer_name.toLowerCase() === u.name.toLowerCase()))
-                        );
-                        const runningCnt = userTasks.filter((t) => t.status === "in_progress").length;
-                        const pausedCnt = userTasks.filter((t) => t.status === "paused").length;
-                        const activeCnt = userTasks.filter((t) => t.status !== "completed").length;
-
-                        return (
-                          <div
-                            key={u.id}
-                            className="p-2.5 px-3 bg-[#F8F5EE] border border-[#E5DEC9] shadow-2xs rounded-xl flex items-center justify-between gap-2"
-                          >
-                            <div className="flex items-center gap-2.5 min-w-0">
-                              <div className="w-7 h-7 rounded-full bg-[#92006F]/10 text-[#92006F] font-bold text-xs flex items-center justify-center shrink-0">
-                                {u.name.replace("Dr.ª ", "").charAt(0)}
-                              </div>
-                              <div className="min-w-0">
-                                <p className="text-xs font-semibold text-[#141414] truncate">{u.name}</p>
-                                <p className="text-[10px] text-[#736B5E]">
-                                  {runningCnt > 0
-                                    ? `${runningCnt} em andamento`
-                                    : pausedCnt > 0
-                                    ? `${pausedCnt} em pausa`
-                                    : "Sem tarefas em execução"}
-                                </p>
-                              </div>
-                            </div>
-
-                            <span className="text-xs font-semibold text-[#555] bg-white border border-[#E5DEC9] px-2.5 py-0.5 rounded-full shrink-0 shadow-2xs">
-                              {activeCnt} {activeCnt === 1 ? "ativa" : "ativas"}
-                            </span>
-                          </div>
-                        );
-                      })}
-                    </div>
-                  </div>
-
-                  <div className="mt-4 pt-3 border-t border-[#F2EDE4]">
-                    <button
-                      onClick={() => switchTab("reports")}
-                      className="w-full bg-[#FAF8F5] hover:bg-[#F3EFE6] border border-[#D9D1C5] text-[#141414] text-xs font-semibold py-2 rounded-lg transition-colors cursor-pointer"
-                    >
-                      Relatório das 9h00 →
-                    </button>
-                  </div>
+                <div className="mt-4 pt-3 border-t border-[#F2EDE4]">
+                  <button
+                    onClick={() => switchTab("reports")}
+                    className="w-full bg-[#FAF8F5] hover:bg-[#F3EFE6] border border-[#D9D1C5] text-[#141414] text-xs font-semibold py-2 rounded-lg transition-colors cursor-pointer"
+                  >
+                    Relatório das 9h00 →
+                  </button>
                 </div>
               </div>
             </div>
+          </div>
         )}
 
         {/* ── CONTEÚDO DA TAB: GESTÃO DE TAREFAS ── */}
@@ -3751,7 +4048,7 @@ PCN Advogadas · Plataforma Forense`;
                 </p>
               </div>
 
-              {currentUser.role === "admin_lawyer" && (
+              {isAdmin && (
                 <button
                   onClick={() => {
                     if (!taskFormClientId && clients.length > 0) {
@@ -3783,19 +4080,17 @@ PCN Advogadas · Plataforma Forense`;
                   <button
                     key={f.id}
                     onClick={() => setTaskStatusFilter(f.id as any)}
-                    className={`px-3 py-1.5 rounded-full text-xs font-semibold whitespace-nowrap transition-all flex items-center gap-1.5 cursor-pointer ${
-                      isSelected
+                    className={`px-3 py-1.5 rounded-full text-xs font-semibold whitespace-nowrap transition-all flex items-center gap-1.5 cursor-pointer ${isSelected
                         ? "bg-[#92006F] text-white shadow-sm"
                         : "bg-white text-[#666] border border-[#DFD6C5] shadow-2xs hover:border-[#AA820A] hover:text-[#111]"
-                    }`}
+                      }`}
                   >
                     <span>{f.label}</span>
                     <span
-                      className={`text-[10px] px-1.5 py-0.2 rounded-full font-bold ${
-                        isSelected
+                      className={`text-[10px] px-1.5 py-0.2 rounded-full font-bold ${isSelected
                           ? "bg-white/20 text-white"
                           : "bg-[#F3EFE8] text-[#666] border border-[#E2D9C8]"
-                      }`}
+                        }`}
                     >
                       {f.count}
                     </span>
@@ -3840,13 +4135,15 @@ PCN Advogadas · Plataforma Forense`;
                                 >
                                   <UserCheck className="w-3.5 h-3.5" />
                                 </button>
-                                <button
-                                  onClick={() => confirmDeleteTask(task)}
-                                  className="text-[#999] hover:text-rose-600 p-1 rounded cursor-pointer"
-                                  title="Eliminar Tarefa"
-                                >
-                                  <Trash2 className="w-3.5 h-3.5" />
-                                </button>
+                                <>{isAdmin && (
+                                  <button
+                                    onClick={() => confirmDeleteTask(task)}
+                                    className="text-[#999] hover:text-rose-600 p-1 rounded cursor-pointer"
+                                    title="Eliminar Tarefa"
+                                  >
+                                    <Trash2 className="w-3.5 h-3.5" />
+                                  </button>
+                                )}</>
                               </div>
                             </div>
                             <h4
@@ -3918,11 +4215,10 @@ PCN Advogadas · Plataforma Forense`;
                         return (
                           <div
                             key={task.id}
-                            className={`bg-white border ${
-                              isRunningThis
+                            className={`bg-white border ${isRunningThis
                                 ? "border-[#92006F] ring-2 ring-[#92006F]/25 shadow-lg"
                                 : "border-[#E2D9CB] shadow-md"
-                            } p-4 rounded-xl space-y-3 hover:border-[#92006F] hover:shadow-lg transition-all`}
+                              } p-4 rounded-xl space-y-3 hover:border-[#92006F] hover:shadow-lg transition-all`}
                           >
                             <div className="flex items-center justify-between">
                               <span className="text-[10px] font-bold text-[#92006F] uppercase">
@@ -3957,13 +4253,15 @@ PCN Advogadas · Plataforma Forense`;
                                 >
                                   <UserCheck className="w-3.5 h-3.5" />
                                 </button>
-                                <button
-                                  onClick={() => confirmDeleteTask(task)}
-                                  className="text-[#999] hover:text-rose-600 p-1 rounded cursor-pointer"
-                                  title="Eliminar Tarefa"
-                                >
-                                  <Trash2 className="w-3.5 h-3.5" />
-                                </button>
+                                <>{isAdmin && (
+                                  <button
+                                    onClick={() => confirmDeleteTask(task)}
+                                    className="text-[#999] hover:text-rose-600 p-1 rounded cursor-pointer"
+                                    title="Eliminar Tarefa"
+                                  >
+                                    <Trash2 className="w-3.5 h-3.5" />
+                                  </button>
+                                )}</>
                               </div>
                             </div>
 
@@ -3992,27 +4290,33 @@ PCN Advogadas · Plataforma Forense`;
 
                             <div className="pt-2 border-t border-[#F2ECE1] flex items-center justify-between gap-2">
                               {task.status === "in_progress" ? (
-                                <button
-                                  onClick={() => handlePauseTimer(task)}
-                                  className="w-full bg-amber-500 hover:bg-amber-600 text-white text-[11px] font-semibold py-1.5 rounded-lg flex items-center justify-center gap-1 cursor-pointer transition-colors"
-                                >
-                                  <Pause className="w-3 h-3" /> Pausar
-                                </button>
+                                <>{canWorkOn(task) && (
+                                  <button
+                                    onClick={() => handlePauseTimer(task)}
+                                    className="w-full bg-amber-500 hover:bg-amber-600 text-white text-[11px] font-semibold py-1.5 rounded-lg flex items-center justify-center gap-1 cursor-pointer transition-colors"
+                                  >
+                                    <Pause className="w-3 h-3" /> Pausar
+                                  </button>
+                                )}</>
                               ) : (
-                                <button
-                                  onClick={() => handleStartTimer(task)}
-                                  className="w-full bg-[#92006F] hover:bg-[#7E0060] text-white text-[11px] font-semibold py-1.5 rounded-lg flex items-center justify-center gap-1 cursor-pointer transition-colors"
-                                >
-                                  <Play className="w-3 h-3 fill-current" /> Iniciar
-                                </button>
+                                <>{canWorkOn(task) && (
+                                  <button
+                                    onClick={() => handleStartTimer(task)}
+                                    className="w-full bg-[#92006F] hover:bg-[#7E0060] text-white text-[11px] font-semibold py-1.5 rounded-lg flex items-center justify-center gap-1 cursor-pointer transition-colors"
+                                  >
+                                    <Play className="w-3 h-3 fill-current" /> Iniciar
+                                  </button>
+                                )}</>
                               )}
 
-                              <button
-                                onClick={() => handleCompleteTask(task)}
-                                className="bg-emerald-600 hover:bg-emerald-700 text-white text-[11px] font-semibold px-3 py-1.5 rounded-lg cursor-pointer transition-colors"
-                              >
-                                Concluir
-                              </button>
+                              <>{canWorkOn(task) && (
+                                <button
+                                  onClick={() => handleCompleteTask(task)}
+                                  className="bg-emerald-600 hover:bg-emerald-700 text-white text-[11px] font-semibold px-3 py-1.5 rounded-lg cursor-pointer transition-colors"
+                                >
+                                  Concluir
+                                </button>
+                              )}</>
                             </div>
                           </div>
                         );
@@ -4020,12 +4324,12 @@ PCN Advogadas · Plataforma Forense`;
                     {tasks.filter(
                       (t) => t.status === "assigned" || t.status === "in_progress"
                     ).length === 0 && (
-                      <div className="flex-1 flex items-center justify-center py-12">
-                        <p className="text-xs text-[#8C7E6D] text-center italic">
-                          Nenhuma tarefa em andamento.
-                        </p>
-                      </div>
-                    )}
+                        <div className="flex-1 flex items-center justify-center py-12">
+                          <p className="text-xs text-[#8C7E6D] text-center italic">
+                            Nenhuma tarefa em andamento.
+                          </p>
+                        </div>
+                      )}
                   </div>
                 </div>
 
@@ -4074,13 +4378,15 @@ PCN Advogadas · Plataforma Forense`;
                                 >
                                   <UserCheck className="w-3.5 h-3.5" />
                                 </button>
-                                <button
-                                  onClick={() => confirmDeleteTask(task)}
-                                  className="text-[#999] hover:text-rose-600 p-1 rounded cursor-pointer"
-                                  title="Eliminar Tarefa"
-                                >
-                                  <Trash2 className="w-3.5 h-3.5" />
-                                </button>
+                                <>{isAdmin && (
+                                  <button
+                                    onClick={() => confirmDeleteTask(task)}
+                                    className="text-[#999] hover:text-rose-600 p-1 rounded cursor-pointer"
+                                    title="Eliminar Tarefa"
+                                  >
+                                    <Trash2 className="w-3.5 h-3.5" />
+                                  </button>
+                                )}</>
                               </div>
                             </div>
 
@@ -4108,19 +4414,23 @@ PCN Advogadas · Plataforma Forense`;
                             </div>
 
                             <div className="pt-2 border-t border-[#F2ECE1] flex items-center justify-between gap-2">
-                              <button
-                                onClick={() => handleStartTimer(task)}
-                                className="w-full bg-[#92006F] hover:bg-[#7E0060] text-white text-[11px] font-semibold py-1.5 rounded-lg flex items-center justify-center gap-1 cursor-pointer transition-colors"
-                              >
-                                <Play className="w-3 h-3 fill-current" /> Iniciar
-                              </button>
+                              <>{canWorkOn(task) && (
+                                <button
+                                  onClick={() => handleStartTimer(task)}
+                                  className="w-full bg-[#92006F] hover:bg-[#7E0060] text-white text-[11px] font-semibold py-1.5 rounded-lg flex items-center justify-center gap-1 cursor-pointer transition-colors"
+                                >
+                                  <Play className="w-3 h-3 fill-current" /> Iniciar
+                                </button>
+                              )}</>
 
-                              <button
-                                onClick={() => handleCompleteTask(task)}
-                                className="bg-emerald-600 hover:bg-emerald-700 text-white text-[11px] font-semibold px-3 py-1.5 rounded-lg cursor-pointer transition-colors"
-                              >
-                                Concluir
-                              </button>
+                              <>{canWorkOn(task) && (
+                                <button
+                                  onClick={() => handleCompleteTask(task)}
+                                  className="bg-emerald-600 hover:bg-emerald-700 text-white text-[11px] font-semibold px-3 py-1.5 rounded-lg cursor-pointer transition-colors"
+                                >
+                                  Concluir
+                                </button>
+                              )}</>
                             </div>
                           </div>
                         );
@@ -4166,13 +4476,15 @@ PCN Advogadas · Plataforma Forense`;
                               >
                                 <UserCheck className="w-3.5 h-3.5" />
                               </button>
-                              <button
-                                onClick={() => confirmDeleteTask(task)}
-                                className="text-[#999] hover:text-rose-600 p-1 rounded cursor-pointer"
-                                title="Eliminar Tarefa"
-                              >
-                                <Trash2 className="w-3.5 h-3.5" />
-                              </button>
+                              <>{isAdmin && (
+                                <button
+                                  onClick={() => confirmDeleteTask(task)}
+                                  className="text-[#999] hover:text-rose-600 p-1 rounded cursor-pointer"
+                                  title="Eliminar Tarefa"
+                                >
+                                  <Trash2 className="w-3.5 h-3.5" />
+                                </button>
+                              )}</>
                             </div>
                           </div>
 
@@ -4199,12 +4511,14 @@ PCN Advogadas · Plataforma Forense`;
                           </div>
 
                           <div className="pt-2 flex items-center gap-2">
-                            <button
-                              onClick={() => handleArchiveTask(task)}
-                              className="w-full bg-[#5E0047] hover:bg-[#470036] text-white text-[11px] font-semibold py-1.5 rounded-lg flex items-center justify-center gap-1 cursor-pointer transition-colors shadow-xs"
-                            >
-                              <Archive className="w-3.5 h-3.5" /> Mover para Arquivadas
-                            </button>
+                            <>{isAdmin && (
+                              <button
+                                onClick={() => handleArchiveTask(task)}
+                                className="w-full bg-[#5E0047] hover:bg-[#470036] text-white text-[11px] font-semibold py-1.5 rounded-lg flex items-center justify-center gap-1 cursor-pointer transition-colors shadow-xs"
+                              >
+                                <Archive className="w-3.5 h-3.5" /> Mover para Arquivadas
+                              </button>
+                            )}</>
                           </div>
                         </div>
                       ))}
@@ -4260,21 +4574,22 @@ PCN Advogadas · Plataforma Forense`;
                               >
                                 <UserCheck className="w-3.5 h-3.5" />
                               </button>
-                              <button
-                                onClick={() => confirmDeleteTask(task)}
-                                className="text-[#999] hover:text-rose-600 p-1 rounded cursor-pointer"
-                                title="Eliminar Tarefa"
-                              >
-                                <Trash2 className="w-3.5 h-3.5" />
-                              </button>
+                              <>{isAdmin && (
+                                <button
+                                  onClick={() => confirmDeleteTask(task)}
+                                  className="text-[#999] hover:text-rose-600 p-1 rounded cursor-pointer"
+                                  title="Eliminar Tarefa"
+                                >
+                                  <Trash2 className="w-3.5 h-3.5" />
+                                </button>
+                              )}</>
                             </div>
                           </div>
 
                           <h4
                             onClick={() => openTaskDetails(task)}
-                            className={`text-xs sm:text-sm font-bold text-[#141414] hover:text-[#92006F] cursor-pointer ${
-                              task.status === "completed" ? "line-through text-[#777]" : ""
-                            }`}
+                            className={`text-xs sm:text-sm font-bold text-[#141414] hover:text-[#92006F] cursor-pointer ${task.status === "completed" ? "line-through text-[#777]" : ""
+                              }`}
                           >
                             {task.title}
                           </h4>
@@ -4318,71 +4633,85 @@ PCN Advogadas · Plataforma Forense`;
                               </button>
                             )}
 
-                          {task.status === "assigned" && (
-                            <>
-                              <button
-                                onClick={() => handleStartTimer(task)}
-                                className="flex-1 bg-[#92006F] hover:bg-[#7E0060] text-white text-xs font-semibold py-1.5 rounded-md flex items-center justify-center gap-1 cursor-pointer transition-colors"
-                              >
-                                <Play className="w-3.5 h-3.5 fill-current" /> Iniciar
-                              </button>
-                              <button
-                                onClick={() => handleCompleteTask(task)}
-                                className="bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-semibold py-1.5 px-3 rounded-md cursor-pointer transition-colors"
-                              >
-                                Concluir
-                              </button>
-                            </>
-                          )}
+                            {task.status === "assigned" && (
+                              <>
+                                <>{canWorkOn(task) && (
+                                  <button
+                                    onClick={() => handleStartTimer(task)}
+                                    className="flex-1 bg-[#92006F] hover:bg-[#7E0060] text-white text-xs font-semibold py-1.5 rounded-md flex items-center justify-center gap-1 cursor-pointer transition-colors"
+                                  >
+                                    <Play className="w-3.5 h-3.5 fill-current" /> Iniciar
+                                  </button>
+                                )}</>
+                                <>{canWorkOn(task) && (
+                                  <button
+                                    onClick={() => handleCompleteTask(task)}
+                                    className="bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-semibold py-1.5 px-3 rounded-md cursor-pointer transition-colors"
+                                  >
+                                    Concluir
+                                  </button>
+                                )}</>
+                              </>
+                            )}
 
-                          {task.status === "in_progress" && (
-                            <>
-                              <button
-                                onClick={() => handlePauseTimer(task)}
-                                className="flex-1 bg-amber-500 hover:bg-amber-600 text-white text-xs font-semibold py-1.5 rounded-md flex items-center justify-center gap-1 cursor-pointer transition-colors"
-                              >
-                                <Pause className="w-3.5 h-3.5" /> Pausar
-                              </button>
-                              <button
-                                onClick={() => handleCompleteTask(task)}
-                                className="bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-semibold py-1.5 px-3 rounded-md cursor-pointer transition-colors"
-                              >
-                                Concluir
-                              </button>
-                            </>
-                          )}
+                            {task.status === "in_progress" && (
+                              <>
+                                <>{canWorkOn(task) && (
+                                  <button
+                                    onClick={() => handlePauseTimer(task)}
+                                    className="flex-1 bg-amber-500 hover:bg-amber-600 text-white text-xs font-semibold py-1.5 rounded-md flex items-center justify-center gap-1 cursor-pointer transition-colors"
+                                  >
+                                    <Pause className="w-3.5 h-3.5" /> Pausar
+                                  </button>
+                                )}</>
+                                <>{canWorkOn(task) && (
+                                  <button
+                                    onClick={() => handleCompleteTask(task)}
+                                    className="bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-semibold py-1.5 px-3 rounded-md cursor-pointer transition-colors"
+                                  >
+                                    Concluir
+                                  </button>
+                                )}</>
+                              </>
+                            )}
 
-                          {task.status === "paused" && (
-                            <>
-                              <button
-                                onClick={() => handleStartTimer(task)}
-                                className="flex-1 bg-[#92006F] hover:bg-[#7E0060] text-white text-xs font-semibold py-1.5 rounded-md flex items-center justify-center gap-1 cursor-pointer transition-colors"
-                              >
-                                <Play className="w-3.5 h-3.5 fill-current" /> Iniciar
-                              </button>
-                              <button
-                                onClick={() => handleCompleteTask(task)}
-                                className="bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-semibold py-1.5 px-3 rounded-md cursor-pointer transition-colors"
-                              >
-                                Concluir
-                              </button>
-                            </>
-                          )}
+                            {task.status === "paused" && (
+                              <>
+                                <>{canWorkOn(task) && (
+                                  <button
+                                    onClick={() => handleStartTimer(task)}
+                                    className="flex-1 bg-[#92006F] hover:bg-[#7E0060] text-white text-xs font-semibold py-1.5 rounded-md flex items-center justify-center gap-1 cursor-pointer transition-colors"
+                                  >
+                                    <Play className="w-3.5 h-3.5 fill-current" /> Iniciar
+                                  </button>
+                                )}</>
+                                <>{canWorkOn(task) && (
+                                  <button
+                                    onClick={() => handleCompleteTask(task)}
+                                    className="bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-semibold py-1.5 px-3 rounded-md cursor-pointer transition-colors"
+                                  >
+                                    Concluir
+                                  </button>
+                                )}</>
+                              </>
+                            )}
 
-                          {task.status === "completed" && (
-                            <button
-                              onClick={() => handleArchiveTask(task)}
-                              className="w-full bg-[#5E0047] hover:bg-[#4A0038] text-white text-xs font-semibold py-1.5 rounded-md flex items-center justify-center gap-1 cursor-pointer transition-colors shadow-xs"
-                              title="Mover para Arquivadas (sai do quadro)"
-                            >
-                              <Archive className="w-3.5 h-3.5" />
-                              <span>Mover para Arquivadas</span>
-                            </button>
-                          )}
+                            {task.status === "completed" && (
+                              <>{isAdmin && (
+                                <button
+                                  onClick={() => handleArchiveTask(task)}
+                                  className="w-full bg-[#5E0047] hover:bg-[#4A0038] text-white text-xs font-semibold py-1.5 rounded-md flex items-center justify-center gap-1 cursor-pointer transition-colors shadow-xs"
+                                  title="Mover para Arquivadas (sai do quadro)"
+                                >
+                                  <Archive className="w-3.5 h-3.5" />
+                                  <span>Mover para Arquivadas</span>
+                                </button>
+                              )}</>
+                            )}
+                          </div>
                         </div>
-                      </div>
-                    );
-                  })}
+                      );
+                    })}
                   {tasks.filter((t) => t.status === taskStatusFilter).length === 0 && (
                     <div className="col-span-full p-8 text-center bg-white rounded-xl border border-dashed border-[#D9D1C5]">
                       <p className="text-xs text-[#777]">
@@ -4480,14 +4809,16 @@ PCN Advogadas · Plataforma Forense`;
                       </div>
 
                       <div className="pt-2 border-t border-[#F2ECE1] flex items-center justify-between gap-2">
-                        <button
-                          onClick={() => handleRestoreTask(task)}
-                          className="flex-1 bg-white hover:bg-[#FAF8F5] border border-[#D9D1C5] text-[#333] text-[11px] font-semibold py-1.5 px-2 rounded-md flex items-center justify-center gap-1 cursor-pointer transition-colors"
-                          title="Restaurar tarefa de volta ao Quadro"
-                        >
-                          <ArchiveRestore className="w-3.5 h-3.5 text-[#92006F]" />
-                          <span>Restaurar ao Quadro</span>
-                        </button>
+                        <>{isAdmin && (
+                          <button
+                            onClick={() => handleRestoreTask(task)}
+                            className="flex-1 bg-white hover:bg-[#FAF8F5] border border-[#D9D1C5] text-[#333] text-[11px] font-semibold py-1.5 px-2 rounded-md flex items-center justify-center gap-1 cursor-pointer transition-colors"
+                            title="Restaurar tarefa de volta ao Quadro"
+                          >
+                            <ArchiveRestore className="w-3.5 h-3.5 text-[#92006F]" />
+                            <span>Restaurar ao Quadro</span>
+                          </button>
+                        )}</>
 
                         <button
                           onClick={() => openTaskDetails(task)}
@@ -4497,13 +4828,15 @@ PCN Advogadas · Plataforma Forense`;
                           <Eye className="w-3.5 h-3.5" />
                         </button>
 
-                        <button
-                          onClick={() => confirmDeleteTask(task)}
-                          className="text-[#999] hover:text-rose-600 hover:bg-rose-50 p-1.5 rounded-md cursor-pointer transition-colors"
-                          title="Eliminar permanentemente"
-                        >
-                          <Trash2 className="w-3.5 h-3.5" />
-                        </button>
+                        <>{isAdmin && (
+                          <button
+                            onClick={() => confirmDeleteTask(task)}
+                            className="text-[#999] hover:text-rose-600 hover:bg-rose-50 p-1.5 rounded-md cursor-pointer transition-colors"
+                            title="Eliminar permanentemente"
+                          >
+                            <Trash2 className="w-3.5 h-3.5" />
+                          </button>
+                        )}</>
                       </div>
                     </div>
                   ))}
@@ -4513,7 +4846,7 @@ PCN Advogadas · Plataforma Forense`;
         )}
 
         {/* ── CONTEÚDO DA TAB: NOTAS DE HONORÁRIOS (PATRÍCIA EXCLUSIVE) ── */}
-        {activeTab === "feenotes" &&
+        {activeTab === "feenotes" && isAdmin &&
           (() => {
             const clientTasks = tasks.filter((t) => t.client_id === selectedFeeClient);
             const totalClientSeconds = clientTasks.reduce(
@@ -4651,7 +4984,7 @@ PCN Advogadas · Plataforma Forense`;
                             }
                             setFeeTaskPrices(nextPrices);
                             saveFeeNoteToDb(selectedFeeClient, nextPrices, useWithholding, true).catch(
-                              () => {}
+                              () => { }
                             );
                           }
                         }}
@@ -5209,13 +5542,15 @@ PCN Advogadas · Plataforma Forense`;
                     className="w-full text-xs pl-8 pr-3 py-2 border border-[#D9D1C5] rounded-md bg-white focus:outline-none focus:ring-1 focus:ring-[#92006F]"
                   />
                 </div>
-                <button
-                  onClick={() => setIsNewClientModalOpen(true)}
-                  className="bg-[#92006F] hover:bg-[#7E0060] text-white text-xs font-semibold px-4 py-2 rounded-md shadow-xs flex items-center justify-center gap-2 transition-colors cursor-pointer w-full sm:w-auto shrink-0"
-                >
-                  <Plus className="w-4 h-4" />
-                  <span>Registar Cliente</span>
-                </button>
+                <>{isAdmin && (
+                  <button
+                    onClick={() => setIsNewClientModalOpen(true)}
+                    className="bg-[#92006F] hover:bg-[#7E0060] text-white text-xs font-semibold px-4 py-2 rounded-md shadow-xs flex items-center justify-center gap-2 transition-colors cursor-pointer w-full sm:w-auto shrink-0"
+                  >
+                    <Plus className="w-4 h-4" />
+                    <span>Registar Cliente</span>
+                  </button>
+                )}</>
               </div>
             </div>
 
@@ -5266,7 +5601,7 @@ PCN Advogadas · Plataforma Forense`;
                           >
                             + Nova Tarefa
                           </button>
-                          {currentUser.role === "admin_lawyer" && (
+                          {isAdmin && (
                             <>
                               <span className="text-[#CCC]">·</span>
                               <button
@@ -5290,7 +5625,7 @@ PCN Advogadas · Plataforma Forense`;
         )}
 
         {/* ── CONTEÚDO DA TAB: TABELA DE SERVIÇOS & CATEGORIAS (€/H) (PORTAL ADMIN) ── */}
-        {activeTab === "services" && currentUser.role === "admin_lawyer" && (
+        {activeTab === "services" && isAdmin && (
           <div className="p-4 sm:p-8 space-y-6 max-w-7xl w-full mx-auto">
             {/* Cabeçalho */}
             <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4 bg-white p-5 sm:p-6 rounded-xl border border-[#ECE6DB] shadow-xs">
@@ -5306,14 +5641,16 @@ PCN Advogadas · Plataforma Forense`;
               </div>
 
               <div className="flex items-center gap-2">
-                <button
-                  type="button"
-                  onClick={() => switchTab("feenotes")}
-                  className="bg-white hover:bg-[#FAF8F5] text-[#444] border border-[#D9D1C5] text-xs font-semibold px-3.5 py-2.5 rounded-lg flex items-center gap-1.5 shadow-2xs transition-all cursor-pointer"
-                >
-                  <CreditCard className="w-4 h-4 text-[#92006F]" />
-                  <span>Ir para Notas de Honorários</span>
-                </button>
+                <>{isAdmin && (
+                  <button
+                    type="button"
+                    onClick={() => switchTab("feenotes")}
+                    className="bg-white hover:bg-[#FAF8F5] text-[#444] border border-[#D9D1C5] text-xs font-semibold px-3.5 py-2.5 rounded-lg flex items-center gap-1.5 shadow-2xs transition-all cursor-pointer"
+                  >
+                    <CreditCard className="w-4 h-4 text-[#92006F]" />
+                    <span>Ir para Notas de Honorários</span>
+                  </button>
+                )}</>
 
                 <button
                   type="button"
@@ -5530,7 +5867,7 @@ PCN Advogadas · Plataforma Forense`;
         )}
 
         {/* ── CONTEÚDO DA TAB: GESTÃO DE UTILIZADORAS & ACESSOS (PORTAL ADMIN) ── */}
-        {activeTab === "users" && currentUser.role === "admin_lawyer" && (
+        {activeTab === "users" && isAdmin && (
           <div className="p-4 sm:p-8 space-y-6 max-w-7xl w-full mx-auto">
             <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4 bg-white p-5 sm:p-6 rounded-xl border border-[#ECE6DB] shadow-xs">
               <div>
@@ -5543,7 +5880,7 @@ PCN Advogadas · Plataforma Forense`;
                       Gestão de Utilizadoras & Níveis de Acesso
                     </h2>
                     <p className="text-xs text-[#666] mt-0.5">
-                      Portal exclusivo da Direção (Dr.ª Patrícia) · Criação de advogadas e privilégios de sistema no PostgreSQL.
+                      Portal da Direção e TI · Criar contas, suspender, desbloquear e repor 2FA.
                     </p>
                   </div>
                 </div>
@@ -5569,7 +5906,7 @@ PCN Advogadas · Plataforma Forense`;
               <div className="bg-white p-4 rounded-xl border border-[#ECE6DB] shadow-xs">
                 <p className="text-xs text-[#666] font-medium">Direção / Administradoras</p>
                 <p className="text-2xl font-bold text-[#92006F] mt-1">
-                  {usersList.filter((u) => u.role === "admin_lawyer").length}
+                  {usersList.filter((u) => isAdminRole(u.role)).length}
                 </p>
                 <p className="text-[10px] text-[#888] mt-0.5">Acesso total e gestão financeira</p>
               </div>
@@ -5609,6 +5946,7 @@ PCN Advogadas · Plataforma Forense`;
                       <th className="px-5 py-3">Correio Eletrónico</th>
                       <th className="px-5 py-3">Nível de Acesso</th>
                       <th className="px-5 py-3">Estado</th>
+                      <th className="px-5 py-3">Ações</th>
                       <th className="px-5 py-3 text-right">Identificador</th>
                     </tr>
                   </thead>
@@ -5625,45 +5963,109 @@ PCN Advogadas · Plataforma Forense`;
                         <td className="px-5 py-3.5">
                           <select
                             value={u.role}
-                            disabled={u.email.toLowerCase() === currentUser.email.toLowerCase()}
+                            disabled={!canManageUser(u)}
                             onChange={async (e) => {
                               const newRole = e.target.value;
-                              try {
-                                if (!authToken) return;
-                                await updateUserApi(authToken, u.id, { role: newRole });
-                                setUsersList((prev) =>
-                                  prev.map((usr) => (usr.id === u.id ? { ...usr, role: newRole } : usr))
-                                );
-                                setModalFeedback(
-                                  `Nível de acesso de ${u.name} atualizado para ${
-                                    newRole === "admin_lawyer" ? "Direção" : "Advogada Associada"
-                                  }!`
-                                );
-                                setTimeout(() => setModalFeedback(null), 3500);
-                              } catch (err: any) {
-                                alert(err.message || "Erro ao atualizar nível de acesso.");
-                              }
+                              if (!authToken) return;
+                              await runUserAction(
+                                () => updateUserApi(authToken, u.id, { role: newRole }),
+                                `Nível de acesso de ${u.name} atualizado para ${ROLE_LABELS[newRole]}.`
+                              );
                             }}
-                            className={`text-xs font-semibold px-2.5 py-1 rounded-md border cursor-pointer focus:outline-none focus:ring-1 focus:ring-[#92006F] shadow-2xs transition-all ${
-                              u.role === "admin_lawyer"
-                                ? "bg-[#FDF2F8] text-[#92006F] border-[#FBCFE8]"
-                                : "bg-[#FCF8EE] text-[#7A5B00] border-[#F1E5C7]"
-                            }`}
+                            className={`text-xs font-semibold px-2.5 py-1 rounded-md border cursor-pointer focus:outline-none focus:ring-1 focus:ring-[#92006F] shadow-2xs transition-all disabled:cursor-not-allowed disabled:opacity-70 ${u.role === "master"
+                                ? "bg-[#EEF2FF] text-[#3730A3] border-[#C7D2FE]"
+                                : u.role === "admin_lawyer"
+                                  ? "bg-[#FDF2F8] text-[#92006F] border-[#FBCFE8]"
+                                  : "bg-[#FCF8EE] text-[#7A5B00] border-[#F1E5C7]"
+                              }`}
                             title={
-                              u.email.toLowerCase() === currentUser.email.toLowerCase()
-                                ? "Não é possível alterar o nível da sua própria conta de Direção"
-                                : "Alterar nível de acesso forense"
+                              u.id === currentUser.id
+                                ? "Não é possível alterar o nível da sua própria conta"
+                                : !canManageUser(u)
+                                  ? "Apenas a equipa de TI (Master) pode alterar esta conta"
+                                  : "Alterar nível de acesso"
                             }
                           >
+                            {(isMaster || u.role === "master") && <option value="master">Master (TI)</option>}
                             <option value="admin_lawyer">Direção / Administradora</option>
                             <option value="lawyer">Advogada Associada</option>
                           </select>
                         </td>
                         <td className="px-5 py-3.5">
-                          <span className="inline-flex items-center gap-1 text-emerald-700 font-semibold text-[11px]">
-                            <span className="w-2 h-2 rounded-full bg-emerald-500" />
-                            Ativa
-                          </span>
+                          <div className="flex flex-col gap-1">
+                            {!u.is_active ? (
+                              <span className="inline-flex items-center gap-1 text-rose-700 font-semibold text-[11px]">
+                                <span className="w-2 h-2 rounded-full bg-rose-500" />
+                                Suspensa
+                              </span>
+                            ) : isUserLocked(u) ? (
+                              <span className="inline-flex items-center gap-1 text-amber-700 font-semibold text-[11px]">
+                                <Lock className="w-3 h-3" />
+                                Bloqueada até{" "}
+                                {new Date(u.locked_until).toLocaleTimeString("pt-PT", { hour: "2-digit", minute: "2-digit" })}
+                              </span>
+                            ) : (
+                              <span className="inline-flex items-center gap-1 text-emerald-700 font-semibold text-[11px]">
+                                <span className="w-2 h-2 rounded-full bg-emerald-500" />
+                                Ativa
+                              </span>
+                            )}
+                            <span
+                              className={`inline-flex items-center gap-1 text-[10px] ${u.is_totp_enabled ? "text-emerald-700" : "text-[#999]"
+                                }`}
+                            >
+                              <ShieldCheck className="w-3 h-3" />
+                              {u.is_totp_enabled ? "2FA ativo" : "2FA pendente"}
+                            </span>
+                          </div>
+                        </td>
+                        <td className="px-5 py-3.5">
+                          {canManageUser(u) ? (
+                            <div className="flex flex-wrap items-center gap-1.5">
+                              {isUserLocked(u) && u.is_active && (
+                                <button
+                                  type="button"
+                                  onClick={() => handleUnlockUser(u)}
+                                  className="inline-flex items-center gap-1 text-[11px] font-semibold px-2 py-1 rounded-md border border-amber-300 bg-amber-50 text-amber-800 hover:bg-amber-100 cursor-pointer"
+                                  title="Desbloquear (tentativas de login falhadas)"
+                                >
+                                  <Unlock className="w-3 h-3" /> Desbloquear
+                                </button>
+                              )}
+                              <button
+                                type="button"
+                                onClick={() => handleToggleUserActive(u)}
+                                className={`inline-flex items-center gap-1 text-[11px] font-semibold px-2 py-1 rounded-md border cursor-pointer ${u.is_active
+                                    ? "border-rose-200 bg-white text-rose-700 hover:bg-rose-50"
+                                    : "border-emerald-300 bg-emerald-50 text-emerald-800 hover:bg-emerald-100"
+                                  }`}
+                              >
+                                {u.is_active ? <Ban className="w-3 h-3" /> : <Check className="w-3 h-3" />}
+                                {u.is_active ? "Suspender" : "Reativar"}
+                              </button>
+                              {u.is_totp_enabled && (
+                                <button
+                                  type="button"
+                                  onClick={() => handleResetUserMfa(u)}
+                                  className="inline-flex items-center gap-1 text-[11px] font-semibold px-2 py-1 rounded-md border border-[#D9D1C5] bg-white text-[#444] hover:bg-[#FAF8F5] cursor-pointer"
+                                  title="Para quando a utilizadora perde ou troca de telemóvel"
+                                >
+                                  <PhoneIcon className="w-3 h-3" /> Repor 2FA
+                                </button>
+                              )}
+                              <button
+                                type="button"
+                                onClick={() => handleResetUserPassword(u)}
+                                className="inline-flex items-center gap-1 text-[11px] font-semibold px-2 py-1 rounded-md border border-[#D9D1C5] bg-white text-[#444] hover:bg-[#FAF8F5] cursor-pointer"
+                              >
+                                <KeyRound className="w-3 h-3" /> Nova senha
+                              </button>
+                            </div>
+                          ) : (
+                            <span className="text-[10px] text-[#999]">
+                              {u.id === currentUser.id ? "A sua conta" : "Gerida pela equipa de TI"}
+                            </span>
+                          )}
                         </td>
                         <td className="px-5 py-3.5 text-right font-mono text-[10px] text-[#888]">
                           {u.id}
@@ -5739,7 +6141,7 @@ PCN Advogadas · Plataforma Forense`;
                     onChange={(e) =>
                       setNewUserForm({
                         ...newUserForm,
-                        role: e.target.value as "admin_lawyer" | "lawyer",
+                        role: e.target.value as "master" | "admin_lawyer" | "lawyer",
                       })
                     }
                     className="w-full text-xs bg-[#FAF8F5] border border-[#D9D1C5] rounded-md px-3 py-2 text-[#222] focus:outline-none focus:ring-1 focus:ring-[#92006F]"
@@ -5748,6 +6150,7 @@ PCN Advogadas · Plataforma Forense`;
                     <option value="admin_lawyer">
                       Direção / Administradora (Acesso Total, Honorários e Gestão de Utilizadoras)
                     </option>
+                    {isMaster && <option value="master">Master (TI) — acesso total ao sistema</option>}
                   </select>
                 </div>
 
@@ -5867,7 +6270,7 @@ PCN Advogadas · Plataforma Forense`;
                   <div>
                     <div className="flex items-center justify-between mb-1">
                       <label className="font-bold text-[#333]">Categoria de Serviço *</label>
-                      {currentUser.role === "admin_lawyer" && (
+                      {isAdmin && (
                         <button
                           type="button"
                           onClick={() => {
@@ -5933,7 +6336,7 @@ PCN Advogadas · Plataforma Forense`;
                         .filter((u: any) => u.is_active !== false)
                         .map((u: any) => (
                           <option key={u.id} value={u.id}>
-                            {u.name} ({u.role === "admin_lawyer" ? "Direção / Admin" : "Advogada"})
+                            {u.name} ({ROLE_LABELS[u.role] || "Advogada"})
                           </option>
                         ))}
                     </select>
@@ -6088,11 +6491,10 @@ PCN Advogadas · Plataforma Forense`;
         <nav className="lg:hidden fixed bottom-0 left-0 right-0 z-40 bg-white/95 backdrop-blur-md border-t border-[#ECE6DB] flex items-center justify-around py-1.5 px-1 shadow-[0_-4px_12px_rgba(0,0,0,0.05)]">
           <button
             onClick={() => switchTab("dashboard")}
-            className={`flex flex-col items-center justify-center py-1 px-2.5 rounded-lg text-[10px] font-medium transition-colors cursor-pointer ${
-              activeTab === "dashboard"
+            className={`flex flex-col items-center justify-center py-1 px-2.5 rounded-lg text-[10px] font-medium transition-colors cursor-pointer ${activeTab === "dashboard"
                 ? "text-[#92006F] font-bold"
                 : "text-[#666] hover:text-[#111]"
-            }`}
+              }`}
           >
             <LayoutDashboard className="w-4 h-4 mb-0.5" />
             <span>Painel</span>
@@ -6100,11 +6502,10 @@ PCN Advogadas · Plataforma Forense`;
 
           <button
             onClick={() => switchTab("tasks")}
-            className={`flex flex-col items-center justify-center py-1 px-2.5 rounded-lg text-[10px] font-medium transition-colors cursor-pointer ${
-              activeTab === "tasks"
+            className={`flex flex-col items-center justify-center py-1 px-2.5 rounded-lg text-[10px] font-medium transition-colors cursor-pointer ${activeTab === "tasks"
                 ? "text-[#92006F] font-bold"
                 : "text-[#666] hover:text-[#111]"
-            }`}
+              }`}
           >
             <Kanban className="w-4 h-4 mb-0.5" />
             <span>Tarefas</span>
@@ -6112,11 +6513,10 @@ PCN Advogadas · Plataforma Forense`;
 
           <button
             onClick={() => switchTab("archived")}
-            className={`flex flex-col items-center justify-center py-1 px-2.5 rounded-lg text-[10px] font-medium transition-colors cursor-pointer relative ${
-              activeTab === "archived"
+            className={`flex flex-col items-center justify-center py-1 px-2.5 rounded-lg text-[10px] font-medium transition-colors cursor-pointer relative ${activeTab === "archived"
                 ? "text-[#92006F] font-bold"
                 : "text-[#666] hover:text-[#111]"
-            }`}
+              }`}
           >
             <Archive className="w-4 h-4 mb-0.5" />
             <span>Arquivo</span>
@@ -6127,11 +6527,10 @@ PCN Advogadas · Plataforma Forense`;
 
           <button
             onClick={() => switchTab("calendar")}
-            className={`flex flex-col items-center justify-center py-1 px-2.5 rounded-lg text-[10px] font-medium transition-colors cursor-pointer ${
-              activeTab === "calendar"
+            className={`flex flex-col items-center justify-center py-1 px-2.5 rounded-lg text-[10px] font-medium transition-colors cursor-pointer ${activeTab === "calendar"
                 ? "text-[#92006F] font-bold"
                 : "text-[#666] hover:text-[#111]"
-            }`}
+              }`}
           >
             <Scale className="w-4 h-4 mb-0.5" />
             <span>Prazos</span>
@@ -6200,7 +6599,7 @@ PCN Advogadas · Plataforma Forense`;
                       .filter((u: any) => u.is_active !== false)
                       .map((u: any) => (
                         <option key={u.id} value={u.id}>
-                          {u.name} ({u.role === "admin_lawyer" ? "Direção / Admin" : "Advogada"})
+                          {u.name} ({ROLE_LABELS[u.role] || "Advogada"})
                         </option>
                       ))}
                   </select>
@@ -6247,8 +6646,8 @@ PCN Advogadas · Plataforma Forense`;
                         Math.max(
                           0,
                           (Number(detailsForm.duration_hours) || 0) * 3600 +
-                            (Number(detailsForm.duration_minutes) || 0) * 60 +
-                            (Number(detailsForm.duration_seconds) || 0)
+                          (Number(detailsForm.duration_minutes) || 0) * 60 +
+                          (Number(detailsForm.duration_seconds) || 0)
                         )
                       )}
                     </strong>
@@ -6358,18 +6757,20 @@ PCN Advogadas · Plataforma Forense`;
                 </div>
 
                 <div className="pt-3 sm:pt-4 border-t border-[#EFE8DD] flex items-center justify-between gap-2 shrink-0">
-                  <button
-                    type="button"
-                    onClick={() => {
-                      const t = selectedTaskForDetails;
-                      setSelectedTaskForDetails(null);
-                      confirmDeleteTask(t);
-                    }}
-                    className="text-rose-600 hover:text-rose-700 hover:bg-rose-50 px-3 py-2 rounded-md font-semibold text-xs flex items-center gap-1.5 transition-colors cursor-pointer"
-                  >
-                    <Trash2 className="w-3.5 h-3.5" />
-                    <span>Eliminar Tarefa</span>
-                  </button>
+                  <>{isAdmin && (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        const t = selectedTaskForDetails;
+                        setSelectedTaskForDetails(null);
+                        confirmDeleteTask(t);
+                      }}
+                      className="text-rose-600 hover:text-rose-700 hover:bg-rose-50 px-3 py-2 rounded-md font-semibold text-xs flex items-center gap-1.5 transition-colors cursor-pointer"
+                    >
+                      <Trash2 className="w-3.5 h-3.5" />
+                      <span>Eliminar Tarefa</span>
+                    </button>
+                  )}</>
 
                   <div className="flex items-center gap-2">
                     <button
@@ -6490,7 +6891,7 @@ PCN Advogadas · Plataforma Forense`;
                     <strong className="font-mono text-sm text-[#92006F]">
                       {formatSeconds(
                         tasks.find((t) => t.id === overtimeAlert.task.id)?.total_duration_seconds ??
-                          overtimeAlert.task.total_duration_seconds
+                        overtimeAlert.task.total_duration_seconds
                       )}
                     </strong>
                   </div>

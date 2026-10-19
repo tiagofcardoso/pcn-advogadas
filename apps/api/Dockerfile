@@ -14,4 +14,7 @@ COPY --from=builder /wheels /wheels
 RUN pip install --no-cache-dir /wheels/* && rm -rf /wheels
 USER app
 EXPOSE 8000
-CMD ["sh", "-c", "uvicorn pcn.main:app --host 0.0.0.0 --port ${PORT:-8000} --proxy-headers --forwarded-allow-ips '*'"]
+# Only trust X-Forwarded-For from the platform proxy, otherwise clients can spoof their IP
+# and bypass the per-IP rate limit. Set FORWARDED_ALLOW_IPS to the proxy address/range.
+ENV FORWARDED_ALLOW_IPS=127.0.0.1
+CMD ["sh", "-c", "uvicorn pcn.main:app --host 0.0.0.0 --port ${PORT:-8000} --proxy-headers --forwarded-allow-ips \"$FORWARDED_ALLOW_IPS\""]

@@ -1,8 +1,10 @@
-"""System management endpoints."""
+"""System management endpoints (never exposed in production)."""
+
+from typing import Annotated
 
 from fastapi import APIRouter, Depends
 
-from pcn.api.deps import get_current_user
+from pcn.api.deps import require_master
 from pcn.models.user import User
 from pcn.seed import clear_demo_data
 
@@ -11,9 +13,9 @@ router = APIRouter(prefix="/system", tags=["Sistema"])
 
 @router.post("/clear-demo-data")
 async def clear_database_demo_data(
-    current_user: User = Depends(get_current_user),
+    _master: Annotated[User, Depends(require_master)],
 ) -> dict[str, str]:
-    """Elimina tarefas, clientes e notas de demonstração, deixando o quadro limpo para uso real."""
+    """Elimina tarefas, clientes e notas de demonstração (apenas fora de produção, apenas TI)."""
     await clear_demo_data()
     return {
         "status": "success",

@@ -8,7 +8,8 @@ from sqlalchemy import delete, select, text
 
 import pcn.models
 from pcn.core.database import get_session_factory
-from pcn.core.security import hash_password
+from pcn.core.config import get_settings
+from pcn.core.security import hash_password, verify_password
 from pcn.domain.enums import FeeNoteStatus, TaskStatus, UserRole
 from pcn.models import (
     AuditLog,
@@ -23,6 +24,9 @@ from pcn.models import (
     TaskType,
     User,
 )
+
+
+INITIAL_PASSWORD = "Advogada2026!"  # noqa: S105 - intentional onboarding password, forced change on first login
 
 
 async def clear_demo_data() -> None:
@@ -70,29 +74,46 @@ async def run_seed(include_demo_data: bool = False) -> None:
             existing = await session.execute(select(User).where(User.email == email))
             u = existing.scalar_one_or_none()
             if not u:
+                # Shared initial password on purpose (onboarding); it can only be used
+                # to reach the "change password + enable 2FA" screens.
                 u = User(
                     id=uid,
                     name=name,
                     email=email,
-                    password_hash=hash_password("Advogada2026!"),
+                    password_hash=hash_password(INITIAL_PASSWORD),
                     role=role,
-                    must_change_password=False,
+                    must_change_password=True,
                     is_totp_enabled=False,
                     is_active=True,
                 )
                 session.add(u)
-            else:
-                u.is_active = True
-                u.must_change_password = False
-                u.failed_login_attempts = 0
-                u.locked_until = None
+            elif not u.must_change_password:
+                # Migration for accounts created by older versions of this seed, which
+                # skipped the mandatory change. Untouched once the owner sets a real password.
+                still_initial, _ = verify_password(INITIAL_PASSWORD, u.password_hash)
+                if still_initial:
+                    u.must_change_password = True
             created_users[uid] = u
 
-        # Garantir que todas as contas existentes na base de dados estão desbloqueadas
-        all_users_res = await session.execute(select(User))
-        for existing_user in all_users_res.scalars().all():
-            existing_user.failed_login_attempts = 0
-            existing_user.locked_until = None
+        # IT accounts listed in MASTER_EMAILS: created on first boot (same onboarding rules as
+        # the lawyers) or promoted if they already exist. Never demoted automatically.
+        for master_email in get_settings().MASTER_EMAILS:
+            res = await session.execute(select(User).where(User.email == master_email))
+            master = res.scalar_one_or_none()
+            if not master:
+                session.add(
+                    User(
+                        name="Tiago (TI)",
+                        email=master_email,
+                        password_hash=hash_password(INITIAL_PASSWORD),
+                        role=UserRole.MASTER,
+                        must_change_password=True,
+                        is_totp_enabled=False,
+                        is_active=True,
+                    )
+                )
+            elif master.role != UserRole.MASTER:
+                master.role = UserRole.MASTER
 
         # 2. Tipos de Tarefa / Categorias de Serviço Oficiais do Escritório (com Valor/Hora €/h)
         types_data = [

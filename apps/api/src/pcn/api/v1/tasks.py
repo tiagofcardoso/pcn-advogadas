@@ -5,7 +5,7 @@ from typing import Annotated
 from fastapi import APIRouter, Depends, Query, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from pcn.api.deps import require_admin, require_full_access
+from pcn.api.deps import is_admin, require_admin, require_full_access
 from pcn.core.database import get_session
 from pcn.core.errors import NotFound
 from pcn.domain.enums import TaskStatus
@@ -68,7 +68,7 @@ async def get_boards_summary(
     session: Annotated[AsyncSession, Depends(get_session)],
 ) -> BoardSummaryResponse:
     repo = TaskRepository(session)
-    lawyer_filter = None if user.role.value == "admin_lawyer" else user.id
+    lawyer_filter = None if is_admin(user) else user.id
     counts = await repo.count_by_status(lawyer_filter)
     return BoardSummaryResponse(
         backlog_count=counts.get(TaskStatus.BACKLOG, 0),
@@ -175,7 +175,7 @@ async def assign_task(
 @router.post("/{task_id}/archive", response_model=TaskRead)
 async def archive_task(
     task_id: str,
-    user: Annotated[User, Depends(require_full_access)],
+    user: Annotated[User, Depends(require_admin)],
     session: Annotated[AsyncSession, Depends(get_session)],
 ) -> TaskRead:
     """Move completed task to archived."""
@@ -187,7 +187,7 @@ async def archive_task(
 @router.post("/{task_id}/restore", response_model=TaskRead)
 async def restore_task(
     task_id: str,
-    user: Annotated[User, Depends(require_full_access)],
+    user: Annotated[User, Depends(require_admin)],
     session: Annotated[AsyncSession, Depends(get_session)],
 ) -> TaskRead:
     """Restore an archived task back to completed."""
@@ -199,7 +199,7 @@ async def restore_task(
 @router.delete("/{task_id}", status_code=status.HTTP_204_NO_CONTENT)
 async def delete_task(
     task_id: str,
-    user: Annotated[User, Depends(require_full_access)],
+    user: Annotated[User, Depends(require_admin)],
     session: Annotated[AsyncSession, Depends(get_session)],
 ) -> None:
     """Permanently delete a task."""
@@ -212,10 +212,14 @@ async def notify_task_overtime(
     task_id: str,
     user: Annotated[User, Depends(require_full_access)],
     session: Annotated[AsyncSession, Depends(get_session)],
-    duration_seconds: int | None = None,
-    recipient_email: str | None = None,
+    duration_seconds: int | None = Query(None, ge=0, le=60 * 60 * 24 * 30),
+    recipient_email: str | None = None,  # ignored, see docstring
 ) -> dict[str, object]:
-    """Dispara alerta de email e registo de auditoria quando a tarefa atinge 1 hora em andamento."""
+    """Dispara alerta de email e registo de auditoria quando a tarefa atinge 1 hora em andamento.
+
+    `recipient_email` is accepted for backwards compatibility but ignored: recipients are
+    always derived server-side (responsible lawyer + Direção), never chosen by the caller.
+    """
     from pcn.services.email_service import EmailNotificationService
 
     email_svc = EmailNotificationService(session)
@@ -223,6 +227,5 @@ async def notify_task_overtime(
         actor=user,
         task_id=task_id,
         duration_seconds=duration_seconds,
-        recipient_email=recipient_email,
     )
 

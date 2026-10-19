@@ -1,6 +1,7 @@
 """Email notification service for task overtime (1h+) and deadline alerts."""
 
 import asyncio
+import html
 import json
 import logging
 import smtplib
@@ -11,11 +12,12 @@ from typing import Any
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from pcn.core.config import Settings, get_settings
-from pcn.core.errors import NotFound
-from pcn.domain.enums import AuditAction
+from pcn.core.errors import NotFound, PermissionDenied
+from pcn.domain.enums import ADMIN_ROLES, AuditAction
 from pcn.models.audit_log import AuditLog
 from pcn.models.user import User
 from pcn.repositories.task_repository import TaskRepository
+from pcn.repositories.user_repository import UserRepository
 
 logger = logging.getLogger("pcn")
 
@@ -66,26 +68,30 @@ class EmailNotificationService:
         actor: User,
         task_id: str,
         duration_seconds: int | None = None,
-        recipient_email: str | None = None,
     ) -> dict[str, Any]:
         task = await self.task_repo.get_by_id_with_relations(task_id)
         if not task:
             raise NotFound("Tarefa não encontrada.")
+        if actor.role not in ADMIN_ROLES and task.assigned_to != actor.id:
+            raise PermissionDenied("Só pode emitir alertas das tarefas atribuídas a si.")
 
         effective_seconds = duration_seconds if duration_seconds is not None else task.total_duration_seconds
         formatted_duration = _format_hms(max(effective_seconds, 3600))
         hours_reached = max(1, effective_seconds // 3600)
 
+        # Recipients are derived server-side only: responsible lawyer, the actor and Direção.
         recipients: list[str] = []
-        if recipient_email and recipient_email.strip():
-            recipients.append(recipient_email.strip())
-        if actor.email and actor.email not in recipients:
-            recipients.append(actor.email)
-        if task.assignee and task.assignee.email and task.assignee.email not in recipients:
-            recipients.append(task.assignee.email)
+        candidates = [task.assignee.email if task.assignee else None, actor.email]
+        candidates += [u.email for u in await UserRepository(self.session).list_active_lawyers()
+                       if u.role in ADMIN_ROLES]
+        for email in candidates:
+            if email and email not in recipients:
+                recipients.append(email)
 
-        client_name = task.client.name if task.client else "Cliente"
-        lawyer_name = task.assignee.name if task.assignee else actor.name
+        # Every user-controlled value is escaped before going into the HTML body.
+        title_html = html.escape(task.title or "")
+        client_name = html.escape(task.client.name) if task.client else "Cliente"
+        lawyer_name = html.escape(task.assignee.name if task.assignee else actor.name)
         due_str = task.due_date.strftime("%d/%m/%Y") if task.due_date else "Sem prazo fixado"
 
         subject = f"[PCN Advogadas] Alerta de Tarefa em Andamento ({hours_reached}h+) — {task.title}"
@@ -108,7 +114,7 @@ class EmailNotificationService:
           <div style="padding: 20px 24px; background: #FAF8F5; color: #222222; font-size: 14px; line-height: 1.6;">
             <p>A seguinte tarefa atingiu <strong>{hours_reached} hora(s)</strong> em andamento:</p>
             <table style="width: 100%; border-collapse: collapse; background: #FFFFFF; border: 1px solid #E5DECF; border-radius: 6px;">
-              <tr><td style="padding: 8px 12px; color: #666;">Tarefa:</td><td style="padding: 8px 12px; font-weight: bold;">{task.title}</td></tr>
+              <tr><td style="padding: 8px 12px; color: #666;">Tarefa:</td><td style="padding: 8px 12px; font-weight: bold;">{title_html}</td></tr>
               <tr><td style="padding: 8px 12px; color: #666;">Cliente:</td><td style="padding: 8px 12px; font-weight: bold;">{client_name}</td></tr>
               <tr><td style="padding: 8px 12px; color: #666;">Advogada:</td><td style="padding: 8px 12px;">{lawyer_name}</td></tr>
               <tr><td style="padding: 8px 12px; color: #666;">Tempo Acumulado:</td><td style="padding: 8px 12px; font-family: monospace; font-weight: bold; color: #92006F;">{formatted_duration}</td></tr>

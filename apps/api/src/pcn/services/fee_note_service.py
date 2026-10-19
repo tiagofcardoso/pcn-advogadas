@@ -8,7 +8,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from pcn.core.clock import system_clock
 from pcn.core.config import Settings, get_settings
 from pcn.core.errors import BusinessRuleViolation, NotFound, PermissionDenied
-from pcn.domain.enums import AuditAction, FeeNoteStatus, UserRole
+from pcn.domain.enums import ADMIN_ROLES, AuditAction, FeeNoteStatus, UserRole
 from pcn.domain.fees import compute_totals
 from pcn.exporters.fee_note_xlsx import FeeNoteExcelBuilder
 from pcn.models.audit_log import AuditLog
@@ -32,6 +32,8 @@ class FeeNoteService:
     def _verify_admin(self, user: User) -> None:
         if not user or not user.is_active:
             raise PermissionDenied("Utilizador não autenticado.")
+        if user.role not in ADMIN_ROLES:
+            raise PermissionDenied("Notas de honorários são exclusivas da Direção.")
 
     async def _audit(
         self, action: AuditAction, actor_id: str, note_id: str, meta: str | None = None
@@ -261,9 +263,6 @@ class FeeNoteService:
         if not fee_note:
             # Fallback: if note_id is a client_id or a default reference like NH-2026-0001, auto-create draft
             client = await self.client_repo.get_by_id_or_name(note_id)
-            if not client:
-                all_clients = await self.client_repo.list_all(limit=1)
-                client = all_clients[0] if all_clients else None
             if client:
                 fee_note = await self.create_draft(user, FeeNoteCreate(client_id=client.id))
 

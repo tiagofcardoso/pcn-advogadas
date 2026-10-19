@@ -46,6 +46,17 @@ async def update_user(
     return UserRead.model_validate(user)
 
 
+@router.post("/{user_id}/unlock", response_model=UserRead)
+async def unlock_user(
+    user_id: str,
+    admin: Annotated[User, Depends(require_admin)],
+    session: Annotated[AsyncSession, Depends(get_session)],
+) -> UserRead:
+    """Desbloqueia uma conta bloqueada por tentativas de login falhadas."""
+    user = await UserService(session).unlock_user(admin, user_id)
+    return UserRead.model_validate(user)
+
+
 @router.post("/{user_id}/reset-password", response_model=dict[str, str])
 async def reset_password(
     user_id: str,

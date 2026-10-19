@@ -43,7 +43,7 @@ async def list_clients(
 @router.post("/clients", response_model=ClientRead, status_code=status.HTTP_201_CREATED)
 async def create_client(
     body: ClientCreate,
-    user: Annotated[User, Depends(require_full_access)],
+    user: Annotated[User, Depends(require_admin)],
     session: Annotated[AsyncSession, Depends(get_session)],
 ) -> ClientRead:
     repo = ClientRepository(session)
@@ -82,7 +82,7 @@ async def get_client(
 async def update_client(
     client_id: str,
     body: ClientUpdate,
-    user: Annotated[User, Depends(require_full_access)],
+    user: Annotated[User, Depends(require_admin)],
     session: Annotated[AsyncSession, Depends(get_session)],
 ) -> ClientRead:
     repo = ClientRepository(session)

@@ -4,8 +4,12 @@ from enum import StrEnum
 
 
 class UserRole(StrEnum):
+    MASTER = "master"  # IT / system owner: full access, manages admins
     ADMIN = "admin_lawyer"
     LAWYER = "lawyer"
+
+
+ADMIN_ROLES: frozenset["UserRole"] = frozenset({UserRole.MASTER, UserRole.ADMIN})
 
 
 class TaskStatus(StrEnum):
@@ -48,6 +52,11 @@ class AuditAction(StrEnum):
     USER_UPDATED = "user.updated"
     USER_PASSWORD_RESET = "user.password_reset"
     USER_MFA_RESET = "user.mfa_reset"
+    USER_UNLOCKED = "user.unlocked"
+    USER_SUSPENDED = "user.suspended"
+    USER_REACTIVATED = "user.reactivated"
+    USER_ROLE_CHANGED = "user.role_changed"
+    LOGOUT = "auth.logout"
     TASK_TRANSITION = "task.transition"
     SESSION_CORRECTED = "time_session.corrected"
     FEE_NOTE_ISSUED = "fee_note.issued"

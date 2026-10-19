@@ -6,7 +6,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from pcn.core.clock import system_clock
 from pcn.core.errors import Conflict, NotFound, PermissionDenied
-from pcn.domain.enums import AuditAction, TaskAction, TaskStatus, UserRole
+from pcn.domain.enums import ADMIN_ROLES, AuditAction, TaskAction, TaskStatus
 from pcn.domain.task_state import next_status
 from pcn.models.audit_log import AuditLog
 from pcn.models.task import Task
@@ -19,6 +19,11 @@ from pcn.repositories.user_repository import UserRepository
 from pcn.schemas.task import TaskCreate, TaskUpdate, TimerSyncItem
 from pcn.schemas.time_session import ActiveTimerResponse
 
+# States a lawyer may move her own task into (no archive/backlog/pool).
+_LAWYER_STATUSES = frozenset(
+    {TaskStatus.ASSIGNED, TaskStatus.IN_PROGRESS, TaskStatus.PAUSED, TaskStatus.COMPLETED}
+)
+
 
 class TaskService:
     def __init__(self, session: AsyncSession) -> None:
@@ -28,6 +33,19 @@ class TaskService:
         self.task_type_repo = TaskTypeRepository(session)
         self.session_repo = TimeSessionRepository(session)
         self.user_repo = UserRepository(session)
+
+    @staticmethod
+    def _ensure_owner_or_admin(user: User, task: Task) -> None:
+        """Lawyers only work on tasks assigned to them; Direção/Master on any task."""
+        if user.role in ADMIN_ROLES:
+            return
+        if task.assigned_to != user.id:
+            raise PermissionDenied("Só pode trabalhar nas tarefas atribuídas a si.")
+
+    @staticmethod
+    def _ensure_admin(user: User) -> None:
+        if user.role not in ADMIN_ROLES:
+            raise PermissionDenied("Ação reservada à Direção do escritório.")
 
     async def _audit(
         self, action: AuditAction, actor_id: str, task_id: str, meta: str | None = None
@@ -106,9 +124,15 @@ class TaskService:
         if not task:
             raise NotFound("Tarefa não encontrada.")
 
-        # Lawyers can only update tasks assigned to them (and cannot change fee_amount)
-        if user.role != UserRole.ADMIN and task.assigned_to != user.id:
-            raise PermissionDenied("Não tem permissão para editar esta tarefa.")
+        # Lawyers can only update tasks assigned to them, and only the working fields.
+        self._ensure_owner_or_admin(user, task)
+        if user.role not in ADMIN_ROLES:
+            if data.client_id is not None and data.client_id != task.client_id:
+                raise PermissionDenied("Apenas a Direção pode mudar o cliente da tarefa.")
+            if data.task_type_id is not None and data.task_type_id != task.task_type_id:
+                raise PermissionDenied("Apenas a Direção pode mudar o tipo de serviço.")
+            if data.status is not None and data.status not in _LAWYER_STATUSES:
+                raise PermissionDenied("Apenas a Direção pode mover a tarefa para este estado.")
 
         previous_status = task.status
 
@@ -151,7 +175,7 @@ class TaskService:
                 task.completed_at = now
 
         # Fee amount can only be edited by Admin/Patrícia
-        if data.fee_amount is not None and user.role == UserRole.ADMIN:
+        if data.fee_amount is not None and user.role in ADMIN_ROLES:
             task.fee_amount = float(data.fee_amount)
 
         await self.session.commit()
@@ -250,6 +274,7 @@ class TaskService:
         task = await self.task_repo.get_by_id_for_update(task_id)
         if not task:
             raise NotFound("Tarefa não encontrada.")
+        self._ensure_owner_or_admin(user, task)
 
         # Close any existing open session on this same task before starting a fresh one
         await self._close_active_session_for_task(task, now)
@@ -284,6 +309,7 @@ class TaskService:
         task = await self.task_repo.get_by_id_for_update(task_id)
         if not task:
             raise NotFound("Tarefa não encontrada.")
+        self._ensure_owner_or_admin(user, task)
 
         if task.status == TaskStatus.IN_PROGRESS:
             task.status = next_status(task.status, TaskAction.PAUSE)
@@ -307,6 +333,7 @@ class TaskService:
         task = await self.task_repo.get_by_id_for_update(task_id)
         if not task:
             raise NotFound("Tarefa não encontrada.")
+        self._ensure_owner_or_admin(user, task)
 
         if task.status != TaskStatus.COMPLETED:
             task.status = next_status(task.status, TaskAction.COMPLETE)
@@ -327,6 +354,8 @@ class TaskService:
         for item in items:
             task = await self.task_repo.get_by_id_for_update(item.task_id)
             if not task:
+                continue
+            if user.role not in ADMIN_ROLES and task.assigned_to != user.id:
                 continue
             if item.total_duration_seconds > (task.total_duration_seconds or 0):
                 delta = item.total_duration_seconds - (task.total_duration_seconds or 0)
@@ -358,6 +387,7 @@ class TaskService:
 
     async def archive_task(self, user: User, task_id: str) -> Task:
         """Archives a completed task so it leaves the active board."""
+        self._ensure_admin(user)
         task = await self.task_repo.get_by_id_for_update(task_id)
         if not task:
             raise NotFound("Tarefa não encontrada.")
@@ -368,6 +398,7 @@ class TaskService:
 
     async def restore_task(self, user: User, task_id: str) -> Task:
         """Restores an archived task back to completed."""
+        self._ensure_admin(user)
         task = await self.task_repo.get_by_id_for_update(task_id)
         if not task:
             raise NotFound("Tarefa não encontrada.")
@@ -378,6 +409,7 @@ class TaskService:
 
     async def delete_task(self, user: User, task_id: str) -> bool:
         """Deletes a task permanently with audit log."""
+        self._ensure_admin(user)
         task = await self.task_repo.get_by_id_for_update(task_id)
         if not task:
             raise NotFound("Tarefa não encontrada.")

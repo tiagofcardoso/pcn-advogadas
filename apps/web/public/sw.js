@@ -1,5 +1,5 @@
 // Service Worker para PCN Advogadas PWA
-const CACHE_NAME = "pcn-advogadas-v2";
+const CACHE_NAME = "pcn-advogadas-v3";
 const STATIC_ASSETS = [
   "/",
   "/manifest.json",
@@ -40,10 +40,19 @@ self.addEventListener("activate", (event) => {
 
 // Network-first strategy to prevent serving stale application code
 self.addEventListener("fetch", (event) => {
-  if (event.request.url.includes("/api/")) {
+  // Only same-origin static GETs are cached. API calls (often on another domain) and any
+  // authenticated/third-party response must never land in the offline cache.
+  const url = new URL(event.request.url);
+  if (
+    event.request.method !== "GET" ||
+    url.origin !== self.location.origin ||
+    url.pathname.startsWith("/api/") ||
+    event.request.headers.has("authorization")
+  ) {
     return;
   }
-  
+
+
   event.respondWith(
     fetch(event.request)
       .then((response) => {

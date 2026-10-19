@@ -31,6 +31,7 @@ _password_hash = PasswordHash((Argon2Hasher(),))
 _DUMMY_HASH = _password_hash.hash(secrets.token_urlsafe(32))
 
 PASSWORD_MIN_LENGTH = 12
+PASSWORD_MAX_LENGTH = 128
 _PASSWORD_RULES: tuple[tuple[re.Pattern[str], str], ...] = (
     (re.compile(r"[a-z]"), "lowercase letter"),
     (re.compile(r"[A-Z]"), "uppercase letter"),
@@ -55,10 +56,10 @@ def burn_password_check(password: str) -> None:
 
 def validate_password_policy(password: str) -> None:
     missing = [label for pattern, label in _PASSWORD_RULES if not pattern.search(password)]
-    if len(password) < PASSWORD_MIN_LENGTH or missing:
+    if len(password) < PASSWORD_MIN_LENGTH or len(password) > PASSWORD_MAX_LENGTH or missing:
         raise BusinessRuleViolation(
-            f"Password must have at least {PASSWORD_MIN_LENGTH} characters and include "
-            "lowercase, uppercase, digit and symbol.",
+            f"A palavra-passe deve ter entre {PASSWORD_MIN_LENGTH} e {PASSWORD_MAX_LENGTH} "
+            "caracteres e incluir minúsculas, maiúsculas, algarismos e símbolos.",
             code="weak_password",
             details={"missing": missing, "min_length": PASSWORD_MIN_LENGTH},
         )
@@ -169,13 +170,8 @@ class TotpService:
     """TOTP with secrets encrypted at rest (Fernet) and replay protection via last-used step."""
 
     def __init__(self, settings: Settings) -> None:
-        raw_key = settings.TOTP_ENCRYPTION_KEY.get_secret_value().encode("utf-8")
-        try:
-            self._fernet = Fernet(raw_key)
-        except (ValueError, TypeError):
-            # Fallback: derive a safe 32-byte URL-safe base64 Fernet key deterministically
-            derived_key = base64.urlsafe_b64encode(hashlib.sha256(raw_key).digest())
-            self._fernet = Fernet(derived_key)
+        # Key format is validated at boot (Settings); no weak derived fallback.
+        self._fernet = Fernet(settings.TOTP_ENCRYPTION_KEY.get_secret_value().encode("utf-8"))
         self._issuer = settings.TOTP_ISSUER
 
     @staticmethod

@@ -6,7 +6,7 @@ from typing import Annotated
 from fastapi import APIRouter, Depends, Query, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from pcn.api.deps import require_full_access
+from pcn.api.deps import is_admin, require_full_access
 from pcn.core.database import get_session
 from pcn.models.user import User
 from pcn.schemas.event import (
@@ -41,7 +41,7 @@ async def list_events(
     end_time: datetime = Query(..., description="Fim do intervalo (ISO-8601)"),
 ) -> list[EventRead]:
     svc = DeadlineService(session)
-    owner_filter = None if user.role.value == "admin_lawyer" else user.id
+    owner_filter = None if is_admin(user) else user.id
     events = await svc.list_events_for_range(start_time, end_time, owner_filter)
     return [EventRead.model_validate(e) for e in events]
 

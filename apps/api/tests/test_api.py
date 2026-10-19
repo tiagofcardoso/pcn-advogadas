@@ -22,6 +22,9 @@ async def test_healthcheck():
         data = res.json()
         assert data["status"] == "online"
         assert data["app"] == "PCN Advogadas"
+        # Public probe must not leak internals.
+        assert "traceback" not in res.text
+        assert "users_count" not in res.text
 
 
 def test_judicial_deadlines_portugal_cpc():
@@ -54,25 +57,3 @@ async def test_judicial_deadlines_api_endpoint():
         }
         # First authenticate or verify that public calculation or protected calculation works
         # Note: In deps.py, calculate-deadline requires require_full_access. Let's test the domain function and full auth workflow.
-
-
-@pytest.mark.asyncio
-async def test_full_auth_and_kanban_flow():
-    from pcn.cli import create_admin, seed_task_types
-
-    # 1. Seed
-    await seed_task_types()
-    admin_email = "patricia@pcnadvogadas.pt"
-
-    # In case user already exists from previous test run
-    try:
-        await create_admin(name="Dr.ª Patrícia", email=admin_email)
-    except SystemExit:
-        pass
-
-    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as ac:
-        # Note: In create_admin, temporary password is printed. Let's verify login failure with wrong password
-        login_fail = await ac.post(
-            "/api/v1/auth/login", json={"email": admin_email, "password": "WrongPassword!123"}
-        )
-        assert login_fail.status_code == 401

@@ -53,6 +53,17 @@ export async function apiFetch<T>(endpoint: string, options: RequestOptions = {}
 
   if (!res.ok) {
     const errorBody = await res.json().catch(() => ({}));
+    // Token from before the mandatory password/2FA setup: send the user back to login.
+    if (res.status === 403 && errorBody.code === "setup_required" && typeof window !== "undefined") {
+      localStorage.removeItem("pcn_session_token");
+      localStorage.removeItem("pcn_session_expiry");
+      localStorage.removeItem("pcn_session_user");
+      window.dispatchEvent(
+        new CustomEvent("pcn_session_expired", {
+          detail: "Por segurança, conclua a configuração da conta (nova palavra-passe e 2FA). Inicie sessão novamente.",
+        })
+      );
+    }
     throw new Error(errorBody.message || errorBody.detail || `Erro ${res.status}: ${res.statusText}`);
   }
 
@@ -68,6 +79,28 @@ export async function loginApi(email: string, password: string) {
   return apiFetch<any>("/auth/login", {
     method: "POST",
     body: JSON.stringify({ email: email.trim(), password }),
+  });
+}
+
+export async function verifyMfaLoginApi(mfaToken: string, code: string) {
+  return apiFetch<any>("/auth/2fa/verify-login", {
+    method: "POST",
+    body: JSON.stringify({ mfa_token: mfaToken, code: code.trim() }),
+  });
+}
+
+export async function setup2faApi(token: string) {
+  return apiFetch<{ secret: string; qr_svg_data_uri: string }>("/auth/2fa/setup", {
+    method: "POST",
+    token,
+  });
+}
+
+export async function verify2faApi(token: string, code: string) {
+  return apiFetch<any>("/auth/2fa/verify", {
+    method: "POST",
+    token,
+    body: JSON.stringify({ code: code.trim() }),
   });
 }
 
@@ -224,7 +257,7 @@ export async function notifyTaskOvertimeApi(
 ) {
   const params = new URLSearchParams();
   if (durationSeconds !== undefined) params.set("duration_seconds", String(durationSeconds));
-  if (recipientEmail) params.set("recipient_email", recipientEmail);
+  void recipientEmail; // ignored: the server decides who receives the alert
   const qs = params.toString() ? `?${params.toString()}` : "";
   return apiFetch<any>(`/tasks/${taskId}/notify-overtime${qs}`, {
     method: "POST",
@@ -427,6 +460,21 @@ export async function createUserApi(
     method: "POST",
     token,
     body: JSON.stringify(payload),
+  });
+}
+
+export async function unlockUserApi(token: string, userId: string) {
+  return apiFetch<any>(`/users/${userId}/unlock`, { method: "POST", token });
+}
+
+export async function resetUserMfaApi(token: string, userId: string) {
+  return apiFetch<any>(`/users/${userId}/reset-mfa`, { method: "POST", token });
+}
+
+export async function resetUserPasswordApi(token: string, userId: string) {
+  return apiFetch<{ temporary_password: string }>(`/users/${userId}/reset-password`, {
+    method: "POST",
+    token,
   });
 }
 

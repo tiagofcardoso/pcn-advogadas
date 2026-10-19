@@ -11,6 +11,7 @@ from pcn.api.v1.system import router as system_router
 from pcn.api.v1.tasks import router as tasks_router
 from pcn.api.v1.timer import router as timer_router
 from pcn.api.v1.users import router as users_router
+from pcn.core.config import get_settings
 
 api_v1_router = APIRouter()
 api_v1_router.include_router(auth_router)
@@ -21,4 +22,5 @@ api_v1_router.include_router(timer_router)
 api_v1_router.include_router(fee_notes_router)
 api_v1_router.include_router(metrics_router)
 api_v1_router.include_router(agenda_router)
-api_v1_router.include_router(system_router)
+if not get_settings().is_production:
+    api_v1_router.include_router(system_router)
