@@ -45,7 +45,7 @@ class Settings(BaseSettings):
     TOTP_ENCRYPTION_KEY: SecretStr
     JWT_ALGORITHM: Literal["HS256", "HS384", "HS512"] = "HS256"
     JWT_ISSUER: str = "pcn-advogadas-api"
-    ACCESS_TOKEN_EXPIRE_MINUTES: int = Field(default=30, ge=1, le=60)
+    ACCESS_TOKEN_EXPIRE_MINUTES: int = Field(default=1440, ge=1, le=10080)
     REFRESH_TOKEN_EXPIRE_DAYS: int = Field(default=7, ge=1, le=30)
     MFA_TOKEN_EXPIRE_MINUTES: int = Field(default=5, ge=1, le=10)
     TOTP_ISSUER: str = "PCN Advogadas"

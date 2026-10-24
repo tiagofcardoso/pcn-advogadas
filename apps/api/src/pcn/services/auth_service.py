@@ -236,6 +236,15 @@ class AuthService:
             new_refresh,
         )
 
+    def issue_keepalive_token(self, user: User) -> RefreshResponse:
+        """Issues a fresh access token for an active authenticated session."""
+        now = system_clock.now()
+        new_access = self._access_token_for(user, now)
+        return RefreshResponse(
+            access_token=new_access,
+            expires_in=self.jwt.access_ttl_seconds,
+        )
+
     async def logout(self, raw_refresh_token: str | None, client_ip: str | None = None) -> None:
         """Revokes the server-side session (whole refresh family), not just the cookie."""
         if not raw_refresh_token:

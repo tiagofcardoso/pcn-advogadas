@@ -109,6 +109,15 @@ async def refresh_tokens(
     return refresh_resp
 
 
+@router.post("/keepalive", response_model=RefreshResponse)
+async def keepalive_token(
+    current_user: Annotated[User, Depends(get_current_user)],
+    session: Annotated[AsyncSession, Depends(get_session)],
+    settings: Annotated[Settings, Depends(get_settings)],
+) -> RefreshResponse:
+    return AuthService(session, settings).issue_keepalive_token(current_user)
+
+
 @router.post("/logout", status_code=status.HTTP_204_NO_CONTENT)
 async def logout(
     request: Request,

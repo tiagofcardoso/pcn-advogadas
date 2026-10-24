@@ -60,6 +60,7 @@ import { detectPlatform, PlatformInfo } from "@/lib/platform";
 import {
   loginApi,
   changePasswordApi,
+  keepaliveTokenApi,
   verifyMfaLoginApi,
   setup2faApi,
   verify2faApi,
@@ -686,7 +687,7 @@ export default function App() {
     }
   }, [clients]);
 
-  // ── AUTENTICAÇÃO E SESSÃO SEGURA (30 MINUTOS) ──
+  // ── AUTENTICAÇÃO E SESSÃO SEGURA (VÁLIDA ATÉ 1 HORA COM O ECRÃ FECHADO) ──
   const [loginEmail, setLoginEmail] = useState("");
   const [loginPassword, setLoginPassword] = useState("");
   const [isLoggingIn, setIsLoggingIn] = useState(false);
@@ -1083,7 +1084,7 @@ export default function App() {
 
   // Final step: session stored only after password + 2FA are done.
   const completeLogin = (token: string, userProfile: UserProfile) => {
-    const expiry = Date.now() + 30 * 60 * 1000; // 30 minutos exatos
+    const expiry = Date.now() + 60 * 60 * 1000; // 1 hora de tolerância com o ecrã fechado
     if (typeof window !== "undefined") {
       localStorage.setItem("pcn_session_token", token);
       localStorage.setItem("pcn_session_expiry", expiry.toString());
@@ -1258,7 +1259,7 @@ export default function App() {
     }
   };
 
-  // Restauração de Sessão no Mount (se ainda dentro dos 30 minutos)
+  // Restauração de Sessão no Mount (válida se o ecrã esteve fechado há menos de 1 hora)
   useEffect(() => {
     if (typeof window === "undefined") return;
     try {
@@ -1271,7 +1272,17 @@ export default function App() {
         if (Date.now() < expiryTime) {
           const profile = JSON.parse(savedUser);
           setAuthToken(savedToken);
-          setSessionExpiry(expiryTime);
+          const renewedExpiry = Date.now() + 60 * 60 * 1000;
+          localStorage.setItem("pcn_session_expiry", renewedExpiry.toString());
+          setSessionExpiry(renewedExpiry);
+          keepaliveTokenApi(savedToken)
+            .then((res) => {
+              if (res?.access_token) {
+                setAuthToken(res.access_token);
+                localStorage.setItem("pcn_session_token", res.access_token);
+              }
+            })
+            .catch(() => { });
           setCurrentUser(profile);
           setIsAuthenticated(true);
           setApiConnected(true);
@@ -1281,14 +1292,14 @@ export default function App() {
           localStorage.removeItem("pcn_session_expiry");
           localStorage.removeItem("pcn_session_user");
           setSessionNotice(
-            "A sua sessão anterior expirou após 30 minutos por motivos de segurança forense. Por favor, autentique-se novamente."
+            "A sua sessão anterior expirou porque a janela esteve fechada por mais de 1 hora. Por favor, autentique-se novamente."
           );
         }
       }
     } catch { }
   }, []);
 
-  // Monitorização em tempo real do limite de 30 minutos e 401s
+  // Monitorização em tempo real: sessão contínua com ecrã aberto; expira apenas após >1h com a janela fechada/oculta
   useEffect(() => {
     const handleExpiredEvent = (e: any) => {
       handleLogout(e.detail || "Sessão expirada. Por favor, autentique-se novamente.");
@@ -1296,6 +1307,65 @@ export default function App() {
     if (typeof window !== "undefined") {
       window.addEventListener("pcn_session_expired", handleExpiredEvent);
     }
+
+    const CLOSED_GRACE_MS = 60 * 60 * 1000; // 1 hora com a janela fechada
+
+    const checkOrSlideExpiry = () => {
+      const storedRaw = localStorage.getItem("pcn_session_expiry");
+      const effectiveExpiry = storedRaw ? parseInt(storedRaw, 10) : sessionExpiry;
+      if (effectiveExpiry && Date.now() >= effectiveExpiry) {
+        handleLogout(
+          "A sua sessão expirou porque a janela esteve fechada por mais de 1 hora. Por favor, inicie sessão novamente."
+        );
+        return false;
+      }
+      if (typeof document !== "undefined" && document.visibilityState !== "hidden") {
+        const nextExpiry = Date.now() + CLOSED_GRACE_MS;
+        localStorage.setItem("pcn_session_expiry", nextExpiry.toString());
+      }
+      return true;
+    };
+
+    const handleVisibilityOrClose = () => {
+      if (typeof document !== "undefined" && document.visibilityState === "hidden") {
+        const closeExpiry = Date.now() + CLOSED_GRACE_MS;
+        localStorage.setItem("pcn_session_expiry", closeExpiry.toString());
+      } else {
+        checkOrSlideExpiry();
+      }
+    };
+
+    const handleBeforeUnload = () => {
+      const closeExpiry = Date.now() + CLOSED_GRACE_MS;
+      localStorage.setItem("pcn_session_expiry", closeExpiry.toString());
+    };
+
+    if (isAuthenticated && sessionExpiry) {
+      window.addEventListener("visibilitychange", handleVisibilityOrClose);
+      window.addEventListener("focus", checkOrSlideExpiry);
+      window.addEventListener("pagehide", handleBeforeUnload);
+      window.addEventListener("beforeunload", handleBeforeUnload);
+    }
+
+    const keepaliveInterval =
+      isAuthenticated && sessionExpiry
+        ? setInterval(() => {
+            if (
+              authToken &&
+              typeof document !== "undefined" &&
+              document.visibilityState !== "hidden"
+            ) {
+              keepaliveTokenApi(authToken)
+                .then((res) => {
+                  if (res?.access_token) {
+                    setAuthToken(res.access_token);
+                    localStorage.setItem("pcn_session_token", res.access_token);
+                  }
+                })
+                .catch(() => { });
+            }
+          }, 15 * 60 * 1000)
+        : null;
 
     if (!isAuthenticated || !sessionExpiry) {
       return () => {
@@ -1306,9 +1376,10 @@ export default function App() {
     }
 
     const interval = setInterval(() => {
-      if (Date.now() >= sessionExpiry) {
+      checkOrSlideExpiry();
+      if (false) {
         handleLogout(
-          "A sua sessão expirou após 30 minutos de inatividade por motivos de segurança forense. Por favor, inicie sessão novamente."
+          "A sua sessão expirou porque a janela esteve fechada por mais de 1 hora. Por favor, inicie sessão novamente."
         );
       }
     }, 5000);
@@ -1317,6 +1388,11 @@ export default function App() {
       if (typeof window !== "undefined") {
         window.removeEventListener("pcn_session_expired", handleExpiredEvent);
       }
+      window.removeEventListener("visibilitychange", handleVisibilityOrClose);
+      window.removeEventListener("focus", checkOrSlideExpiry);
+      window.removeEventListener("pagehide", handleBeforeUnload);
+      window.removeEventListener("beforeunload", handleBeforeUnload);
+      if (keepaliveInterval) clearInterval(keepaliveInterval);
       clearInterval(interval);
     };
   }, [isAuthenticated, sessionExpiry]);
@@ -5921,9 +5997,9 @@ PCN Advogadas · Plataforma Forense`;
                 <p className="text-xs text-[#666] font-medium">Sessão Ativa</p>
                 <p className="text-sm font-bold text-emerald-700 mt-2 flex items-center gap-1.5">
                   <span className="w-2.5 h-2.5 rounded-full bg-emerald-500 animate-pulse" />
-                  30 Minutos (Ativa)
+                  Contínua (Até 1h Fechada)
                 </p>
-                <p className="text-[10px] text-[#888] mt-0.5">Expiração automática por inatividade</p>
+                <p className="text-[10px] text-[#888] mt-0.5">Expira apenas se fechar a janela por mais de 1h</p>
               </div>
             </div>
 

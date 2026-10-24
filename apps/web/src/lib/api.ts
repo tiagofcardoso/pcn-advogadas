@@ -42,9 +42,11 @@ export async function apiFetch<T>(endpoint: string, options: RequestOptions = {}
       localStorage.removeItem("pcn_session_token");
       localStorage.removeItem("pcn_session_expiry");
       localStorage.removeItem("pcn_session_user");
+      localStorage.removeItem("pcn_session_closed_at");
+      localStorage.removeItem("pcn_session_last_seen");
       window.dispatchEvent(
         new CustomEvent("pcn_session_expired", {
-          detail: "A sua sessão expirou por motivos de segurança forense (30 min). Por favor, inicie sessão novamente.",
+          detail: "A sua sessão expirou. Por favor, inicie sessão novamente.",
         })
       );
     }
@@ -58,6 +60,8 @@ export async function apiFetch<T>(endpoint: string, options: RequestOptions = {}
       localStorage.removeItem("pcn_session_token");
       localStorage.removeItem("pcn_session_expiry");
       localStorage.removeItem("pcn_session_user");
+      localStorage.removeItem("pcn_session_closed_at");
+      localStorage.removeItem("pcn_session_last_seen");
       window.dispatchEvent(
         new CustomEvent("pcn_session_expired", {
           detail: "Por segurança, conclua a configuração da conta (nova palavra-passe e 2FA). Inicie sessão novamente.",
@@ -116,6 +120,13 @@ export async function changePasswordApi(token: string, currentPassword: string, 
 }
 
 // ── Tarefas e Quadros ──
+export async function keepaliveTokenApi(token: string) {
+  return apiFetch<{ access_token: string; expires_in: number }>("/auth/keepalive", {
+    method: "POST",
+    token,
+  });
+}
+
 export async function getDirectionBoard(token: string) {
   return apiFetch<any[]>("/tasks/boards/direction", { token });
 }
