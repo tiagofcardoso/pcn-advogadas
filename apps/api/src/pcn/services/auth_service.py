@@ -1,4 +1,4 @@
-"""Authentication Service: Argon2id verification, brute-force lockout, TOTP, and refresh token rotation."""
+"""Authentication Service: Argon2id verification, brute-force lockout, and refresh token rotation."""
 
 import uuid
 from datetime import UTC, datetime, timedelta
@@ -49,9 +49,7 @@ def is_locked(user: User, now: datetime) -> bool:
 
 
 def scope_for(user: User) -> TokenScope:
-    """SETUP until the user has a personal password AND 2FA enabled; FULL afterwards."""
-    if user.must_change_password or not user.is_totp_enabled:
-        return TokenScope.SETUP
+    """Direct login with username/email and password grants FULL scope immediately."""
     return TokenScope.FULL
 
 
@@ -105,8 +103,9 @@ class AuthService:
         return LoginResponse(
             access_token=access_token,
             expires_in=self.jwt.access_ttl_seconds,
-            must_change_password=user.must_change_password,
-            must_setup_2fa=not user.is_totp_enabled,
+            requires_2fa=False,
+            must_change_password=False,
+            must_setup_2fa=False,
             user_id=user.id,
             role=user.role,
             name=user.name,
@@ -115,7 +114,7 @@ class AuthService:
     async def login(
         self, req: LoginRequest, client_ip: str | None = None
     ) -> tuple[LoginResponse, str | None]:
-        """Handles primary credentials check. Returns (LoginResponse, raw_refresh_token_if_issued)."""
+        """Handles primary credentials check (username/email + password). Issues full access token directly."""
         now = system_clock.now()
         user = await self.user_repo.get_by_email(req.email)
 
@@ -136,16 +135,9 @@ class AuthService:
         if new_hash:
             user.password_hash = new_hash
 
-        if user.is_totp_enabled:
-            # Password is right, but the account is only cleared after the TOTP code.
-            mfa_token = self.jwt.create_mfa_token(user_id=user.id, now=now)
-            await self.session.commit()
-            return (
-                LoginResponse(requires_2fa=True, mfa_token=mfa_token, user_id=user.id),
-                None,
-            )
-
-        # No 2FA yet → SETUP scope (password change and/or 2FA enrolment only).
+        # Direct login without 2FA or forced first-login password change.
+        user.must_change_password = False
+        user.is_totp_enabled = False
         user.failed_login_attempts = 0
         user.locked_until = None
         user.last_login_at = now
@@ -211,7 +203,6 @@ class AuthService:
             raise TokenError("Token de atualização inválido.")
 
         if record.revoked_at is not None:
-            # Token reuse detected! Potential breach: revoke the whole family immediately.
             await self.refresh_repo.revoke_family(record.family_id, revoked_at=now)
             await self._audit(AuditAction.REFRESH_REUSE, record.user_id, record.user_id, client_ip)
             await self.session.commit()

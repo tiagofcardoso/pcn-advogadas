@@ -1,9 +1,17 @@
-import { Client, ServiceCategory, Task, UserProfile } from "./types";
+import {
+  AttendanceRecord,
+  CalendarEvent,
+  Client,
+  ServiceCategory,
+  Task,
+  UserProfile,
+} from "./types";
 
 export const INITIAL_USERS: UserProfile[] = [
-  { id: "usr_patricia", name: "Patrícia", role: "admin_lawyer", email: "patricia@pcnadvogadas.pt" },
-  { id: "usr_ines", name: "Inês", role: "lawyer", email: "ines@pcnadvogadas.pt" },
-  { id: "usr_sofia", name: "Sofia", role: "lawyer", email: "sofia@pcnadvogadas.pt" },
+  { id: "usr_patricia", name: "Patrícia", role: "admin_lawyer", email: "patricia@pcnadvogadas.pt", is_active: true },
+  { id: "usr_luana", name: "Luana", role: "lawyer", email: "luana@pcnadvogadas.pt", is_active: true },
+  { id: "usr_ines", name: "Inês", role: "lawyer", email: "ines@pcnadvogadas.pt", is_active: true },
+  { id: "usr_sofia", name: "Sofia", role: "lawyer", email: "sofia@pcnadvogadas.pt", is_active: true },
 ];
 
 export const INITIAL_SERVICE_CATEGORIES: ServiceCategory[] = [
@@ -21,7 +29,7 @@ export const INITIAL_SERVICE_CATEGORIES: ServiceCategory[] = [
     description: "Articulados, petições iniciais, contestações e recursos",
     hourly_rate: 150,
     default_billable: true,
-    color: "#5E0047",
+    color: "#59083E",
   },
   {
     id: "tp_3",
@@ -29,7 +37,7 @@ export const INITIAL_SERVICE_CATEGORIES: ServiceCategory[] = [
     description: "Pareceres jurídicos, conferências e reuniões com clientes",
     hourly_rate: 120,
     default_billable: true,
-    color: "#D4AF37",
+    color: "#C5A467",
   },
   {
     id: "tp_4",
@@ -37,7 +45,7 @@ export const INITIAL_SERVICE_CATEGORIES: ServiceCategory[] = [
     description: "Representação em diligências judiciais e audiências",
     hourly_rate: 180,
     default_billable: true,
-    color: "#2B2B2B",
+    color: "#28202A",
   },
   {
     id: "tp_5",
@@ -49,97 +57,216 @@ export const INITIAL_SERVICE_CATEGORIES: ServiceCategory[] = [
   },
 ];
 
-export const INITIAL_CLIENTS: Client[] = [];
-
-export const INITIAL_TASKS: Task[] = [];
-
-export const DEMO_CLIENTS: Client[] = [
+export const INITIAL_CLIENTS: Client[] = [
   {
     id: "cli_1",
-    name: "Cliente A",
+    number: "0042",
+    name: "Empresa Exemplo, Lda.",
+    birthday: "10-28",
     nif: "501234567",
-    process_reference: "Proc. 142/26.8T8LSB",
-    email: "contacto@clientea.pt",
+    process_reference: "PCN 0042",
+    email: "contacto@empresaexemplo.pt",
     phone: "+351 210 123 456",
   },
   {
     id: "cli_2",
-    name: "Cliente B (Sociedade Imobiliária)",
+    number: "0015",
+    name: "Cliente Demonstração",
+    birthday: "04-12",
     nif: "509876543",
-    process_reference: "Proc. 890/26.1T8OVR",
-    email: "geral@imobiliaria.pt",
+    process_reference: "PCN 0015",
+    email: "geral@clientedemo.pt",
     phone: "+351 220 987 654",
   },
+  {
+    id: "cli_3",
+    number: "0031",
+    name: "Sociedade Modelo, S.A.",
+    birthday: "",
+    nif: "508112233",
+    process_reference: "PCN 0031",
+    email: "administracao@sociedademodelo.pt",
+    phone: "+351 213 456 789",
+  },
 ];
+
+export const INITIAL_TASKS: Task[] = [];
+
+export const DEMO_CLIENTS: Client[] = INITIAL_CLIENTS;
+
+function offsetDateIso(daysOffset: number): string {
+  const d = new Date();
+  d.setDate(d.getDate() + daysOffset);
+  return d.toISOString().slice(0, 10);
+}
 
 export const DEMO_TASKS: Task[] = [
   {
     id: "tsk_1",
-    title: "Registo predial",
-    description: "Submissão de pedido de certidão permanente predial e atualização matricial.",
+    title: "Contestação Cível — Prazo Judicial Perentório",
+    description: "Entrega de articulado de contestação e junção de procuração forense.",
     client_id: "cli_1",
-    client_name: "Cliente A",
-    task_type: "Certidões e Registos",
-    status: "assigned",
-    assigned_to: "usr_ines",
-    lawyer_name: "Inês",
-    due_date: "2026-10-21",
-    total_duration_seconds: 2700, // 45m
-    fee_amount: 85.00,
+    client_name: "Empresa Exemplo, Lda.",
+    client_number: "0042",
+    task_type: "Peças Processuais",
+    status: "in_progress",
+    v6_status: "Em curso",
+    priority: "Urgente",
+    origin: "Tribunal",
+    entity: "Juízo Central Cível",
+    assigned_to: "usr_luana",
+    lawyer_name: "Luana",
+    due_date: offsetDateIso(-1), // Vencido há 1 dia (Vermelho)
+    total_duration_seconds: 5057,
+    fee_amount: 180.0,
+    documented_expenses: 75.0,
+    undocumented_expenses: 0,
   },
   {
     id: "tsk_2",
-    title: "Emitir certidão negativa de dívidas tributárias",
-    description: "Obtenção de certidão negativa junto da Autoridade Tributária e Segurança Social.",
-    client_id: "cli_2",
-    client_name: "Cliente B (Sociedade Imobiliária)",
+    title: "Registo comercial — Alteração de gerência",
+    description: "Análise da documentação societária e submissão do registo.",
+    client_id: "cli_1",
+    client_name: "Empresa Exemplo, Lda.",
+    client_number: "0042",
     task_type: "Certidões e Registos",
-    status: "pool",
-    total_duration_seconds: 0,
-    due_date: "2026-10-25",
+    status: "in_progress",
+    v6_status: "Em curso",
+    priority: "Urgente",
+    origin: "E-mail",
+    entity: "Conservatória",
+    assigned_to: "usr_luana",
+    lawyer_name: "Luana",
+    due_date: offsetDateIso(0), // Vence hoje (Vermelho)
+    total_duration_seconds: 3200,
+    fee_amount: 180.0,
   },
   {
     id: "tsk_3",
-    title: "Redação de Contestação Cível",
-    description: "Elaboração de peça processual de contestação e arrolamento de testemunhas.",
-    client_id: "cli_1",
-    client_name: "Cliente A",
-    task_type: "Peças Processuais",
-    status: "in_progress",
-    assigned_to: "usr_ines",
-    lawyer_name: "Inês",
-    due_date: "2026-10-28",
-    total_duration_seconds: 4800, // 1h 20m
-    fee_amount: 350.00,
+    title: "Análise de contrato de prestação de serviços",
+    description: "Revisão de cláusulas contratuais e parecer jurídico.",
+    client_id: "cli_2",
+    client_name: "Cliente Demonstração",
+    client_number: "0015",
+    task_type: "Análise Documental",
+    status: "assigned",
+    v6_status: "Por iniciar",
+    priority: "Alta",
+    origin: "WhatsApp",
+    entity: "",
+    assigned_to: "usr_luana",
+    lawyer_name: "Luana",
+    due_date: offsetDateIso(1), // Vence amanhã (Amarelo - próximos 5 dias)
+    total_duration_seconds: 0,
+    fee_amount: 210.0,
   },
   {
     id: "tsk_4",
-    title: "Análise de autos e consulta jurídica",
-    description: "Estudo prévio de viabilidade processual e reunião de conferência.",
-    client_id: "cli_1",
-    client_name: "Cliente A",
-    task_type: "Consultoria e Reuniões",
-    status: "completed",
+    title: "Elaboração de articulado superveniente",
+    description: "Aguardar documentação complementar do cliente.",
+    client_id: "cli_3",
+    client_name: "Sociedade Modelo, S.A.",
+    client_number: "0031",
+    task_type: "Peças Processuais",
+    status: "paused",
+    v6_status: "A aguardar cliente",
+    priority: "Alta",
+    origin: "E-mail",
+    entity: "Tribunal",
     assigned_to: "usr_ines",
     lawyer_name: "Inês",
-    due_date: "2026-10-14",
-    total_duration_seconds: 9000, // 2h 30m
-    fee_amount: 250.00,
-    is_billed: false,
+    due_date: offsetDateIso(3), // Vence em 3 dias (Amarelo - próximos 5 dias)
+    total_duration_seconds: 3600,
+    fee_amount: 240.0,
   },
   {
     id: "tsk_5",
-    title: "Elaboração de Parecer Sucessório",
-    description: "Análise de partilha e quinhão hereditário com consulta de inventário.",
-    client_id: "cli_2",
-    client_name: "Cliente B (Sociedade Imobiliária)",
+    title: "Parecer sobre cessão de quotas e pacto social",
+    description: "Estudo fiscal e societário para assembleia geral.",
+    client_id: "cli_3",
+    client_name: "Sociedade Modelo, S.A.",
+    client_number: "0031",
     task_type: "Consultoria e Reuniões",
-    status: "paused",
+    status: "assigned",
+    v6_status: "Por iniciar",
+    priority: "Normal",
+    origin: "Reunião",
+    entity: "RNPC",
     assigned_to: "usr_sofia",
     lawyer_name: "Sofia",
-    due_date: "2026-11-02",
-    total_duration_seconds: 3600,
-    fee_amount: 180.00,
-    is_billed: false,
+    due_date: offsetDateIso(5), // Vence em 5 dias (Amarelo - próximos 5 dias)
+    total_duration_seconds: 1800,
+    fee_amount: 150.0,
+  },
+];
+
+export const INITIAL_EVENTS: CalendarEvent[] = [];
+
+export const INITIAL_ATTENDANCE_RECORDS: AttendanceRecord[] = [
+  {
+    id: "att_1",
+    collaborator_id: "usr_luana",
+    collaborator_name: "Luana de Sousa",
+    start_date: "2026-08-03",
+    end_date: "2026-08-14",
+    absence_type: "Férias",
+    reason: "Período de férias de verão",
+    full_days: 10,
+    partial_hours: 0,
+  },
+  {
+    id: "att_2",
+    collaborator_id: "usr_luana",
+    collaborator_name: "Luana de Sousa",
+    start_date: "2026-09-18",
+    end_date: "2026-09-18",
+    absence_type: "Outra falta",
+    reason: "Consulta médica",
+    full_days: 0,
+    partial_hours: 3,
+  },
+  {
+    id: "att_3",
+    collaborator_id: "usr_luana",
+    collaborator_name: "Luana de Sousa",
+    start_date: "2026-10-09",
+    end_date: "2026-10-09",
+    absence_type: "Outra falta",
+    reason: "Assunto pessoal",
+    full_days: 1,
+    partial_hours: 0,
+  },
+  {
+    id: "att_4",
+    collaborator_id: "usr_ines",
+    collaborator_name: "Inês Ferreira de Oliveira",
+    start_date: "2026-07-20",
+    end_date: "2026-07-24",
+    absence_type: "Férias",
+    reason: "Período de férias",
+    full_days: 5,
+    partial_hours: 0,
+  },
+  {
+    id: "att_5",
+    collaborator_id: "usr_ines",
+    collaborator_name: "Inês Ferreira de Oliveira",
+    start_date: "2026-10-02",
+    end_date: "2026-10-02",
+    absence_type: "Outra falta",
+    reason: "Consulta médica",
+    full_days: 0,
+    partial_hours: 2,
+  },
+  {
+    id: "att_6",
+    collaborator_id: "usr_sofia",
+    collaborator_name: "Sofia",
+    start_date: "2026-08-17",
+    end_date: "2026-08-21",
+    absence_type: "Férias",
+    reason: "Período de férias",
+    full_days: 5,
+    partial_hours: 0,
   },
 ];

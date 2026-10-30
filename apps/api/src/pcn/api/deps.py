@@ -8,8 +8,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from pcn.core.config import Settings, get_settings
 from pcn.core.database import get_session
-from pcn.core.errors import PermissionDenied, TokenError
-from pcn.core.security import JwtService, TokenClaims, TokenScope, TokenType
+from pcn.core.errors import TokenError
+from pcn.core.security import JwtService, TokenClaims, TokenType
 from pcn.domain.enums import ADMIN_ROLES, UserRole
 from pcn.models.user import User
 from pcn.repositories.user_repository import UserRepository
@@ -51,7 +51,7 @@ async def get_current_user(
     claims: Annotated[TokenClaims, Depends(get_current_claims)],
     session: Annotated[AsyncSession, Depends(get_session)],
 ) -> User:
-    """Authenticated active user. Also valid during initial setup (password change + 2FA)."""
+    """Authenticated active user."""
     repo = UserRepository(session)
     user = await repo.get_by_id(claims.subject)
     if not user or not user.is_active:
@@ -66,13 +66,7 @@ async def require_full_access(
     claims: Annotated[TokenClaims, Depends(get_current_claims)],
     user: Annotated[User, Depends(get_current_user)],
 ) -> User:
-    """Authenticated user who already changed the initial password and enabled 2FA."""
-    if claims.scope != TokenScope.FULL or user.must_change_password or not user.is_totp_enabled:
-        # Stable code so the frontend can send the user back to the onboarding screens.
-        raise PermissionDenied(
-            "Conclua a configuração inicial (nova palavra-passe e 2FA) para continuar.",
-            code="setup_required",
-        )
+    """Authenticated active user (2FA and first-access password renewal disabled)."""
     return user
 
 

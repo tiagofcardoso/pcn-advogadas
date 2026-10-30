@@ -30,14 +30,8 @@ _password_hash = PasswordHash((Argon2Hasher(),))
 # Pre-computed hash used to equalise response time when the e-mail does not exist.
 _DUMMY_HASH = _password_hash.hash(secrets.token_urlsafe(32))
 
-PASSWORD_MIN_LENGTH = 12
-PASSWORD_MAX_LENGTH = 128
-_PASSWORD_RULES: tuple[tuple[re.Pattern[str], str], ...] = (
-    (re.compile(r"[a-z]"), "lowercase letter"),
-    (re.compile(r"[A-Z]"), "uppercase letter"),
-    (re.compile(r"\d"), "digit"),
-    (re.compile(r"[^A-Za-z0-9]"), "symbol"),
-)
+PASSWORD_MIN_LENGTH = 1
+PASSWORD_MAX_LENGTH = 512
 
 
 def hash_password(password: str) -> str:
@@ -55,13 +49,10 @@ def burn_password_check(password: str) -> None:
 
 
 def validate_password_policy(password: str) -> None:
-    missing = [label for pattern, label in _PASSWORD_RULES if not pattern.search(password)]
-    if len(password) < PASSWORD_MIN_LENGTH or len(password) > PASSWORD_MAX_LENGTH or missing:
+    """Senha livre: sem mínimo de 12 caracteres nem regras de complexidade."""
+    if not password or len(password) > PASSWORD_MAX_LENGTH:
         raise BusinessRuleViolation(
-            f"A palavra-passe deve ter entre {PASSWORD_MIN_LENGTH} e {PASSWORD_MAX_LENGTH} "
-            "caracteres e incluir minúsculas, maiúsculas, algarismos e símbolos.",
-            code="weak_password",
-            details={"missing": missing, "min_length": PASSWORD_MIN_LENGTH},
+            "A palavra-passe não pode estar vazia.", code="invalid_password"
         )
 
 

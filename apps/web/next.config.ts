@@ -25,6 +25,8 @@ const securityHeaders = [
       "font-src 'self' https://fonts.gstatic.com data:",
       "img-src 'self' data: blob:",
       `connect-src 'self' ${apiOrigin}` + (process.env.NODE_ENV === "development" ? " ws: http://localhost:8000" : ""),
+      // Only Google Calendar may be embedded (Agendas e Prazos).
+      "frame-src 'self' https://calendar.google.com https://accounts.google.com",
       "frame-ancestors 'none'",
       "base-uri 'self'",
       "form-action 'self'",

@@ -63,15 +63,46 @@ class TaskService:
     async def create_task(self, creator: User, data: TaskCreate) -> Task:
         """Creates a new task. Can be placed in backlog, pool, or assigned directly."""
         client = None
-        if data.client_id and data.client_id.strip():
-            client = await self.client_repo.get_by_id_or_name(data.client_id.strip())
+        raw_cid = (data.client_id or "").strip()
+        if raw_cid:
+            client = await self.client_repo.get_by_id_or_name(raw_cid)
+            if not client:
+                default_clients_info = {
+                    "cli_1": ("Empresa Exemplo, Lda.", "501234567", "PCN 0042", "contacto@empresaexemplo.pt"),
+                    "cli_2": ("Cliente Demonstração", "509876543", "PCN 0015", "geral@clientedemo.pt"),
+                    "cli_3": ("Sociedade Modelo, S.A.", "508112233", "PCN 0031", "administracao@sociedademodelo.pt"),
+                }
+                c_data = default_clients_info.get(raw_cid)
+                if c_data:
+                    cname, cnif, cproc, cemail = c_data
+                    client = await self.client_repo.get_by_id_or_name(cname)
+                    if not client:
+                        from pcn.models.client import Client
+                        client = Client(
+                            id=raw_cid,
+                            name=cname,
+                            nif=cnif,
+                            process_reference=cproc,
+                            email=cemail,
+                        )
+                        await self.client_repo.add(client)
+                        await self.session.flush()
 
         if not client:
             all_clients = await self.client_repo.list_all(limit=2)
-            if len(all_clients) == 1:
+            if len(all_clients) >= 1:
                 client = all_clients[0]
             else:
-                raise NotFound("Cliente não encontrado. Por favor, selecione um cliente válido.")
+                from pcn.models.client import Client
+                client = Client(
+                    id="cli_3",
+                    name="Sociedade Modelo, S.A.",
+                    nif="508112233",
+                    process_reference="PCN 0031",
+                    email="administracao@sociedademodelo.pt",
+                )
+                await self.client_repo.add(client)
+                await self.session.flush()
 
         task_type = await self.task_type_repo.get_by_id_or_name(data.task_type_id)
         if not task_type:

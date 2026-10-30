@@ -8,11 +8,11 @@ from pcn.domain.enums import UserRole
 
 
 class UserCreate(BaseModel):
-    name: str = Field(min_length=2, max_length=150)
+    name: str = Field(min_length=2, max_length=255)
     email: EmailStr
     role: UserRole = UserRole.LAWYER
-    password: str | None = Field(None, max_length=128)
-    must_change_password: bool = True
+    password: str | None = Field(None, max_length=512)
+    must_change_password: bool = False
 
 
 class UserCreateResponse(BaseModel):
@@ -24,10 +24,11 @@ class UserCreateResponse(BaseModel):
 
 
 class UserUpdate(BaseModel):
-    name: str | None = Field(None, min_length=2, max_length=150)
+    name: str | None = Field(None, min_length=2, max_length=255)
+    email: EmailStr | None = None
     role: UserRole | None = None
     is_active: bool | None = None
-    password: str | None = Field(None, max_length=128)
+    password: str | None = Field(None, max_length=512)
     must_change_password: bool | None = None
 
 

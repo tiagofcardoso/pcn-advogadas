@@ -68,7 +68,19 @@ export async function apiFetch<T>(endpoint: string, options: RequestOptions = {}
         })
       );
     }
-    throw new Error(errorBody.message || errorBody.detail || `Erro ${res.status}: ${res.statusText}`);
+    let errMessage = `Erro ${res.status}: ${res.statusText}`;
+    if (typeof errorBody.message === "string") {
+      errMessage = errorBody.message;
+    } else if (typeof errorBody.detail === "string") {
+      errMessage = errorBody.detail;
+    } else if (Array.isArray(errorBody.detail) && errorBody.detail.length > 0) {
+      errMessage = errorBody.detail
+        .map((d: any) => d.msg || JSON.stringify(d))
+        .join("; ");
+    } else if (errorBody.message) {
+      errMessage = JSON.stringify(errorBody.message);
+    }
+    throw new Error(errMessage);
   }
 
   if (res.status === 204) {
@@ -494,8 +506,10 @@ export async function updateUserApi(
   userId: string,
   payload: {
     name?: string;
+    email?: string;
     role?: string;
     is_active?: boolean;
+    password?: string;
   }
 ) {
   return apiFetch<any>(`/users/${userId}`, {
@@ -504,5 +518,29 @@ export async function updateUserApi(
     body: JSON.stringify(payload),
   });
 }
+
+export async function updateMyProfileApi(
+  token: string,
+  payload: {
+    name?: string;
+    email?: string;
+    role?: string;
+    password?: string;
+  }
+) {
+  return apiFetch<any>("/users/me/profile", {
+    method: "PATCH",
+    token,
+    body: JSON.stringify(payload),
+  });
+}
+
+export async function deleteUserApi(token: string, userId: string) {
+  return apiFetch<any>(`/users/${userId}`, {
+    method: "DELETE",
+    token,
+  });
+}
+
 
 

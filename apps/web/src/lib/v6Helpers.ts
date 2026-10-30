@@ -1,0 +1,835 @@
+import {
+  AttendanceRecord,
+  CalendarEvent,
+  Client,
+  FeeNoteClientMeta,
+  FeeNoteCustomLine,
+  Task,
+  TaskV6Status,
+} from "./types";
+
+export const V6_STATUS_LIST: TaskV6Status[] = [
+  "Por iniciar",
+  "Em curso",
+  "A aguardar cliente",
+  "A aguardar entidade",
+  "Concluída",
+];
+
+export function getTaskV6Status(task: Task): TaskV6Status {
+  if (task.v6_status) return task.v6_status;
+  switch (task.status) {
+    case "in_progress":
+      return "Em curso";
+    case "paused":
+      return "A aguardar cliente";
+    case "completed":
+    case "archived":
+      return "Concluída";
+    case "pool":
+    case "assigned":
+    case "backlog":
+    default:
+      return "Por iniciar";
+  }
+}
+
+export function mapV6StatusToBackend(
+  v6Status: TaskV6Status
+): Task["status"] {
+  switch (v6Status) {
+    case "Em curso":
+      return "in_progress";
+    case "A aguardar cliente":
+    case "A aguardar entidade":
+      return "paused";
+    case "Concluída":
+      return "completed";
+    case "Por iniciar":
+    default:
+      return "assigned";
+  }
+}
+
+export function getV6BadgeClass(status: TaskV6Status): string {
+  if (status === "Concluída") return "v6-badge done";
+  if (status.includes("aguardar")) return "v6-badge wait";
+  if (status === "Por iniciar") return "v6-badge start";
+  return "v6-badge";
+}
+
+export function getPriorityBadgeStyle(priority?: string): {
+  bg: string;
+  text: string;
+  border: string;
+  label: string;
+} {
+  switch (priority) {
+    case "Urgente":
+      return {
+        bg: "#fde8ec",
+        text: "#9d2842",
+        border: "#f5c2cb",
+        label: "Urgente",
+      };
+    case "Alta":
+      return {
+        bg: "#fff0d6",
+        text: "#805c17",
+        border: "#eed6a7",
+        label: "Alta",
+      };
+    case "Normal":
+    default:
+      return {
+        bg: "#f4eee8",
+        text: "#50454b",
+        border: "#e2d8d0",
+        label: "Normal",
+      };
+  }
+}
+
+export function formatCurrencyPt(val: number): string {
+  return Number(val || 0).toLocaleString("pt-PT", {
+    minimumFractionDigits: 2,
+    maximumFractionDigits: 2,
+  }) + " €";
+}
+
+export function formatIsoDatePt(iso?: string): string {
+  if (!iso) return "—";
+  const clean = iso.split("T")[0];
+  if (/^\d{4}-\d{2}-\d{2}$/.test(clean)) {
+    const [y, m, d] = clean.split("-");
+    return `${d}/${m}/${y}`;
+  }
+  return clean;
+}
+
+export interface TaskDeadlineSemaphore {
+  diffDays: number | null;
+  level: "red" | "yellow" | "normal";
+  label: string;
+  formattedDate: string;
+  bg: string;
+  text: string;
+  border: string;
+  rowBg: string;
+  dotColor: string;
+}
+
+/**
+ * Regra global de prazos em todo o sistema:
+ * - Vermelho: vencendo hoje (diffDays === 0) ou vencido (diffDays < 0)
+ * - Amarelo: a vencer nos próximos 5 dias (1 <= diffDays <= 5)
+ */
+export function getTaskDeadlineSemaphore(task: Task): TaskDeadlineSemaphore {
+  const formattedDate = formatIsoDatePt(task.due_date);
+  const v6St = getTaskV6Status(task);
+  if (v6St === "Concluída" || !task.due_date) {
+    return {
+      diffDays: null,
+      level: "normal",
+      label: formattedDate,
+      formattedDate,
+      bg: "#f4eee8",
+      text: "#50454b",
+      border: "#e2d8d0",
+      rowBg: "",
+      dotColor: "#8c7d6b",
+    };
+  }
+
+  const raw = task.due_date.split("T")[0];
+  let year = 0,
+    month = 0,
+    day = 0;
+  if (/^\d{4}-\d{2}-\d{2}$/.test(raw)) {
+    const [y, m, d] = raw.split("-").map(Number);
+    year = y;
+    month = m;
+    day = d;
+  } else if (/^\d{2}\/\d{2}\/\d{4}$/.test(raw)) {
+    const [d, m, y] = raw.split("/").map(Number);
+    year = y;
+    month = m;
+    day = d;
+  } else {
+    return {
+      diffDays: null,
+      level: "normal",
+      label: formattedDate,
+      formattedDate,
+      bg: "#f4eee8",
+      text: "#50454b",
+      border: "#e2d8d0",
+      rowBg: "",
+      dotColor: "#8c7d6b",
+    };
+  }
+
+  const dueMidnight = new Date(year, month - 1, day);
+  const now = new Date();
+  const todayMidnight = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+  const diffDays = Math.round(
+    (dueMidnight.getTime() - todayMidnight.getTime()) / (1000 * 60 * 60 * 24)
+  );
+
+  if (diffDays < 0) {
+    const overdue = Math.abs(diffDays);
+    return {
+      diffDays,
+      level: "red",
+      label: `Vencido há ${overdue} ${overdue === 1 ? "dia" : "dias"}`,
+      formattedDate,
+      bg: "#fde8e8",
+      text: "#9b2226",
+      border: "#f5c2c7",
+      rowBg: "rgba(253, 232, 232, 0.38)",
+      dotColor: "#dc2626",
+    };
+  }
+
+  if (diffDays === 0) {
+    return {
+      diffDays: 0,
+      level: "red",
+      label: "Vence hoje",
+      formattedDate,
+      bg: "#fde8e8",
+      text: "#9b2226",
+      border: "#f5c2c7",
+      rowBg: "rgba(253, 232, 232, 0.38)",
+      dotColor: "#dc2626",
+    };
+  }
+
+  if (diffDays >= 1 && diffDays <= 5) {
+    return {
+      diffDays,
+      level: "yellow",
+      label: diffDays === 1 ? "Vence amanhã (1 dia)" : `Vence em ${diffDays} dias`,
+      formattedDate,
+      bg: "#fff3cd",
+      text: "#856404",
+      border: "#ffe69c",
+      rowBg: "rgba(255, 243, 205, 0.35)",
+      dotColor: "#d97706",
+    };
+  }
+
+  return {
+    diffDays,
+    level: "normal",
+    label: `Em ${diffDays} dias`,
+    formattedDate,
+    bg: "#e1f3d9",
+    text: "#326421",
+    border: "#c3e6cb",
+    rowBg: "",
+    dotColor: "#16a34a",
+  };
+}
+
+export function sortTasksByUrgency(tasks: Task[]): Task[] {
+  const prioRank = (p?: string) =>
+    p === "Urgente" ? 0 : p === "Alta" ? 1 : 2;
+
+  return [...tasks].sort((a, b) => {
+    const aDone = getTaskV6Status(a) === "Concluída" ? 1 : 0;
+    const bDone = getTaskV6Status(b) === "Concluída" ? 1 : 0;
+    if (aDone !== bDone) return aDone - bDone;
+
+    const semA = getTaskDeadlineSemaphore(a);
+    const semB = getTaskDeadlineSemaphore(b);
+
+    const levelRank = (lvl: TaskDeadlineSemaphore["level"]) =>
+      lvl === "red" ? 0 : lvl === "yellow" ? 1 : 2;
+
+    const lA = levelRank(semA.level);
+    const lB = levelRank(semB.level);
+    if (lA !== lB) return lA - lB;
+
+    const dA = semA.diffDays ?? 99999;
+    const dB = semB.diffDays ?? 99999;
+    if (dA !== dB) return dA - dB;
+
+    const pA = prioRank(a.priority);
+    const pB = prioRank(b.priority);
+    if (pA !== pB) return pA - pB;
+
+    return a.title.localeCompare(b.title, "pt-PT");
+  });
+}
+
+/**
+ * Generates and opens the A4 Editorial Fee Note PDF matching
+ * `sample/PCN_Nota_Honorarios_Editorial_V3-3.pdf`
+ */
+export function openEditorialFeeNotePdf(params: {
+  refCode: string;
+  issueDatePt: string;
+  client: Client;
+  meta: FeeNoteClientMeta;
+  lines: FeeNoteCustomLine[];
+  signatoryName?: string;
+}) {
+  if (typeof window === "undefined") return;
+  const { refCode, issueDatePt, client, meta, lines, signatoryName } = params;
+
+  const totalDocExpenses = lines.reduce(
+    (acc, l) => acc + (Number(l.documented_expenses) || 0),
+    0
+  );
+  const totalUndocExpenses = lines.reduce(
+    (acc, l) => acc + (Number(l.undocumented_expenses) || 0),
+    0
+  );
+  const totalFees = lines.reduce((acc, l) => acc + (Number(l.fees) || 0), 0);
+  const baseBeforeVat = totalFees + totalDocExpenses + totalUndocExpenses;
+  const vatAmount = meta.apply_vat ? Math.round(totalFees * 0.23 * 100) / 100 : 0;
+  const subtotalWithVat = Math.round((baseBeforeVat + vatAmount) * 100) / 100;
+  const provisions = Math.max(0, Number(meta.provisions_received) || 0);
+  const credits = Math.max(0, Number(meta.credits_payments) || 0);
+  const finalBalance =
+    Math.round((subtotalWithVat - provisions - credits) * 100) / 100;
+
+  const clientDisplay = client.number
+    ? `${client.name} — Cliente PCN ${client.number}`
+    : client.name;
+  const subjectDisplay =
+    meta.subject?.trim() ||
+    client.process_reference ||
+    "Registos, contratos e acompanhamento jurídico";
+  const periodDisplay = meta.period?.trim() || "Outubro de 2026";
+  const lawyerSign = signatoryName || "Patrícia da Costa Neto";
+  const logoUrl = `${window.location.origin}/logo_pcn_official.png`;
+
+  const fmtEuro = (v: number, showDashIfZero = false) => {
+    const num = Number(v || 0);
+    if (showDashIfZero && Math.abs(num) < 0.005) return "—";
+    return (
+      num.toLocaleString("pt-PT", {
+        minimumFractionDigits: 2,
+        maximumFractionDigits: 2,
+      }) + " €"
+    );
+  };
+
+  const rowsHtml = lines
+    .map((l, idx) => {
+      const bg = idx % 2 === 1 ? "#FAF8F5" : "#FFFFFF";
+      return `
+        <tr style="background:${bg};">
+          <td style="padding:11px 12px; border-bottom:1px solid #EBE5DC; color:#28202a; font-size:11.5px; white-space:nowrap; vertical-align:top;">
+            ${formatIsoDatePt(l.date)}
+          </td>
+          <td style="padding:11px 12px; border-bottom:1px solid #EBE5DC; color:#28202a; font-size:11.5px; line-height:1.45; vertical-align:top;">
+            <div>${l.description}</div>
+            ${
+              l.hours
+                ? `<div style="font-size:10px; color:#776f73; margin-top:2px;">Tempo registado: ${l.hours}</div>`
+                : ""
+            }
+          </td>
+          <td style="padding:11px 12px; border-bottom:1px solid #EBE5DC; color:#28202a; font-size:11.5px; text-align:right; white-space:nowrap; vertical-align:top;">
+            ${fmtEuro(l.documented_expenses, true)}
+          </td>
+          <td style="padding:11px 12px; border-bottom:1px solid #EBE5DC; color:#28202a; font-size:11.5px; text-align:right; white-space:nowrap; vertical-align:top;">
+            ${fmtEuro(l.undocumented_expenses, true)}
+          </td>
+          <td style="padding:11px 12px; border-bottom:1px solid #EBE5DC; color:#28202a; font-size:11.5px; text-align:right; white-space:nowrap; vertical-align:top;">
+            ${fmtEuro(l.fees, false)}
+          </td>
+        </tr>
+      `;
+    })
+    .join("");
+
+  const htmlDoc = `<!DOCTYPE html>
+<html lang="pt-PT">
+<head>
+  <meta charset="UTF-8" />
+  <title>Nota_Honorarios_${refCode.replace(/\//g, "-")}_${client.name.replace(/\s+/g, "_")}</title>
+  <style>
+    @page {
+      size: A4 portrait;
+      margin: 14mm 16mm;
+    }
+    * {
+      box-sizing: border-box;
+      -webkit-print-color-adjust: exact !important;
+      print-color-adjust: exact !important;
+    }
+    body {
+      margin: 0;
+      padding: 0;
+      background: #E8E3DA;
+      font-family: Arial, Helvetica, sans-serif;
+      color: #28202a;
+    }
+    .toolbar {
+      position: sticky;
+      top: 0;
+      z-index: 50;
+      background: #380723;
+      color: #fff;
+      padding: 12px 24px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      border-bottom: 2px solid #c5a467;
+    }
+    .toolbar-btn {
+      background: linear-gradient(100deg, #85005f, #640845);
+      color: #fff;
+      border: 1px solid #c5a467;
+      padding: 8px 18px;
+      border-radius: 6px;
+      font-size: 12px;
+      font-weight: 700;
+      cursor: pointer;
+    }
+    .toolbar-btn-close {
+      background: transparent;
+      color: #e6d4e0;
+      border: 1px solid #ffffff40;
+      padding: 8px 14px;
+      border-radius: 6px;
+      font-size: 12px;
+      cursor: pointer;
+      margin-left: 8px;
+    }
+    .a4-sheet {
+      width: 210mm;
+      min-height: 297mm;
+      margin: 24px auto;
+      background: #FFFFFF;
+      padding: 18mm 20mm 16mm 20mm;
+      box-shadow: 0 12px 36px rgba(0,0,0,0.14);
+      display: flex;
+      flex-direction: column;
+      justify-content: space-between;
+      position: relative;
+    }
+    @media print {
+      body { background: #FFFFFF; }
+      .toolbar { display: none !important; }
+      .a4-sheet {
+        width: 100%;
+        min-height: 268mm;
+        margin: 0;
+        padding: 0;
+        box-shadow: none;
+      }
+    }
+  </style>
+</head>
+<body>
+  <div class="toolbar">
+    <div>
+      <strong style="font-size:13px; color:#e9c885; font-family:Georgia,serif;">PCN ADVOGADAS · Nota de Honorários Editorial V3</strong>
+      <span style="font-size:12px; color:#e6d4e0; margin-left:12px;">${refCode} — ${clientDisplay}</span>
+    </div>
+    <div>
+      <button class="toolbar-btn" onclick="window.print()">Guardar como PDF / Imprimir A4</button>
+      <button class="toolbar-btn-close" onclick="window.close()">Fechar</button>
+    </div>
+  </div>
+
+  <div class="a4-sheet">
+    <div>
+      <!-- Top Right Official Logo -->
+      <div style="display:flex; justify-content:flex-end; margin-bottom:10px;">
+        <img src="${logoUrl}" alt="PCN Advogadas" style="max-height:74px; max-width:170px; object-fit:contain;" />
+      </div>
+
+      <!-- Gold Rule -->
+      <div style="height:1.5px; background:#C5A467; width:100%; margin-bottom:22px;"></div>
+
+      <!-- Editorial Title -->
+      <div style="margin-bottom:18px;">
+        <h1 style="font-family:Georgia, 'Times New Roman', serif; font-size:23px; font-weight:700; color:#59083E; margin:0; letter-spacing:0.4px;">
+          NOTA DE HONORÁRIOS
+        </h1>
+        <div style="font-size:11px; color:#776f73; margin-top:4px;">
+          ${refCode}
+        </div>
+      </div>
+
+      <!-- Client & Metadata Cream Box -->
+      <div style="background:#F7F6F0; border:1px solid #E5DEC9; border-radius:2px; padding:14px 18px; display:grid; grid-template-columns:1.35fr 1fr; gap:20px; margin-bottom:22px;">
+        <div>
+          <div style="font-family:Georgia, serif; font-size:9.5px; font-weight:700; color:#59083E; text-transform:uppercase; letter-spacing:0.5px;">
+            CLIENTE
+          </div>
+          <div style="font-size:12px; color:#28202a; margin-top:3px; margin-bottom:12px;">
+            ${clientDisplay}
+          </div>
+
+          <div style="font-family:Georgia, serif; font-size:9.5px; font-weight:700; color:#59083E; text-transform:uppercase; letter-spacing:0.5px;">
+            ASSUNTO
+          </div>
+          <div style="font-size:12px; color:#28202a; margin-top:3px;">
+            ${subjectDisplay}
+          </div>
+        </div>
+
+        <div>
+          <div style="font-family:Georgia, serif; font-size:9.5px; font-weight:700; color:#59083E; text-transform:uppercase; letter-spacing:0.5px;">
+            DATA DE EMISSÃO
+          </div>
+          <div style="font-size:12px; color:#28202a; margin-top:3px; margin-bottom:12px;">
+            ${issueDatePt}
+          </div>
+
+          <div style="font-family:Georgia, serif; font-size:9.5px; font-weight:700; color:#59083E; text-transform:uppercase; letter-spacing:0.5px;">
+            PERÍODO
+          </div>
+          <div style="font-size:12px; color:#28202a; margin-top:3px;">
+            ${periodDisplay}
+          </div>
+        </div>
+      </div>
+
+      <!-- 5-Column Editorial Table -->
+      <table style="width:100%; border-collapse:collapse; border:1px solid #E5DEC9;">
+        <thead>
+          <tr style="background:#59083E; color:#FFFFFF; font-family:Georgia, serif; font-size:9.5px; text-transform:uppercase; letter-spacing:0.4px;">
+            <th style="padding:10px 12px; text-align:left; width:86px;">DATA</th>
+            <th style="padding:10px 12px; text-align:left;">DESCRIÇÃO DA TAREFA</th>
+            <th style="padding:10px 12px; text-align:right; width:108px;">DESPESAS<br/>DOCUMENTADAS</th>
+            <th style="padding:10px 12px; text-align:right; width:118px;">DESPESAS NÃO<br/>DOCUMENTADAS</th>
+            <th style="padding:10px 12px; text-align:right; width:96px;">HONORÁRIOS</th>
+          </tr>
+        </thead>
+        <tbody>
+          ${rowsHtml}
+          <tr style="background:#F3EFE6; border-top:1.5px solid #C5A467; font-family:Georgia, serif; font-weight:700; font-size:11px; color:#59083E;">
+            <td colspan="2" style="padding:10px 12px;">SUBTOTAL (VALORES SEM IVA)</td>
+            <td style="padding:10px 12px; text-align:right;">${fmtEuro(totalDocExpenses)}</td>
+            <td style="padding:10px 12px; text-align:right;">${fmtEuro(totalUndocExpenses)}</td>
+            <td style="padding:10px 12px; text-align:right;">${fmtEuro(totalFees)}</td>
+          </tr>
+        </tbody>
+      </table>
+
+      <!-- APURAMENTO Block -->
+      <div style="margin-top:28px; display:flex; justify-content:flex-end;">
+        <div style="width:310px;">
+          <div style="font-family:Georgia, serif; font-size:11px; font-weight:700; color:#59083E; text-transform:uppercase; letter-spacing:0.5px; padding-bottom:6px; border-bottom:1.5px solid #C5A467; margin-bottom:8px;">
+            APURAMENTO
+          </div>
+
+          <div style="display:flex; justify-content:space-between; padding:5px 4px; font-size:11.5px;">
+            <span style="color:#50454b;">Honorários</span>
+            <span>${fmtEuro(totalFees)}</span>
+          </div>
+          <div style="display:flex; justify-content:space-between; padding:5px 4px; font-size:11.5px;">
+            <span style="color:#50454b;">Despesas documentadas</span>
+            <span>${fmtEuro(totalDocExpenses)}</span>
+          </div>
+          <div style="display:flex; justify-content:space-between; padding:5px 4px; font-size:11.5px;">
+            <span style="color:#50454b;">Despesas não documentadas</span>
+            <span>${fmtEuro(totalUndocExpenses)}</span>
+          </div>
+          <div style="display:flex; justify-content:space-between; padding:5px 4px; font-size:11.5px;">
+            <span style="color:#50454b;">IVA (${meta.apply_vat ? "23% — simulação" : "Isento / 0%"})</span>
+            <span>${fmtEuro(vatAmount)}</span>
+          </div>
+          <div style="display:flex; justify-content:space-between; padding:6px 4px; font-size:11.5px; font-weight:700; border-top:1px solid #EBE5DC; margin-top:2px;">
+            <span style="color:#28202a;">Subtotal</span>
+            <span>${fmtEuro(subtotalWithVat)}</span>
+          </div>
+          <div style="display:flex; justify-content:space-between; padding:5px 4px; font-size:11.5px;">
+            <span style="color:#50454b;">Provisões recebidas (a deduzir)</span>
+            <span>${provisions > 0 ? "- " + fmtEuro(provisions) : fmtEuro(0)}</span>
+          </div>
+          <div style="display:flex; justify-content:space-between; padding:5px 4px; font-size:11.5px; margin-bottom:8px;">
+            <span style="color:#50454b;">Créditos / pagamentos adicionais</span>
+            <span>${credits > 0 ? "- " + fmtEuro(credits) : fmtEuro(0)}</span>
+          </div>
+
+          <div style="height:1.5px; background:#C5A467; margin-bottom:6px;"></div>
+          <div style="background:#F3EFE6; padding:10px 12px; display:flex; justify-content:space-between; align-items:center; font-family:Georgia, serif; font-size:13px; font-weight:700; color:#59083E;">
+            <span>SALDO FINAL</span>
+            <span>${fmtEuro(finalBalance)}</span>
+          </div>
+        </div>
+      </div>
+
+      <!-- Signature Block -->
+      <div style="margin-top:42px; display:flex; justify-content:flex-end;">
+        <div style="width:230px; text-align:left; font-size:11.5px; color:#50454b;">
+          <div style="margin-bottom:26px;">A Advogada,</div>
+          <div style="border-top:1px solid #999; padding-top:6px; font-family:Georgia, serif; font-weight:700; color:#28202a;">
+            ${lawyerSign}
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Editorial Wave Footer -->
+    <div style="margin-top:32px;">
+      <svg viewBox="0 0 600 42" width="100%" height="36" preserveAspectRatio="none" style="display:block;">
+        <path d="M 0 34 Q 190 40 370 20 T 600 6" fill="none" stroke="#C5A467" stroke-width="1.6" opacity="0.85" />
+        <path d="M 120 40 Q 330 28 470 12 T 600 18 L 600 42 L 120 42 Z" fill="#59083E" opacity="0.92" />
+        <path d="M 220 42 Q 390 30 520 16 T 600 24 L 600 42 Z" fill="#92006F" opacity="0.75" />
+      </svg>
+      <div style="display:flex; justify-content:space-between; align-items:center; font-size:9.5px; color:#776f73; padding-top:4px;">
+        <span>PCN ADVOGADAS</span>
+        <span>Página 1</span>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    window.onload = function() {
+      setTimeout(function() {
+        window.print();
+      }, 350);
+    };
+  </script>
+</body>
+</html>`;
+
+  const printWin = window.open("", "_blank");
+  if (!printWin) {
+    alert(
+      "Por favor, permita a abertura de janelas pop-up no seu navegador para gerar o PDF A4 oficial."
+    );
+    return;
+  }
+  printWin.document.open();
+  printWin.document.write(htmlDoc);
+  printWin.document.close();
+}
+
+/**
+ * Exports Attendance records as a UTF-8 CSV compatible with Microsoft Excel (.xlsx structure)
+ */
+export function exportAttendanceCsv(
+  records: AttendanceRecord[],
+  collaborators: { id: string; name: string }[]
+) {
+  const rows: string[][] = [
+    ["PCN ADVOGADAS — MAPA DE ASSIDUIDADE (HORÁRIO DE REFERÊNCIA: 8H/DIA)"],
+    [],
+    [
+      "Colaboradora",
+      "Data início",
+      "Data fim",
+      "Tipo de ausência",
+      "Descrição / Motivo",
+      "Dias completos",
+      "Horas parciais",
+      "Total horas",
+      "Equiv. dias (8h)",
+    ],
+  ];
+
+  for (const r of records) {
+    const totalH = (Number(r.full_days) || 0) * 8 + (Number(r.partial_hours) || 0);
+    const equivD = totalH / 8;
+    rows.push([
+      r.collaborator_name,
+      formatIsoDatePt(r.start_date),
+      formatIsoDatePt(r.end_date),
+      r.absence_type,
+      r.reason,
+      String(r.full_days),
+      String(r.partial_hours),
+      totalH.toFixed(1).replace(".", ","),
+      equivD.toFixed(2).replace(".", ","),
+    ]);
+  }
+
+  rows.push([]);
+  rows.push(["RESUMO GERAL DE ASSIDUIDADE"]);
+  rows.push([
+    "Colaboradora",
+    "Férias (h)",
+    "Outras faltas (h)",
+    "Total ausências (h)",
+    "Equiv. dias (8h)",
+    "Assiduidade",
+  ]);
+
+  const stats = collaborators.map((c) => {
+    const cRecs = records.filter((r) => r.collaborator_id === c.id);
+    const feriasH = cRecs
+      .filter((r) => r.absence_type === "Férias")
+      .reduce((acc, r) => acc + r.full_days * 8 + r.partial_hours, 0);
+    const outrasH = cRecs
+      .filter((r) => r.absence_type !== "Férias")
+      .reduce((acc, r) => acc + r.full_days * 8 + r.partial_hours, 0);
+    const totalH = feriasH + outrasH;
+    return {
+      name: c.name,
+      feriasH,
+      outrasH,
+      totalH,
+      equivD: totalH / 8,
+    };
+  });
+
+  const totals = stats.map((s) => s.totalH);
+  const minH = totals.length > 0 ? Math.min(...totals) : 0;
+  const maxH = totals.length > 0 ? Math.max(...totals) : 0;
+
+  for (const s of stats) {
+    const label =
+      s.totalH === minH
+        ? "Mais assídua"
+        : s.totalH === maxH
+        ? "Menos assídua"
+        : "Intermédia";
+    rows.push([
+      s.name,
+      s.feriasH.toFixed(1).replace(".", ","),
+      s.outrasH.toFixed(1).replace(".", ","),
+      s.totalH.toFixed(1).replace(".", ","),
+      s.equivD.toFixed(2).replace(".", ","),
+      label,
+    ]);
+  }
+
+  const csvContent =
+    "\ufeff" +
+    rows
+      .map((r) =>
+        r.map((cell) => `"${String(cell ?? "").replace(/"/g, '""')}"`).join(";")
+      )
+      .join("\r\n");
+
+  const blob = new Blob([csvContent], { type: "text/csv;charset=utf-8" });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = `Mapa_Assiduidade_Colaboradoras_PCN_${new Date().toISOString().slice(0, 10)}.csv`;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// GOOGLE CALENDAR EMBED & UNIFIED EVENTS SYNC HELPERS
+// ─────────────────────────────────────────────────────────────────────────────
+
+export const DEFAULT_GCAL_ID = "https://calendar.google.com/calendar/u/0/r";
+
+/**
+ * Constrói o URL de incorporação (iframe) do Google Calendar.
+ * Coloca o calendário público de feriados de Portugal como primeiro `src` para garantir
+ * que o endpoint `/calendar/embed` da Google responde sempre HTTP 200 OK (sem bloqueio 401),
+ * e inclui em seguida o calendário configurado do escritório/utilizador.
+ */
+export function buildGoogleCalendarEmbedUrl(
+  gcalId?: string,
+  mode: "MONTH" | "WEEK" | "AGENDA" = "MONTH"
+): string {
+  const raw = (gcalId || DEFAULT_GCAL_ID).trim();
+  const ptHolidays = "pt.portuguese%23holiday%40group.v.calendar.google.com";
+  const baseParams = `ctz=Europe%2FLisbon&hl=pt_PT&mode=${mode}&showTitle=0&showPrint=0&showCalendars=1&bgcolor=%23FAF8F6`;
+
+  if (
+    !raw ||
+    raw.includes("/calendar/u/0/r") ||
+    raw.endsWith("/calendar/r") ||
+    raw === "pt.portuguese#holiday@group.v.calendar.google.com"
+  ) {
+    return `https://calendar.google.com/calendar/embed?src=${ptHolidays}&src=tiagofabriciocardoso%40gmail.com&${baseParams}`;
+  }
+
+  if (raw.startsWith("http://") || raw.startsWith("https://")) {
+    try {
+      const url = new URL(raw);
+      if (url.pathname.includes("/r")) {
+        return `https://calendar.google.com/calendar/embed?src=${ptHolidays}&src=tiagofabriciocardoso%40gmail.com&${baseParams}`;
+      }
+      url.searchParams.set("mode", mode);
+      url.searchParams.set("ctz", "Europe/Lisbon");
+      url.searchParams.set("hl", "pt_PT");
+      return url.toString();
+    } catch {
+      return `https://calendar.google.com/calendar/embed?src=${ptHolidays}&${baseParams}`;
+    }
+  }
+
+  return `https://calendar.google.com/calendar/embed?src=${ptHolidays}&src=${encodeURIComponent(
+    raw
+  )}&${baseParams}`;
+}
+
+export function normalizeEventType(rawType?: string): CalendarEvent["type"] {
+  if (!rawType) return "Compromisso";
+  const t = rawType.trim();
+  if (t === "Prazo processual" || t === "Prazo") return "Prazo";
+  if (t === "Prazo de tarefa") return "Prazo de tarefa";
+  if (t === "Diligência") return "Diligência";
+  if (t.includes("Férias") || t.includes("Ausência")) return "Férias / Ausência";
+  return "Compromisso";
+}
+
+/**
+ * Unifica os eventos da agenda interna com os prazos das tarefas ativas,
+ * garantindo que qualquer alteração numa tarefa ou evento reflete imediatamente
+ * em todas as telas (Painel de Direção, A Minha Área de Trabalho e Agendas e Prazos).
+ */
+export function buildUnifiedEvents(
+  events: CalendarEvent[],
+  tasks: Task[],
+  clients: Client[]
+): CalendarEvent[] {
+  const normalizedEvents: CalendarEvent[] = events.map((e) => ({
+    ...e,
+    date: (e.date || "").split("T")[0],
+    time: e.time || "09:00",
+    type: normalizeEventType(e.type),
+  }));
+
+  const activeTasksWithDue = tasks.filter(
+    (t) =>
+      t.status !== "archived" &&
+      getTaskV6Status(t) !== "Concluída" &&
+      Boolean(t.due_date)
+  );
+
+  const taskEvents: CalendarEvent[] = [];
+  for (const t of activeTasksWithDue) {
+    const cleanDate = (t.due_date || "").split("T")[0];
+    if (!cleanDate) continue;
+
+    // Evitar duplicação caso já exista um evento manual com o mesmo id ou título na mesma data
+    const alreadyExists = normalizedEvents.some(
+      (e) =>
+        e.id === `task_deadline_${t.id}` ||
+        (e.date === cleanDate &&
+          e.title.trim().toLowerCase() === t.title.trim().toLowerCase())
+    );
+    if (alreadyExists) continue;
+
+    const clientObj = clients.find((c) => c.id === t.client_id);
+    const clientTag = clientObj?.number
+      ? `PCN ${clientObj.number} — ${clientObj.name}`
+      : t.client_name || "Cliente PCN";
+
+    taskEvents.push({
+      id: `task_deadline_${t.id}`,
+      title: t.title,
+      subtitle: `${clientTag}${t.entity ? ` · ${t.entity}` : ""}`,
+      date: cleanDate,
+      time: "17:00",
+      type: "Prazo de tarefa",
+      owner: t.assigned_to || t.lawyer_name || "usr_luana",
+    });
+  }
+
+  return [...normalizedEvents, ...taskEvents].sort((a, b) =>
+    `${a.date} ${a.time}`.localeCompare(`${b.date} ${b.time}`)
+  );
+}
+
+

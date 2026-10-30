@@ -15,8 +15,31 @@ class UserRepository(BaseRepository[User]):
         super().__init__(User, session)
 
     async def get_by_email(self, email: str) -> User | None:
-        result = await self.session.execute(select(User).where(User.email == email.strip().lower()))
-        return result.scalar_one_or_none()
+        raw = email.strip().lower()
+        alias_map = {
+            "patricia": "patricia@pcnadvogadas.pt",
+            "patrícia": "patricia@pcnadvogadas.pt",
+            "usr_patricia": "patricia@pcnadvogadas.pt",
+            "ines": "ines@pcnadvogadas.pt",
+            "inês": "ines@pcnadvogadas.pt",
+            "usr_ines": "ines@pcnadvogadas.pt",
+            "sofia": "sofia@pcnadvogadas.pt",
+            "usr_sofia": "sofia@pcnadvogadas.pt",
+            "luana": "luana@pcnadvogadas.pt",
+            "usr_luana": "luana@pcnadvogadas.pt",
+            "tiago": "tiagofabriciocardoso@gmail.com",
+        }
+        lookup_email = alias_map.get(raw, raw)
+        result = await self.session.execute(select(User).where(User.email == lookup_email))
+        user = result.scalar_one_or_none()
+        if user:
+            return user
+        if "@" not in lookup_email:
+            result = await self.session.execute(
+                select(User).where(User.email.ilike(f"{lookup_email}@%"))
+            )
+            return result.scalars().first()
+        return None
 
     async def list_active_lawyers(self) -> Sequence[User]:
         result = await self.session.execute(
@@ -32,6 +55,7 @@ class UserRepository(BaseRepository[User]):
             "usr_patricia": "patricia@pcnadvogadas.pt",
             "usr_ines": "ines@pcnadvogadas.pt",
             "usr_sofia": "sofia@pcnadvogadas.pt",
+            "usr_luana": "luana@pcnadvogadas.pt",
         }
         target_email = alias_map.get(id_or_alias)
         if target_email:

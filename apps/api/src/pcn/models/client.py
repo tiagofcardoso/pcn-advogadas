@@ -16,11 +16,11 @@ class Client(Base, TimestampMixin):
     __tablename__ = "clients"
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=generate_uuid)
-    name: Mapped[str] = mapped_column(String(180), nullable=False, index=True)
-    nif: Mapped[str | None] = mapped_column(String(20), unique=True, nullable=True, index=True)
-    email: Mapped[str | None] = mapped_column(String(191), nullable=True)
-    phone: Mapped[str | None] = mapped_column(String(50), nullable=True)
-    process_reference: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    name: Mapped[str] = mapped_column(String(500), nullable=False, index=True)
+    nif: Mapped[str | None] = mapped_column(String(100), unique=True, nullable=True, index=True)
+    email: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    phone: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    process_reference: Mapped[str | None] = mapped_column(String(255), nullable=True)
     notes: Mapped[str | None] = mapped_column(Text, nullable=True)
     is_active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
 
@@ -36,6 +36,6 @@ class TaskType(Base, TimestampMixin):
     description: Mapped[str | None] = mapped_column(String(255), nullable=True)
     hourly_rate: Mapped[float] = mapped_column(Numeric(10, 2), default=120.0, nullable=False)
     default_billable: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
-    color: Mapped[str] = mapped_column(String(20), default="#92006F", nullable=False)
+    color: Mapped[str] = mapped_column(String(100), default="#92006F", nullable=False)
 
     tasks: Mapped[list["Task"]] = relationship("Task", back_populates="task_type")

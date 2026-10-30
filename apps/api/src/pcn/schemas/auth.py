@@ -6,8 +6,8 @@ from pcn.domain.enums import UserRole
 
 
 class LoginRequest(BaseModel):
-    email: EmailStr
-    password: str = Field(min_length=1, max_length=128)
+    email: str = Field(min_length=1, max_length=255)
+    password: str = Field(min_length=1, max_length=512)
 
 
 class LoginResponse(BaseModel):
@@ -38,8 +38,8 @@ class TwoFAVerifyRequest(BaseModel):
 
 
 class ChangePasswordRequest(BaseModel):
-    current_password: str = Field(min_length=1, max_length=128)
-    new_password: str = Field(min_length=1, max_length=128)
+    current_password: str = Field(min_length=1, max_length=512)
+    new_password: str = Field(min_length=1, max_length=512)
 
 
 class RefreshResponse(BaseModel):

@@ -1,8 +1,5 @@
-"""Security regression tests: first-login flow, mandatory 2FA, RBAC, lockout, Master role."""
+"""Security regression tests: direct username/password login (no 2FA / forced password change), RBAC, lockout, Master role."""
 
-from datetime import UTC, datetime, timedelta
-
-import pyotp
 import pytest
 from httpx import ASGITransport, AsyncClient
 from sqlalchemy import select
@@ -26,42 +23,22 @@ def _auth(token: str) -> dict[str, str]:
     return {"Authorization": f"Bearer {token}"}
 
 
-async def _onboard(ac: AsyncClient, email: str, password: str) -> tuple[str, str]:
-    """First login → change password → enrol 2FA. Returns (full_token, totp_secret)."""
+async def _login_direct(ac: AsyncClient, email: str, password: str) -> str:
+    """Direct login with username/email and password returns a full access token immediately."""
     res = await ac.post(f"{API}/auth/login", json={"email": email, "password": password})
     assert res.status_code == 200, res.text
     body = res.json()
-    assert body["must_change_password"] is True
-    assert body["must_setup_2fa"] is True
-    token = body["access_token"]
-
-    res = await ac.post(
-        f"{API}/auth/change-password",
-        json={"current_password": password, "new_password": NEW_PASSWORD},
-        headers=_auth(token),
-    )
-    assert res.status_code == 200, res.text
-    body = res.json()
+    assert body["requires_2fa"] is False
     assert body["must_change_password"] is False
-    assert body["must_setup_2fa"] is True
-    token = body["access_token"]
-
-    res = await ac.post(f"{API}/auth/2fa/setup", headers=_auth(token))
-    assert res.status_code == 200, res.text
-    secret = res.json()["secret"]
-
-    res = await ac.post(
-        f"{API}/auth/2fa/verify", json={"code": pyotp.TOTP(secret).now()}, headers=_auth(token)
-    )
-    assert res.status_code == 200, res.text
-    assert res.json()["must_setup_2fa"] is False
-    return res.json()["access_token"], secret
+    assert body["must_setup_2fa"] is False
+    assert body["access_token"] is not None
+    return body["access_token"]
 
 
 @pytest.fixture(scope="session")
 async def office() -> dict[str, dict[str, str]]:
-    """Seeded office: Patrícia (admin), Inês (lawyer), Tiago (master), all onboarded."""
-    await run_seed()  # creates the lawyers and the Master (IT) account from MASTER_EMAILS
+    """Seeded office: Patrícia (admin), Inês (lawyer), Tiago (master), direct login."""
+    await run_seed()
     await run_seed()  # a second boot must be idempotent
 
     people: dict[str, dict[str, str]] = {}
@@ -71,9 +48,9 @@ async def office() -> dict[str, dict[str, str]]:
             ("ines", "ines@pcnadvogadas.pt"),
             ("tiago", TIAGO),
         ):
-            token, secret = await _onboard(ac, email, INITIAL_PASSWORD)
+            token = await _login_direct(ac, email, INITIAL_PASSWORD)
             me = (await ac.get(f"{API}/auth/me", headers=_auth(token))).json()
-            people[key] = {"token": token, "secret": secret, "id": me["id"], "email": email}
+            people[key] = {"token": token, "id": me["id"], "email": email}
 
         # Client created by the Direção, used by the task tests.
         res = await ac.post(
@@ -84,62 +61,45 @@ async def office() -> dict[str, dict[str, str]]:
     return people
 
 
-# ───────────────────────── First login & 2FA ─────────────────────────
+# ───────────────────────── Direct login (username/email + password) ─────────────────────────
 
 
-async def test_seed_promotes_master_and_keeps_initial_password_change(office):
+async def test_seed_promotes_master_and_disables_forced_onboarding(office):
     async with get_session_factory()() as session:
         tiago = (await session.execute(select(User).where(User.email == TIAGO))).scalar_one()
         assert tiago.role == UserRole.MASTER
+        assert tiago.must_change_password is False
+        assert tiago.is_totp_enabled is False
 
 
-async def test_setup_token_cannot_use_the_app():
+async def test_direct_login_grants_full_access_immediately():
     async with _client() as ac:
         res = await ac.post(
             f"{API}/auth/login",
             json={"email": "sofia@pcnadvogadas.pt", "password": INITIAL_PASSWORD},
         )
         assert res.status_code == 200
-        token = res.json()["access_token"]
-        assert res.json()["must_change_password"] is True
+        body = res.json()
+        assert body["must_change_password"] is False
+        assert body["must_setup_2fa"] is False
+        assert body["requires_2fa"] is False
+        token = body["access_token"]
 
-        blocked = await ac.get(f"{API}/tasks/boards/me", headers=_auth(token))
-        assert blocked.status_code == 403
-
-        weak = await ac.post(
-            f"{API}/auth/change-password",
-            json={"current_password": INITIAL_PASSWORD, "new_password": "curta"},
-            headers=_auth(token),
-        )
-        assert weak.status_code == 422
+        board = await ac.get(f"{API}/tasks/boards/me", headers=_auth(token))
+        assert board.status_code == 200
 
 
-async def test_login_after_onboarding_requires_totp(office):
-    ines = office["ines"]
+async def test_login_supports_username_alias(office):
     async with _client() as ac:
         res = await ac.post(
-            f"{API}/auth/login", json={"email": ines["email"], "password": NEW_PASSWORD}
+            f"{API}/auth/login", json={"email": "ines", "password": INITIAL_PASSWORD}
         )
+        assert res.status_code == 200, res.text
         body = res.json()
-        assert body["requires_2fa"] is True
-        assert body["access_token"] is None
-
-        wrong = await ac.post(
-            f"{API}/auth/2fa/verify-login", json={"mfa_token": body["mfa_token"], "code": "000000"}
-        )
-        assert wrong.status_code == 401
-
-        # Next time-step: the enrolment step was already consumed (anti-replay).
-        code = pyotp.TOTP(ines["secret"]).at(datetime.now(UTC) + timedelta(seconds=30))
-        ok = await ac.post(
-            f"{API}/auth/2fa/verify-login", json={"mfa_token": body["mfa_token"], "code": code}
-        )
-        assert ok.status_code == 200, ok.text
-        token = ok.json()["access_token"]
+        assert body["requires_2fa"] is False
+        assert body["access_token"] is not None
+        token = body["access_token"]
         assert (await ac.get(f"{API}/tasks/boards/me", headers=_auth(token))).status_code == 200
-
-        again = await ac.post(f"{API}/auth/2fa/setup", headers=_auth(token))
-        assert again.status_code == 409  # cannot silently replace an active 2FA
 
 
 # ───────────────────────── Lawyer permissions ─────────────────────────
