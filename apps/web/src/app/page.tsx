@@ -4979,9 +4979,75 @@ PCN Advogadas · Plataforma Forense`;
         {/* MARCA DE ÁGUA V6.0 */}
         <div className="v6-watermark">PCN — COMPETÊNCIA · CONFIANÇA · RESULTADOS</div>
 
+        {/* BARRA DE NAVEGAÇÃO MOBILE NO RODAPÉ (< 1024px) */}
+        <nav className="v6-bottom-nav" aria-label="Navegação rápida mobile">
+          <button
+            type="button"
+            onClick={() => switchTab("work")}
+            className={`v6-bottom-nav-item ${activeTab === "work" ? "active" : ""}`}
+          >
+            <span className="ico">◉</span>
+            <span>Área</span>
+          </button>
+
+          <button
+            type="button"
+            onClick={() => switchTab("tasks")}
+            className={`v6-bottom-nav-item ${activeTab === "tasks" ? "active" : ""}`}
+          >
+            <span className="ico">✓</span>
+            <span>Tarefas</span>
+          </button>
+
+          <button
+            type="button"
+            onClick={() => switchTab("calendar")}
+            className={`v6-bottom-nav-item ${activeTab === "calendar" ? "active" : ""}`}
+          >
+            <span className="ico">🗓</span>
+            <span>Agenda</span>
+          </button>
+
+          {isAdmin ? (
+            <button
+              type="button"
+              onClick={() => switchTab("clients")}
+              className={`v6-bottom-nav-item ${activeTab === "clients" ? "active" : ""}`}
+            >
+              <span className="ico">◈</span>
+              <span>Clientes</span>
+            </button>
+          ) : (
+            <button
+              type="button"
+              onClick={() => setIsNewTaskModalOpen(true)}
+              className="v6-bottom-nav-item"
+            >
+              <span className="ico">＋</span>
+              <span>Nova</span>
+            </button>
+          )}
+
+          <button
+            type="button"
+            onClick={() => setIsMobileMenuOpen((prev) => !prev)}
+            className={`v6-bottom-nav-item ${
+              isMobileMenuOpen ||
+              ["dashboard", "feenotes", "reports", "attendance", "services", "archived", "users", "history"].includes(
+                activeTab
+              )
+                ? "active"
+                : ""
+            }`}
+          >
+            <span className="ico">☰</span>
+            <span>Menu</span>
+          </button>
+        </nav>
+
         {/* TOAST DE FEEDBACK */}
         {modalFeedback && (
-          <div className="fixed bottom-6 right-6 z-50 bg-[#59083e] text-white px-5 py-3 rounded-xl shadow-xl flex items-center gap-3 border border-[#c5a467]/50 text-xs font-bold">
+          <div className="fixed bottom-24 lg:bottom-6 right-4 lg:right-6 z-50 bg-[#59083e] text-white px-5 py-3 rounded-xl shadow-xl flex items-center gap-3 border border-[#c5a467]/50 text-xs font-bold">
             <Check className="w-4 h-4 text-[#e9c885]" />
             <span>{modalFeedback}</span>
           </div>

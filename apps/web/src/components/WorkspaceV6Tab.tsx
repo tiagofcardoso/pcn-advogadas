@@ -275,7 +275,7 @@ export default function WorkspaceV6Tab({
         </div>
 
         {/* 4 V6 KPI Cards */}
-        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+        <div className="grid grid-cols-2 lg:grid-cols-4 gap-3 sm:gap-4">
           <div className="v6-card v6-metric">
             <div className="v6-circle">☷</div>
             <div>
@@ -633,7 +633,7 @@ export default function WorkspaceV6Tab({
         </div>
 
         {/* Top Row: 5 KPI Cards matching minha_area_trabalho.jpeg */}
-        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-3.5">
+        <div className="grid grid-cols-2 lg:grid-cols-5 gap-3 sm:gap-3.5">
           <div className="v6-card v6-metric py-4 px-4">
             <div className="v6-circle">☷</div>
             <div>
@@ -669,7 +669,7 @@ export default function WorkspaceV6Tab({
           {/* 5th Card: Agenda de hoje */}
           <div
             onClick={() => onSwitchTab("calendar")}
-            className="v6-card py-4 px-4 flex flex-col justify-center cursor-pointer hover:border-[#c5a467] transition-all"
+            className="col-span-2 lg:col-span-1 v6-card py-4 px-4 flex flex-col justify-center cursor-pointer hover:border-[#c5a467] transition-all"
           >
             <div className="flex items-center gap-2 text-xs font-bold text-[#966c2d] uppercase tracking-wider">
               <span>📅</span>
