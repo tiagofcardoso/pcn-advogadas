@@ -16,22 +16,33 @@ class EventRepository(BaseRepository[Event]):
     def __init__(self, session: AsyncSession) -> None:
         super().__init__(Event, session)
 
+    async def get_by_id_with_relations(self, event_id: str) -> Event | None:
+        result = await self.session.execute(
+            select(Event)
+            .where(Event.id == event_id)
+            .options(selectinload(Event.client), selectinload(Event.owner))
+        )
+        return result.scalar_one_or_none()
+
     async def list_for_range(
         self,
-        start_time: datetime,
-        end_time: datetime,
+        start_time: datetime | None = None,
+        end_time: datetime | None = None,
         owner_id: str | None = None,
     ) -> Sequence[Event]:
         query = (
             select(Event)
-            .where(Event.starts_at >= start_time, Event.starts_at <= end_time)
             .order_by(Event.starts_at.asc())
             .options(selectinload(Event.client), selectinload(Event.owner))
         )
+        if start_time is not None:
+            query = query.where(Event.starts_at >= start_time)
+        if end_time is not None:
+            query = query.where(Event.starts_at <= end_time)
         if owner_id:
             query = query.where(Event.owner_id == owner_id)
 
-        result = await self.session.execute(query)
+        result = await self.session.execute(query.limit(500))
         return result.scalars().all()
 
 

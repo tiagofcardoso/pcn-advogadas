@@ -104,13 +104,69 @@ class TaskService:
                 await self.client_repo.add(client)
                 await self.session.flush()
 
-        task_type = await self.task_type_repo.get_by_id_or_name(data.task_type_id)
+        task_type = None
+        if data.task_type_name and data.task_type_name.strip():
+            clean_tname = data.task_type_name.strip()
+            task_type = await self.task_type_repo.get_by_name(clean_tname)
+            if not task_type:
+                from pcn.models.client import TaskType
+                task_type = TaskType(
+                    name=clean_tname,
+                    description=None,
+                    hourly_rate=float(data.hourly_rate) if data.hourly_rate is not None else 120.00,
+                    default_billable=True,
+                    color="#92006F",
+                )
+                await self.task_type_repo.add(task_type)
+                await self.session.flush()
+            elif data.hourly_rate is not None:
+                task_type.hourly_rate = float(data.hourly_rate)
+                await self.session.flush()
+
+        if not task_type:
+            task_type = await self.task_type_repo.get_by_id_or_name(data.task_type_id)
+
+        if not task_type:
+            default_types_info = {
+                "tp_1": ("Certidões e Registos", 90.0, "#92006F"),
+                "tp_2": ("Peças Processuais", 150.0, "#59083E"),
+                "tp_3": ("Consultoria e Reuniões", 120.0, "#C5A467"),
+                "tp_4": ("Audiências e Julgamentos", 180.0, "#28202A"),
+                "tp_5": ("Análise Documental", 110.0, "#7A005D"),
+            }
+            t_info = default_types_info.get(data.task_type_id)
+            if t_info:
+                tname, trate, tcolor = t_info
+                task_type = await self.task_type_repo.get_by_name(tname)
+                if not task_type:
+                    from pcn.models.client import TaskType
+                    task_type = TaskType(
+                        id=data.task_type_id,
+                        name=tname,
+                        hourly_rate=float(data.hourly_rate) if data.hourly_rate is not None else trate,
+                        default_billable=True,
+                        color=tcolor,
+                    )
+                    await self.task_type_repo.add(task_type)
+                    await self.session.flush()
+
         if not task_type:
             all_types = await self.task_type_repo.list_all()
             if all_types:
                 task_type = all_types[0]
             else:
-                raise NotFound("Tipo de tarefa não encontrado.")
+                from pcn.models.client import TaskType
+                fallback_name = (data.task_type_id or "Serviço Jurídico Geral").strip()
+                if fallback_name.startswith("tp_") or fallback_name.startswith("cat_"):
+                    fallback_name = "Serviço Jurídico Geral"
+                task_type = TaskType(
+                    name=fallback_name,
+                    hourly_rate=float(data.hourly_rate) if data.hourly_rate is not None else 120.00,
+                    default_billable=True,
+                    color="#92006F",
+                )
+                await self.task_type_repo.add(task_type)
+                await self.session.flush()
 
         initial_status = TaskStatus.BACKLOG
         assigned_to = None
@@ -121,7 +177,7 @@ class TaskService:
                 assigned_to = assignee.id
                 initial_status = TaskStatus.ASSIGNED
             else:
-                assigned_to = data.assigned_to
+                assigned_to = creator.id
                 initial_status = TaskStatus.ASSIGNED
         elif data.publish_to_pool:
             initial_status = TaskStatus.POOL
@@ -172,9 +228,33 @@ class TaskService:
         if data.description is not None:
             task.description = data.description.strip() if data.description else None
         if data.client_id is not None:
-            task.client_id = data.client_id
-        if data.task_type_id is not None:
-            task.task_type_id = data.task_type_id
+            resolved_client = await self.client_repo.get_by_id_or_name(data.client_id)
+            if resolved_client:
+                task.client_id = resolved_client.id
+        if data.task_type_name and data.task_type_name.strip():
+            clean_tname = data.task_type_name.strip()
+            resolved_tt = await self.task_type_repo.get_by_name(clean_tname)
+            if not resolved_tt:
+                from pcn.models.client import TaskType
+                resolved_tt = TaskType(
+                    name=clean_tname,
+                    hourly_rate=float(data.hourly_rate) if data.hourly_rate is not None else 120.00,
+                    default_billable=True,
+                    color="#92006F",
+                )
+                await self.task_type_repo.add(resolved_tt)
+                await self.session.flush()
+            elif data.hourly_rate is not None:
+                resolved_tt.hourly_rate = float(data.hourly_rate)
+                await self.session.flush()
+            task.task_type_id = resolved_tt.id
+        elif data.task_type_id is not None:
+            resolved_tt = await self.task_type_repo.get_by_id_or_name(data.task_type_id)
+            if resolved_tt:
+                if data.hourly_rate is not None:
+                    resolved_tt.hourly_rate = float(data.hourly_rate)
+                    await self.session.flush()
+                task.task_type_id = resolved_tt.id
         if data.due_date is not None:
             task.due_date = data.due_date
         if data.is_urgent_deadline is not None:
@@ -253,7 +333,7 @@ class TaskService:
             task.assigned_to = None
         else:
             assignee = await self.user_repo.get_by_id_or_alias(lawyer_id)
-            resolved_id = assignee.id if assignee else lawyer_id
+            resolved_id = assignee.id if assignee else admin_user.id
             if task.status == TaskStatus.POOL or task.status == TaskStatus.BACKLOG:
                 task.status = TaskStatus.ASSIGNED
             task.assigned_to = resolved_id

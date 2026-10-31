@@ -1,18 +1,26 @@
 """Pydantic schemas for Tasks and Boards."""
 
-from datetime import datetime
+from datetime import UTC, datetime
 from decimal import Decimal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from pcn.domain.enums import TaskAction, TaskStatus
 from pcn.schemas.client import ClientRead, TaskTypeRead
 from pcn.schemas.user import UserRead
 
 
+def _ensure_utc(value: datetime | None) -> datetime | None:
+    if value is not None and value.tzinfo is None:
+        return value.replace(tzinfo=UTC)
+    return value
+
+
 class TaskCreate(BaseModel):
     client_id: str
     task_type_id: str
+    task_type_name: str | None = Field(None, max_length=200)
+    hourly_rate: Decimal | None = Field(None, ge=0)
     title: str = Field(min_length=2, max_length=255)
     description: str | None = None
     assigned_to: str | None = None
@@ -20,17 +28,29 @@ class TaskCreate(BaseModel):
     is_urgent_deadline: bool = False
     publish_to_pool: bool = False
 
+    @field_validator("due_date")
+    @classmethod
+    def _validate_due_date_utc(cls, value: datetime | None) -> datetime | None:
+        return _ensure_utc(value)
+
 
 class TaskUpdate(BaseModel):
     title: str | None = Field(None, min_length=2, max_length=255)
     description: str | None = None
     client_id: str | None = None
     task_type_id: str | None = None
+    task_type_name: str | None = Field(None, max_length=200)
+    hourly_rate: Decimal | None = Field(None, ge=0)
     due_date: datetime | None = None
     is_urgent_deadline: bool | None = None
     fee_amount: Decimal | None = None
     status: TaskStatus | None = None
     total_duration_seconds: int | None = Field(None, ge=0)
+
+    @field_validator("due_date")
+    @classmethod
+    def _validate_due_date_utc(cls, value: datetime | None) -> datetime | None:
+        return _ensure_utc(value)
 
 
 class TimerSyncItem(BaseModel):
@@ -73,6 +93,11 @@ class TaskRead(BaseModel):
     client: ClientRead | None = None
     task_type: TaskTypeRead | None = None
     assignee: UserRead | None = None
+
+    @field_validator("due_date", "completed_at", "created_at", "updated_at")
+    @classmethod
+    def _validate_timestamps_utc(cls, value: datetime | None) -> datetime | None:
+        return _ensure_utc(value)
 
 
 class BoardSummaryResponse(BaseModel):

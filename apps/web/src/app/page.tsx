@@ -122,6 +122,10 @@ import {
   deleteTaskApi,
   notifyTaskOvertimeApi,
   calculateDeadlineApi,
+  getEventsApi,
+  createEventApi,
+  updateEventApi,
+  deleteEventApi,
   getMetricsSummaryApi,
   getFeeNotesApi,
   createFeeNoteDraftApi,
@@ -645,10 +649,33 @@ export default function App() {
     setIsQuickEventModalOpen(true);
   };
 
-  const handleDeleteEventFromAnyTab = (id: string) => {
+  const mapApiEventToCalendarEvent = (ev: any): CalendarEvent => {
+    const iso = String(ev.starts_at || new Date().toISOString());
+    const datePart = iso.slice(0, 10);
+    const timePart = iso.length >= 16 ? iso.slice(11, 16) : "10:00";
+    const evType = normalizeEventType(ev.location || (ev.is_deadline ? "Prazo" : "Compromisso"));
+    return {
+      id: ev.id,
+      title: ev.title,
+      subtitle: ev.description || (ev.client?.name ? ev.client.name : undefined),
+      date: datePart,
+      time: timePart,
+      type: evType,
+      owner: ev.owner_id || ev.owner?.id || currentUser?.id || "usr_patricia",
+    };
+  };
+
+  const handleDeleteEventFromAnyTab = async (id: string) => {
     if (id.startsWith("task_deadline_")) return;
     const target = events.find((x) => x.id === id);
     updateEvents(events.filter((x) => x.id !== id));
+    if (authToken && apiConnected && !id.startsWith("ev_") && !id.startsWith("evt_")) {
+      try {
+        await deleteEventApi(authToken, id);
+      } catch (e) {
+        console.warn("Aviso ao remover evento na API:", e);
+      }
+    }
     if (target) {
       addAuditLog(
         "Agenda removida",
@@ -660,7 +687,7 @@ export default function App() {
     }
   };
 
-  const handleSaveQuickEvent = (e: React.FormEvent) => {
+  const handleSaveQuickEvent = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!quickEventForm.title.trim()) return;
     const ownerObj = usersList.find((u) => u.id === quickEventForm.ownerId);
@@ -670,16 +697,55 @@ export default function App() {
       quickEventForm.notes.trim(),
     ].filter(Boolean);
     const normalizedType = normalizeEventType(quickEventForm.type);
-    const payload: CalendarEvent = {
+    const evDate = quickEventForm.date || getTodayDateString();
+    const evTime = quickEventForm.time || "09:00";
+    const evOwner = ownerObj?.id || quickEventForm.ownerId || currentUser?.id || "usr_patricia";
+    let payload: CalendarEvent = {
       id: editingQuickEventId || `ev_${Date.now()}`,
       title: quickEventForm.title.trim(),
       subtitle: subtitleParts.join(" · ") || undefined,
-      date: quickEventForm.date || getTodayDateString(),
-      time: quickEventForm.time || "09:00",
+      date: evDate,
+      time: evTime,
       type: normalizedType,
-      owner: ownerObj?.id || quickEventForm.ownerId || currentUser?.id || "usr_patricia",
+      owner: evOwner,
     };
+
     if (editingQuickEventId) {
+      if (authToken && apiConnected && !editingQuickEventId.startsWith("ev_") && !editingQuickEventId.startsWith("evt_")) {
+        try {
+          const updatedEv = await updateEventApi(authToken, editingQuickEventId, {
+            title: payload.title,
+            description: payload.subtitle || "",
+            starts_at: `${evDate}T${evTime}:00Z`,
+            owner_id: evOwner,
+            client_id: quickEventForm.clientId || undefined,
+            location: normalizedType,
+            is_deadline: normalizedType === "Prazo",
+          });
+          if (updatedEv && updatedEv.id) {
+            payload = mapApiEventToCalendarEvent(updatedEv);
+          }
+        } catch (err) {
+          console.warn("Aviso ao atualizar evento na API:", err);
+        }
+      } else if (authToken && apiConnected) {
+        try {
+          const createdEv = await createEventApi(authToken, {
+            title: payload.title,
+            description: payload.subtitle || undefined,
+            starts_at: `${evDate}T${evTime}:00Z`,
+            owner_id: evOwner,
+            client_id: quickEventForm.clientId || undefined,
+            location: normalizedType,
+            is_deadline: normalizedType === "Prazo",
+          });
+          if (createdEv && createdEv.id) {
+            payload = { ...payload, id: createdEv.id };
+          }
+        } catch (err) {
+          console.warn("Aviso ao criar evento na API:", err);
+        }
+      }
       const exists = events.some((x) => x.id === editingQuickEventId);
       const next = exists
         ? events.map((x) => (x.id === editingQuickEventId ? payload : x))
@@ -692,13 +758,31 @@ export default function App() {
       );
       setModalFeedback(`Registo "${payload.title}" atualizado em todas as agendas!`);
     } else {
+      if (authToken && apiConnected) {
+        try {
+          const createdEv = await createEventApi(authToken, {
+            title: payload.title,
+            description: payload.subtitle || undefined,
+            starts_at: `${evDate}T${evTime}:00Z`,
+            owner_id: evOwner,
+            client_id: quickEventForm.clientId || undefined,
+            location: normalizedType,
+            is_deadline: normalizedType === "Prazo",
+          });
+          if (createdEv && createdEv.id) {
+            payload = { ...payload, id: createdEv.id };
+          }
+        } catch (err) {
+          console.warn("Aviso ao guardar evento na base de dados:", err);
+        }
+      }
       updateEvents([payload, ...events]);
       addAuditLog(
         "Agenda criada",
         `${payload.type}: ${payload.title} (${payload.date})`,
         "Agendas e Prazos"
       );
-      setModalFeedback(`${payload.type} "${payload.title}" adicionado à Agenda e Prazos!`);
+      setModalFeedback(`${payload.type} "${payload.title}" guardado na base de dados e Agenda!`);
     }
     setIsQuickEventModalOpen(false);
     setEditingQuickEventId(null);
@@ -948,6 +1032,8 @@ export default function App() {
   const [taskFormDescription, setTaskFormDescription] = useState("");
   const [taskFormClientId, setTaskFormClientId] = useState("");
   const [taskFormTypeId, setTaskFormTypeId] = useState("tp_2");
+  const [taskFormCustomTypeName, setTaskFormCustomTypeName] = useState("");
+  const [taskFormCustomRate, setTaskFormCustomRate] = useState<string>("120");
   const [taskFormAssignee, setTaskFormAssignee] = useState("usr_patricia");
   const [taskFormDueDate, setTaskFormDueDate] = useState("");
   const [taskFormPriority, setTaskFormPriority] = useState<TaskPriority>("Normal");
@@ -1196,20 +1282,62 @@ export default function App() {
               color: at.color || localMatch?.color || "#92006F",
             };
           });
-          for (const lc of localCats) {
-            const existsInApi = mergedCats.some(
-              (mc) =>
-                mc.id === lc.id ||
-                mc.name.trim().toLowerCase() === lc.name.trim().toLowerCase()
-            );
-            if (!existsInApi) {
-              mergedCats.push(lc);
-            }
-          }
           persistCategoriesLocal(mergedCats);
+          setTaskFormTypeId((prev) =>
+            prev === "__custom__" || mergedCats.some((c) => c.id === prev)
+              ? prev
+              : mergedCats[0].id
+          );
         }
       } catch (e) {
         console.warn("Aviso ao carregar categorias de serviço:", e);
+      }
+
+      // 1.d Eventos da Agenda e Prazos (PostgreSQL)
+      try {
+        const apiEvents = await getEventsApi(token);
+        if (apiEvents) {
+          const mappedEvents: CalendarEvent[] = apiEvents.map(mapApiEventToCalendarEvent);
+          let localRawEvents: CalendarEvent[] = [];
+          if (typeof window !== "undefined") {
+            try {
+              const rawEv = localStorage.getItem("pcn_v6_events");
+              if (rawEv) localRawEvents = JSON.parse(rawEv);
+            } catch { }
+          }
+          for (const locEv of localRawEvents) {
+            const lid = String(locEv?.id || "");
+            if (
+              locEv &&
+              (lid.startsWith("ev_") || lid.startsWith("evt_")) &&
+              !/^evt_[1-4]$/.test(lid)
+            ) {
+              const alreadyExists = mappedEvents.some(
+                (me) => me.title === locEv.title && me.date === locEv.date
+              );
+              if (!alreadyExists) {
+                try {
+                  const createdEv = await createEventApi(token, {
+                    title: locEv.title,
+                    description: locEv.subtitle || undefined,
+                    starts_at: `${locEv.date}T${locEv.time || "10:00"}:00Z`,
+                    owner_id: locEv.owner,
+                    location: locEv.type,
+                    is_deadline: locEv.type === "Prazo",
+                  });
+                  if (createdEv && createdEv.id) {
+                    mappedEvents.push(mapApiEventToCalendarEvent(createdEv));
+                  }
+                } catch {
+                  mappedEvents.push(locEv);
+                }
+              }
+            }
+          }
+          updateEvents(mappedEvents);
+        }
+      } catch (e) {
+        console.warn("Aviso ao carregar eventos da agenda:", e);
       }
 
       // 2. Clientes
@@ -2674,14 +2802,26 @@ PCN Advogadas · Plataforma Forense`;
 
     setIsSubmittingTask(true);
     try {
-      const selectedCat =
+      const isCustomCat = taskFormTypeId === "__custom__";
+      const parsedCustomRate = Math.max(0, parseFloat(taskFormCustomRate) || 120);
+      const predefinedCat =
         serviceCategories.find((c) => c.id === taskFormTypeId) ||
         serviceCategories[0] || {
           id: "tp_1",
           name: "Certidões e Registos",
-          hourly_rate: 90,
+          hourly_rate: 120,
           color: "#92006F",
         };
+      const selectedCat: ServiceCategory = isCustomCat
+        ? {
+            id: `cat_${Date.now()}`,
+            name: taskFormCustomTypeName.trim() || "Serviço Personalizado",
+            hourly_rate: parsedCustomRate,
+            default_billable: true,
+            color: "#92006F",
+          }
+        : predefinedCat;
+
       const selectedClient = clients.find((c) => c.id === effectiveClientId);
       const resolvedLawyerName = taskFormPublishToPool
         ? undefined
@@ -2701,11 +2841,30 @@ PCN Advogadas · Plataforma Forense`;
           description: taskFormDescription.trim() || undefined,
           client_id: effectiveClientId,
           task_type_id: selectedCat.id,
+          task_type_name: selectedCat.name,
+          hourly_rate: selectedCat.hourly_rate,
           assigned_to: taskFormPublishToPool ? null : taskFormAssignee,
-          due_date: taskFormDueDate ? `${taskFormDueDate}T18:00:00` : null,
+          due_date: taskFormDueDate ? `${taskFormDueDate}T18:00:00Z` : null,
           is_urgent_deadline: taskFormIsUrgent || taskFormPriority === "Urgente",
           publish_to_pool: taskFormPublishToPool,
         });
+
+        if (created?.task_type?.id) {
+          selectedCat.id = created.task_type.id;
+          selectedCat.name = created.task_type.name || selectedCat.name;
+          if (created.task_type.hourly_rate !== undefined && created.task_type.hourly_rate !== null) {
+            selectedCat.hourly_rate = Number(created.task_type.hourly_rate);
+          }
+        }
+        if (
+          !serviceCategories.some(
+            (c) =>
+              c.id === selectedCat.id ||
+              c.name.trim().toLowerCase() === selectedCat.name.trim().toLowerCase()
+          )
+        ) {
+          persistCategoriesLocal([...serviceCategories, selectedCat]);
+        }
 
         if (initialDurationSec > 0 || mappedBackendSt !== "assigned") {
           try {
@@ -2781,6 +2940,7 @@ PCN Advogadas · Plataforma Forense`;
       setIsNewTaskModalOpen(false);
       setTaskFormTitle("");
       setTaskFormDescription("");
+      setTaskFormCustomTypeName("");
       setTaskFormPriority("Normal");
       setTaskFormV6Status("Por iniciar");
       setTaskFormOrigin("");
@@ -4186,7 +4346,7 @@ PCN Advogadas · Plataforma Forense`;
               clients={effectiveClients}
               usersList={effectiveUsers}
               globalQuery={globalQuery}
-              onSaveEvent={(evt, isEdit) => {
+              onSaveEvent={async (evt, isEdit) => {
                 const cleanEvt: CalendarEvent = {
                   ...evt,
                   type: normalizeEventType(evt.type),
@@ -4219,11 +4379,40 @@ PCN Advogadas · Plataforma Forense`;
                     }).catch(() => {});
                   }
                 } else {
+                  let savedEvt = cleanEvt;
+                  if (authToken && apiConnected) {
+                    const isLocalId = cleanEvt.id.startsWith("ev_") || cleanEvt.id.startsWith("evt_");
+                    try {
+                      if (isEdit && !isLocalId) {
+                        const updatedEv = await updateEventApi(authToken, cleanEvt.id, {
+                          title: cleanEvt.title,
+                          description: cleanEvt.subtitle || "",
+                          starts_at: `${cleanEvt.date}T${cleanEvt.time || "10:00"}:00Z`,
+                          owner_id: cleanEvt.owner,
+                          location: cleanEvt.type,
+                          is_deadline: cleanEvt.type === "Prazo",
+                        });
+                        if (updatedEv?.id) savedEvt = mapApiEventToCalendarEvent(updatedEv);
+                      } else {
+                        const createdEv = await createEventApi(authToken, {
+                          title: cleanEvt.title,
+                          description: cleanEvt.subtitle || undefined,
+                          starts_at: `${cleanEvt.date}T${cleanEvt.time || "10:00"}:00Z`,
+                          owner_id: cleanEvt.owner,
+                          location: cleanEvt.type,
+                          is_deadline: cleanEvt.type === "Prazo",
+                        });
+                        if (createdEv?.id) savedEvt = { ...cleanEvt, id: createdEv.id };
+                      }
+                    } catch (err) {
+                      console.warn("Aviso ao guardar evento da agenda na API:", err);
+                    }
+                  }
                   const exists = events.some((x) => x.id === cleanEvt.id);
                   const next =
                     isEdit && exists
-                      ? events.map((x) => (x.id === cleanEvt.id ? cleanEvt : x))
-                      : [cleanEvt, ...events];
+                      ? events.map((x) => (x.id === cleanEvt.id ? savedEvt : x))
+                      : [savedEvt, ...events];
                   updateEvents(next);
                 }
                 setGoogleCalendarPromptEvent(cleanEvt);
@@ -4837,15 +5026,49 @@ PCN Advogadas · Plataforma Forense`;
                     <label>Categoria de Serviço</label>
                     <select
                       value={taskFormTypeId}
-                      onChange={(e) => setTaskFormTypeId(e.target.value)}
+                      onChange={(e) => {
+                        const val = e.target.value;
+                        setTaskFormTypeId(val);
+                        if (val !== "__custom__") {
+                          const found = serviceCategories.find((c) => c.id === val);
+                          if (found) setTaskFormCustomRate(String(found.hourly_rate));
+                        }
+                      }}
                     >
                       {serviceCategories.map((cat) => (
                         <option key={cat.id} value={cat.id}>
                           {cat.name} ({cat.hourly_rate.toFixed(2)} €/h)
                         </option>
                       ))}
+                      <option value="__custom__">✍️ Outra / Texto livre (Personalizada)...</option>
                     </select>
                   </div>
+
+                  {taskFormTypeId === "__custom__" && (
+                    <>
+                      <div className="v6-field">
+                        <label>Serviço / Categoria (Texto livre) *</label>
+                        <input
+                          type="text"
+                          required
+                          placeholder="Ex.: Requerimento avulso, Diligência, Parecer..."
+                          value={taskFormCustomTypeName}
+                          onChange={(e) => setTaskFormCustomTypeName(e.target.value)}
+                        />
+                      </div>
+                      <div className="v6-field">
+                        <label>Taxa / Valor Hora (€/h)</label>
+                        <input
+                          type="number"
+                          step="0.01"
+                          min={0}
+                          placeholder="120.00"
+                          value={taskFormCustomRate}
+                          onChange={(e) => setTaskFormCustomRate(e.target.value)}
+                        />
+                      </div>
+                    </>
+                  )}
 
                   <div className="v6-field">
                     <label>Responsável</label>

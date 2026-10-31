@@ -239,14 +239,6 @@ export default function CalendarV6Tab({
 
           <button
             type="button"
-            onClick={() => setIsBirthdayModalOpen(true)}
-            className="v6-btn gold"
-          >
-            <span>🎂 Aniversários ({clientsWithBirthday.length})</span>
-          </button>
-
-          <button
-            type="button"
             onClick={() => setIsConfigOpen(!isConfigOpen)}
             className="v6-btn"
             title="Configurar conta ou calendário Google partilhado"

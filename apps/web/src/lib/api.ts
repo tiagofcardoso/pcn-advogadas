@@ -162,6 +162,8 @@ export async function createTaskApi(
     description?: string;
     client_id: string;
     task_type_id: string;
+    task_type_name?: string;
+    hourly_rate?: number;
     assigned_to?: string | null;
     due_date?: string | null;
     is_urgent_deadline?: boolean;
@@ -191,6 +193,8 @@ export async function updateTaskApi(
     description?: string;
     client_id?: string;
     task_type_id?: string;
+    task_type_name?: string;
+    hourly_rate?: number;
     due_date?: string | null;
     is_urgent_deadline?: boolean;
     fee_amount?: number;
@@ -363,7 +367,7 @@ export async function getMetricsSummaryApi(token: string, query?: string) {
   return apiFetch<any>(`/metrics/summary${q}`, { token });
 }
 
-// ── Calculadora de Prazos CPC ──
+// ── Calculadora de Prazos CPC & Eventos de Agenda ──
 export async function calculateDeadlineApi(token: string, startDate: string, days: number, isUrgent: boolean) {
   return apiFetch<any>("/agenda/calculate-deadline", {
     method: "POST",
@@ -373,6 +377,60 @@ export async function calculateDeadlineApi(token: string, startDate: string, day
       days: days,
       is_urgent: isUrgent,
     }),
+  });
+}
+
+export async function getEventsApi(token: string) {
+  return apiFetch<any[]>("/agenda/events", { token });
+}
+
+export async function createEventApi(
+  token: string,
+  payload: {
+    title: string;
+    description?: string;
+    starts_at: string;
+    ends_at?: string;
+    owner_id?: string;
+    client_id?: string;
+    location?: string;
+    is_deadline?: boolean;
+    is_urgent_judicial?: boolean;
+  }
+) {
+  return apiFetch<any>("/agenda/events", {
+    method: "POST",
+    token,
+    body: JSON.stringify(payload),
+  });
+}
+
+export async function updateEventApi(
+  token: string,
+  eventId: string,
+  payload: {
+    title?: string;
+    description?: string;
+    starts_at?: string;
+    ends_at?: string;
+    owner_id?: string;
+    client_id?: string;
+    location?: string;
+    is_deadline?: boolean;
+    is_urgent_judicial?: boolean;
+  }
+) {
+  return apiFetch<any>(`/agenda/events/${eventId}`, {
+    method: "PATCH",
+    token,
+    body: JSON.stringify(payload),
+  });
+}
+
+export async function deleteEventApi(token: string, eventId: string) {
+  return apiFetch<any>(`/agenda/events/${eventId}`, {
+    method: "DELETE",
+    token,
   });
 }
 

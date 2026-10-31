@@ -126,7 +126,7 @@ class UserService:
                 user.email = clean_email
 
         if data.role is not None and data.role != user.role:
-            if is_self and actor.role not in ADMIN_ROLES:
+            if is_self:
                 raise PermissionDenied("Não pode alterar o perfil da sua própria conta.")
             self._ensure_can_assign_role(actor, data.role)
             await self._audit(
