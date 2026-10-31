@@ -4006,7 +4006,7 @@ PCN Advogadas · Plataforma Forense`;
             className="fixed inset-0 bg-black/60 backdrop-blur-xs"
             onClick={() => setIsMobileMenuOpen(false)}
           />
-          <aside className="v6-side relative z-10 w-72 max-w-[85vw] h-full overflow-y-auto">
+          <aside className="v6-side v6-side-drawer relative z-10 w-72 max-w-[85vw] h-full overflow-y-auto">
             <div className="v6-brand relative">
               <img src="/logo_pcn_transparent.png" alt="PCN Advogadas" />
               <div className="v6-sub">GESTÃO DO ESCRITÓRIO</div>
@@ -4072,7 +4072,7 @@ PCN Advogadas · Plataforma Forense`;
       )}
 
       {/* ── SIDEBAR DESKTOP V6.0 ── */}
-      <aside className="v6-side hidden lg:flex">
+      <aside className="v6-side v6-side-desktop hidden lg:flex">
         <div className="v6-brand">
           <img src="/logo_pcn_transparent.png" alt="PCN Advogadas" />
           <div className="v6-sub">GESTÃO DO ESCRITÓRIO</div>
@@ -4228,7 +4228,7 @@ PCN Advogadas · Plataforma Forense`;
                     value={clientSearchQuery}
                     onChange={(e) => setClientSearchQuery(e.target.value)}
                     placeholder="Filtrar por nome, N.º PCN ou NIF..."
-                    className="px-3 py-2 rounded-[10px] border border-[#ddd1cc] bg-white text-xs w-60"
+                    className="px-3 py-2 rounded-[10px] border border-[#ddd1cc] bg-white text-xs w-full sm:w-60"
                   />
                   <button
                     type="button"
