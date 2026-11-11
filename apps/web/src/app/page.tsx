@@ -71,6 +71,7 @@ import {
   AuditLogEntry,
   TaskPriority,
   TaskV6Status,
+  TaskRedistributionAlert,
   isAdminRole,
   ROLE_LABELS,
 } from "@/lib/types";
@@ -839,7 +840,67 @@ export default function App() {
   const [showCalendarMenu, setShowCalendarMenu] = useState<boolean>(false);
   const [platformInfo, setPlatformInfo] = useState<PlatformInfo | null>(null);
 
-  const allowedTabsForLawyer = new Set(["work", "tasks", "calendar"]);
+  // Collapsible Sidebar Group "Gestão PCN" (exclusivo Direção/Admin)
+  const [isGestaoPcnOpen, setIsGestaoPcnOpen] = useState<boolean>(true);
+
+  // Alertas de Redistribuição de Tarefa (Sininho 🔔 + Popup com ACK OK)
+  const [redistributionAlerts, setRedistributionAlerts] = useState<TaskRedistributionAlert[]>([]);
+  const [isNotifDropdownOpen, setIsNotifDropdownOpen] = useState<boolean>(false);
+
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    const loadAlerts = () => {
+      try {
+        const raw = localStorage.getItem("pcn_redistribution_alerts");
+        if (raw) {
+          const parsed = JSON.parse(raw);
+          if (Array.isArray(parsed)) {
+            setRedistributionAlerts(parsed);
+          }
+        }
+      } catch {}
+    };
+    loadAlerts();
+    window.addEventListener("storage", loadAlerts);
+    return () => window.removeEventListener("storage", loadAlerts);
+  }, []);
+
+  const isAlertForCurrentUser = (alertItem: TaskRedistributionAlert): boolean => {
+    if (!currentUser) return false;
+    if (alertItem.targetUserId && alertItem.targetUserId === currentUser.id) {
+      return true;
+    }
+    const cleanTarget = (alertItem.targetUserName || "")
+      .replace("Dr.ª ", "")
+      .trim()
+      .toLowerCase();
+    const cleanCurrent = (currentUser.name || "")
+      .replace("Dr.ª ", "")
+      .trim()
+      .toLowerCase();
+    if (!cleanTarget || !cleanCurrent) return false;
+    return (
+      cleanTarget === cleanCurrent ||
+      cleanCurrent.includes(cleanTarget) ||
+      cleanTarget.includes(cleanCurrent)
+    );
+  };
+
+  const myPendingRedistAlerts = redistributionAlerts.filter(
+    (a) => !a.acknowledgedAt && isAlertForCurrentUser(a)
+  );
+  const myRecentRedistAlerts = redistributionAlerts
+    .filter((a) => isAlertForCurrentUser(a))
+    .slice(0, 12);
+
+  // Na barra lateral: de Painel de Direção até Agendas e Prazos visível a todas as utilizadoras
+  const allowedTabsForLawyer = new Set([
+    "dashboard",
+    "work",
+    "tasks",
+    "clients",
+    "calendar",
+  ]);
 
   // Navigation with native mobile back gesture/popstate support
   const switchTab = (
@@ -2562,13 +2623,50 @@ export default function App() {
     return fallbackMap[userId] || "Advogada";
   };
 
+  const handleAckRedistributionAlert = (alertItem: TaskRedistributionAlert) => {
+    const nowIso = new Date().toISOString();
+    setRedistributionAlerts((prev) => {
+      const updated = prev.map((a) =>
+        a.id === alertItem.id ? { ...a, acknowledgedAt: nowIso } : a
+      );
+      if (typeof window !== "undefined") {
+        try {
+          localStorage.setItem("pcn_redistribution_alerts", JSON.stringify(updated));
+        } catch {}
+      }
+      return updated;
+    });
+
+    addAuditLog(
+      "ACK de Tarefa",
+      `OK — ${currentUser.name} confirmou receção da informação de tarefa redistribuída: "${alertItem.taskTitle}" (${alertItem.clientName}) · De ${alertItem.fromUserName} para ${alertItem.toUserName}`,
+      "Gestão de Tarefas"
+    );
+  };
+
   const handleSaveTaskDetails = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!selectedTaskForDetails) return;
     setIsSubmittingDetails(true);
     try {
+      const prevAssigneeId = resolveAssigneeValue(selectedTaskForDetails);
+      const prevLawyerName =
+        selectedTaskForDetails.lawyer_name && selectedTaskForDetails.lawyer_name !== "—"
+          ? selectedTaskForDetails.lawyer_name
+          : getLawyerNameById(prevAssigneeId);
+
       const isPool = detailsForm.assigned_to === "pool";
-      const mappedBackendStatus = mapV6StatusToBackend(detailsForm.v6_status);
+      const wasRedistributed =
+        !isPool &&
+        prevAssigneeId !== "pool" &&
+        prevAssigneeId !== detailsForm.assigned_to;
+
+      const effectiveV6Status: TaskV6Status =
+        wasRedistributed && detailsForm.v6_status !== "Concluída"
+          ? "Redistribuída"
+          : detailsForm.v6_status;
+
+      const mappedBackendStatus = mapV6StatusToBackend(effectiveV6Status);
 
       const finalStatus: Task["status"] = isPool
         ? "pool"
@@ -2624,7 +2722,7 @@ export default function App() {
       }
 
       saveTaskMetaLocal(selectedTaskForDetails.id, {
-        v6_status: detailsForm.v6_status,
+        v6_status: effectiveV6Status,
         priority: detailsForm.priority,
         origin: detailsForm.origin,
         entity: detailsForm.entity,
@@ -2642,7 +2740,7 @@ export default function App() {
               title: detailsForm.title,
               description: detailsForm.description,
               status: finalStatus,
-              v6_status: detailsForm.v6_status,
+              v6_status: effectiveV6Status,
               priority: detailsForm.priority,
               origin: detailsForm.origin,
               entity: detailsForm.entity,
@@ -2655,13 +2753,73 @@ export default function App() {
         )
       );
 
-      addAuditLog(
-        "Tarefa atualizada",
-        `${detailsForm.title} · Prioridade: ${detailsForm.priority} · Estado: ${detailsForm.v6_status}`
-      );
+      if (wasRedistributed && resolvedLawyerName) {
+        const nowStr = new Date().toLocaleString("pt-PT", {
+          day: "2-digit",
+          month: "2-digit",
+          year: "numeric",
+          hour: "2-digit",
+          minute: "2-digit",
+        });
+        const alertForPrev: TaskRedistributionAlert = {
+          id: `redist_${Date.now()}_prev_${Math.random().toString(36).slice(2, 6)}`,
+          taskId: selectedTaskForDetails.id,
+          taskTitle: detailsForm.title,
+          clientName: selectedTaskForDetails.client_name,
+          fromUserId: prevAssigneeId,
+          fromUserName: prevLawyerName,
+          toUserId: detailsForm.assigned_to,
+          toUserName: resolvedLawyerName,
+          targetUserId: prevAssigneeId,
+          targetUserName: prevLawyerName,
+          roleInChange: "previous_owner",
+          changedBy: currentUser.name,
+          createdAt: nowStr,
+        };
+        const alertForNew: TaskRedistributionAlert = {
+          id: `redist_${Date.now()}_new_${Math.random().toString(36).slice(2, 6)}`,
+          taskId: selectedTaskForDetails.id,
+          taskTitle: detailsForm.title,
+          clientName: selectedTaskForDetails.client_name,
+          fromUserId: prevAssigneeId,
+          fromUserName: prevLawyerName,
+          toUserId: detailsForm.assigned_to,
+          toUserName: resolvedLawyerName,
+          targetUserId: detailsForm.assigned_to,
+          targetUserName: resolvedLawyerName,
+          roleInChange: "new_owner",
+          changedBy: currentUser.name,
+          createdAt: nowStr,
+        };
+
+        setRedistributionAlerts((prev) => {
+          const updated = [alertForNew, alertForPrev, ...prev];
+          if (typeof window !== "undefined") {
+            try {
+              localStorage.setItem("pcn_redistribution_alerts", JSON.stringify(updated));
+            } catch {}
+          }
+          return updated;
+        });
+
+        addAuditLog(
+          "Tarefa redistribuída",
+          `${detailsForm.title} (${selectedTaskForDetails.client_name}) · Redistribuída de ${prevLawyerName} para ${resolvedLawyerName} · Estado: Redistribuída`,
+          "Gestão de Tarefas"
+        );
+      } else {
+        addAuditLog(
+          "Tarefa atualizada",
+          `${detailsForm.title} · Prioridade: ${detailsForm.priority} · Estado: ${effectiveV6Status}`
+        );
+      }
       setSelectedTaskForDetails(null);
-      setModalFeedback("Detalhes, prioridade, tempo e atribuição da tarefa guardados com sucesso!");
-      setTimeout(() => setModalFeedback(null), 3500);
+      setModalFeedback(
+        wasRedistributed
+          ? `Tarefa redistribuída de ${prevLawyerName} para ${resolvedLawyerName}! Alerta enviado às advogadas.`
+          : "Detalhes, prioridade, tempo e atribuição da tarefa guardados com sucesso!"
+      );
+      setTimeout(() => setModalFeedback(null), 4000);
     } catch (err: any) {
       alert("Erro ao atualizar tarefa: " + err.message);
     } finally {
@@ -3958,26 +4116,97 @@ PCN Advogadas · Plataforma Forense`;
 
   const currentMeta = v6TabMeta[activeTab] || v6TabMeta.dashboard;
 
-  const navItems: Array<{
+  // Visível a todas as utilizadoras (do Painel de Direção até Agendas e Prazos)
+  const publicNavItems: Array<{
     id: typeof activeTab;
     icon: string;
     label: string;
-    adminOnly?: boolean;
     badge?: number;
   }> = [
-    { id: "dashboard", icon: "✦", label: "Painel de Direção", adminOnly: true },
+    { id: "dashboard", icon: "✦", label: "Painel de Direção" },
     { id: "work", icon: "◉", label: "A Minha Área de Trabalho" },
     { id: "tasks", icon: "✓", label: "Gestão de Tarefas" },
-    { id: "clients", icon: "◈", label: "Clientes PCN", adminOnly: true },
+    { id: "clients", icon: "◈", label: "Clientes PCN" },
     { id: "calendar", icon: "🗓", label: "Agendas e Prazos" },
-    { id: "feenotes", icon: "€", label: "Notas de Honorários", adminOnly: true },
-    { id: "reports", icon: "▤", label: "Relatório PCN", adminOnly: true },
-    { id: "attendance", icon: "📋", label: "Gestão de Assiduidade", adminOnly: true },
-    { id: "services", icon: "⚙", label: "Tabela de Serviços (€/h)", adminOnly: true },
-    { id: "archived", icon: "🗄", label: "Tarefas Arquivadas", badge: archivedTasksCount, adminOnly: true },
-    { id: "users", icon: "👥", label: "Utilizadoras & Acessos", adminOnly: true },
-    { id: "history", icon: "🕘", label: "Histórico PCN", adminOnly: true },
   ];
+
+  // Grupo exclusivo "Gestão PCN" (visível apenas a Direção / Admin)
+  const gestaoPcnNavItems: Array<{
+    id: typeof activeTab;
+    icon: string;
+    label: string;
+    badge?: number;
+  }> = [
+    { id: "feenotes", icon: "€", label: "Notas de Honorários" },
+    { id: "reports", icon: "▤", label: "Relatório PCN" },
+    { id: "attendance", icon: "📋", label: "Gestão de Assiduidade" },
+    { id: "services", icon: "⚙", label: "Tabela de Serviços (€/h)" },
+    { id: "archived", icon: "🗄", label: "Tarefas Arquivadas", badge: archivedTasksCount },
+    { id: "users", icon: "👥", label: "Utilizadoras & Acessos" },
+    { id: "history", icon: "🕘", label: "Histórico PCN" },
+  ];
+
+  const isGestaoChildActive = gestaoPcnNavItems.some((item) => item.id === activeTab);
+
+  const renderSidebarNavContent = () => (
+    <>
+      {publicNavItems.map((item) => (
+        <button
+          key={item.id}
+          type="button"
+          onClick={() => switchTab(item.id)}
+          className={activeTab === item.id ? "active" : ""}
+        >
+          <span className="ico">{item.icon}</span>
+          <span className="flex-1 text-left">{item.label}</span>
+          {item.badge !== undefined && item.badge > 0 && (
+            <span className="text-[10px] bg-white/20 text-white px-2 py-0.5 rounded-full font-bold">
+              {item.badge}
+            </span>
+          )}
+        </button>
+      ))}
+
+      {isAdmin && (
+        <div className="mt-2 pt-2 border-t border-white/15">
+          <button
+            type="button"
+            onClick={() => setIsGestaoPcnOpen((prev) => !prev)}
+            className={isGestaoChildActive && !isGestaoPcnOpen ? "active" : ""}
+          >
+            <span className="ico">🏛</span>
+            <span className="flex-1 text-left font-semibold">Gestão PCN</span>
+            <ChevronDown
+              className={`w-4 h-4 text-[#f6dc9b] transition-transform ${
+                isGestaoPcnOpen ? "rotate-180" : ""
+              }`}
+            />
+          </button>
+
+          {isGestaoPcnOpen && (
+            <div className="v6-nav-group-sub mt-0.5">
+              {gestaoPcnNavItems.map((item) => (
+                <button
+                  key={item.id}
+                  type="button"
+                  onClick={() => switchTab(item.id)}
+                  className={activeTab === item.id ? "active" : ""}
+                >
+                  <span className="ico">{item.icon}</span>
+                  <span className="flex-1 text-left">{item.label}</span>
+                  {item.badge !== undefined && item.badge > 0 && (
+                    <span className="text-[10px] bg-white/20 text-white px-2 py-0.5 rounded-full font-bold">
+                      {item.badge}
+                    </span>
+                  )}
+                </button>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
+    </>
+  );
 
   const effectiveClients = clients;
   const effectiveTasks = tasks;
@@ -4018,26 +4247,7 @@ PCN Advogadas · Plataforma Forense`;
                 <X className="w-4 h-4" />
               </button>
             </div>
-            <nav className="v6-nav">
-              {navItems
-                .filter((item) => !item.adminOnly || isAdmin)
-                .map((item) => (
-                  <button
-                    key={item.id}
-                    type="button"
-                    onClick={() => switchTab(item.id)}
-                    className={activeTab === item.id ? "active" : ""}
-                  >
-                    <span className="ico">{item.icon}</span>
-                    <span className="flex-1 text-left">{item.label}</span>
-                    {item.badge !== undefined && item.badge > 0 && (
-                      <span className="text-[10px] bg-white/20 text-white px-2 py-0.5 rounded-full font-bold">
-                        {item.badge}
-                      </span>
-                    )}
-                  </button>
-                ))}
-            </nav>
+            <nav className="v6-nav">{renderSidebarNavContent()}</nav>
             <div className="v6-side-foot">
               <div className="label">Sessão ativa</div>
               <div className="font-bold text-sm text-white">{currentUser.name}</div>
@@ -4078,26 +4288,7 @@ PCN Advogadas · Plataforma Forense`;
           <div className="v6-sub">GESTÃO DO ESCRITÓRIO</div>
         </div>
 
-        <nav className="v6-nav">
-          {navItems
-            .filter((item) => !item.adminOnly || isAdmin)
-            .map((item) => (
-              <button
-                key={item.id}
-                type="button"
-                onClick={() => switchTab(item.id)}
-                className={activeTab === item.id ? "active" : ""}
-              >
-                <span className="ico">{item.icon}</span>
-                <span className="flex-1 text-left">{item.label}</span>
-                {item.badge !== undefined && item.badge > 0 && (
-                  <span className="text-[10px] bg-white/20 text-white px-2 py-0.5 rounded-full font-bold">
-                    {item.badge}
-                  </span>
-                )}
-              </button>
-            ))}
-        </nav>
+        <nav className="v6-nav">{renderSidebarNavContent()}</nav>
 
         <div className="v6-side-foot">
           <div className="label">Sessão ativa</div>
@@ -4165,6 +4356,94 @@ PCN Advogadas · Plataforma Forense`;
                 </button>
               )}
             </div>
+
+            {/* Sininho de Notificações de Tarefas Redistribuídas (🔔) */}
+            <div className="relative">
+              <button
+                type="button"
+                onClick={() => setIsNotifDropdownOpen((prev) => !prev)}
+                className="v6-btn relative py-2 px-2.5"
+                title="Notificações de Tarefas Redistribuídas"
+              >
+                <Bell className="w-4 h-4 text-[#59083e]" />
+                {myPendingRedistAlerts.length > 0 && (
+                  <span className="absolute -top-1.5 -right-1.5 min-w-[18px] h-[18px] px-1 rounded-full bg-[#9b2226] text-white text-[10px] font-bold flex items-center justify-center shadow-xs">
+                    {myPendingRedistAlerts.length}
+                  </span>
+                )}
+              </button>
+
+              {isNotifDropdownOpen && (
+                <div className="absolute right-0 mt-2 w-80 sm:w-96 rounded-xl bg-white border border-[#e5d8d0] shadow-xl z-50 p-3 space-y-2.5">
+                  <div className="flex items-center justify-between border-b border-[#f0eae6] pb-2">
+                    <strong className="text-xs text-[#59083e] uppercase tracking-wider">
+                      🔔 Notificações de Tarefas ({myRecentRedistAlerts.length})
+                    </strong>
+                    <button
+                      type="button"
+                      onClick={() => setIsNotifDropdownOpen(false)}
+                      className="text-xs text-[#776f73] hover:text-[#28202a] cursor-pointer"
+                    >
+                      ✕
+                    </button>
+                  </div>
+
+                  {myRecentRedistAlerts.length === 0 ? (
+                    <p className="text-xs text-[#776f73] py-4 text-center">
+                      Sem alertas de redistribuição registados para {currentUser.name}.
+                    </p>
+                  ) : (
+                    <div className="max-h-72 overflow-y-auto divide-y divide-[#f0eae6] text-xs">
+                      {myRecentRedistAlerts.map((al) => (
+                        <div key={al.id} className="py-2.5 space-y-1">
+                          <div className="flex items-center justify-between gap-2">
+                            <span className="v6-badge redist text-[10px]! py-0.5! px-2!">
+                              Tarefa Redistribuída
+                            </span>
+                            <span className="text-[10px] text-[#776f73]">
+                              {al.createdAt}
+                            </span>
+                          </div>
+                          <div className="font-semibold text-[#28202a]">
+                            {al.taskTitle} ({al.clientName})
+                          </div>
+                          <div className="text-[11px] text-[#6d5d66]">
+                            De <strong>{al.fromUserName}</strong> para{" "}
+                            <strong>{al.toUserName}</strong>
+                          </div>
+                          <div className="flex items-center justify-between pt-1">
+                            {al.acknowledgedAt ? (
+                              <span className="text-[10.5px] text-[#326421] font-semibold">
+                                ✓ Confirmado (ACK OK)
+                              </span>
+                            ) : (
+                              <button
+                                type="button"
+                                onClick={() => handleAckRedistributionAlert(al)}
+                                className="v6-btn primary sm"
+                              >
+                                OK
+                              </button>
+                            )}
+                            <button
+                              type="button"
+                              onClick={() => {
+                                setIsNotifDropdownOpen(false);
+                                switchTab("tasks");
+                              }}
+                              className="text-[11px] text-[#92006f] font-semibold hover:underline cursor-pointer"
+                            >
+                              Ver tarefa ›
+                            </button>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              )}
+            </div>
+
             {isAdmin && (
               <button type="button" className="v6-btn ghost" onClick={openNewClientModal}>
                 + Cliente
@@ -4212,7 +4491,7 @@ PCN Advogadas · Plataforma Forense`;
           )}
 
           {/* 4: CLIENTES PCN */}
-          {activeTab === "clients" && isAdmin && (
+          {activeTab === "clients" && (
             <div className="v6-card">
               <div className="v6-section-head">
                 <div>
@@ -6402,6 +6681,77 @@ PCN Advogadas · Plataforma Forense`;
             </div>
           </div>
         )}
+
+        {/* ── MODAL POPUP: ALERTA DE TAREFA REDISTRIBUÍDA (ACK COM BOTÃO OK + LOG) ── */}
+        {myPendingRedistAlerts.length > 0 && (() => {
+          const activeRedistAlert = myPendingRedistAlerts[0];
+          const isNewOwner = activeRedistAlert.roleInChange === "new_owner";
+          return (
+            <div className="v6-modal-backdrop">
+              <div className="v6-modal max-w-md!">
+                <div className="flex items-center justify-between gap-2 mb-2">
+                  <h3 className="m-0!">🔔 Alerta de Tarefa Redistribuída</h3>
+                  <span className="v6-badge redist">Redistribuída</span>
+                </div>
+
+                <p className="text-xs text-[#50454b] mb-3 leading-relaxed">
+                  {isNewOwner ? (
+                    <>
+                      A tarefa <strong>{activeRedistAlert.taskTitle}</strong> (
+                      {activeRedistAlert.clientName}) foi{" "}
+                      <strong>redistribuída para a sua responsabilidade</strong>.
+                    </>
+                  ) : (
+                    <>
+                      A tarefa <strong>{activeRedistAlert.taskTitle}</strong> (
+                      {activeRedistAlert.clientName}), que estava atribuída a si, foi{" "}
+                      <strong>redistribuída para {activeRedistAlert.toUserName}</strong>.
+                    </>
+                  )}
+                </p>
+
+                <div className="v6-item mb-4 space-y-1.5 text-xs">
+                  <div className="flex justify-between">
+                    <span className="text-[#736872]">Tarefa:</span>
+                    <strong className="text-[#28202a] text-right">
+                      {activeRedistAlert.taskTitle}
+                    </strong>
+                  </div>
+                  <div className="flex justify-between">
+                    <span className="text-[#736872]">Cliente:</span>
+                    <span className="font-semibold text-[#59083e]">
+                      {activeRedistAlert.clientName}
+                    </span>
+                  </div>
+                  <div className="flex justify-between">
+                    <span className="text-[#736872]">Advogada anterior:</span>
+                    <span>{activeRedistAlert.fromUserName}</span>
+                  </div>
+                  <div className="flex justify-between">
+                    <span className="text-[#736872]">Nova responsável:</span>
+                    <strong className="text-[#6a1b9a]">
+                      {activeRedistAlert.toUserName}
+                    </strong>
+                  </div>
+                  <div className="flex justify-between pt-1 border-t border-[#eee5e1] text-[11px] text-[#776f73]">
+                    <span>Alterado por {activeRedistAlert.changedBy}</span>
+                    <span>{activeRedistAlert.createdAt}</span>
+                  </div>
+                </div>
+
+                <div className="v6-modal-actions justify-end!">
+                  <button
+                    type="button"
+                    className="v6-btn primary px-6! font-bold"
+                    onClick={() => handleAckRedistributionAlert(activeRedistAlert)}
+                  >
+                    OK
+                  </button>
+                </div>
+              </div>
+            </div>
+          );
+        })()}
       </main>
     </div>
   );

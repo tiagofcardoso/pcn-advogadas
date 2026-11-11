@@ -365,10 +365,10 @@ export default function WorkspaceV6Tab({
             <div className="flex items-center justify-between">
               <div>
                 <h2 className="font-serif-v6 text-[21px] text-[#28202a] m-0">
-                  Prioridades
+                  Tarefa Prioritária
                 </h2>
                 <p className="text-[11px] text-[#776f73] mt-0.5">
-                  Top 5 mais urgentes ·{" "}
+                  Assuntos que exigem atenção ·{" "}
                   <span className="text-[#9b2226] font-semibold">
                     ● Vermelho: hoje/vencido
                   </span>{" "}
@@ -389,13 +389,14 @@ export default function WorkspaceV6Tab({
 
             {topPriorityTasks.length === 0 ? (
               <p className="text-xs text-[#776f73] py-4">
-                Sem tarefas pendentes ou prioritárias de momento.
+                Sem tarefas prioritárias ou assuntos urgentes de momento.
               </p>
             ) : (
               <div className="space-y-2 text-xs">
                 {topPriorityTasks.map((t) => {
                   const sem = getTaskDeadlineSemaphore(t);
                   const prio = getPriorityBadgeStyle(t.priority);
+                  const v6St = getTaskV6Status(t);
                   return (
                     <div
                       key={t.id}
@@ -429,7 +430,8 @@ export default function WorkspaceV6Tab({
                           </strong>
                         </div>
                         <div className="text-[11px] text-[#6d5d66] mt-0.5 truncate">
-                          {t.client_name} · {resolveLawyerLabel(t)}
+                          {t.client_name} · {resolveLawyerLabel(t)} ·{" "}
+                          <span className="font-semibold text-[#59083e]">{v6St}</span>
                         </div>
                       </div>
 
@@ -463,97 +465,277 @@ export default function WorkspaceV6Tab({
           </section>
         </div>
 
-        {/* Bottom Row: Prazos e compromissos (sem Acesso Rápido) */}
-        <div className="grid grid-cols-1 gap-4">
-          <section className="v6-card space-y-3">
-            <div className="flex items-center justify-between">
-              <h2 className="font-serif-v6 text-[21px] text-[#28202a] m-0">
-                Prazos e compromissos ({events.length})
-              </h2>
-              <div className="flex items-center gap-2">
+        {/* Row: Prazos e compromissos (Left, botão Calendário por baixo) + Acesso Rápido (Right, 3 botões) */}
+        <div className="grid grid-cols-1 lg:grid-cols-12 gap-4">
+          <section className="lg:col-span-8 v6-card flex flex-col justify-between space-y-3">
+            <div className="space-y-3">
+              <div className="flex items-center justify-between">
+                <h2 className="font-serif-v6 text-[21px] text-[#28202a] m-0">
+                  Prazos &amp; Compromissos ({events.length})
+                </h2>
                 <button
                   type="button"
                   onClick={() => onOpenNewEventModal("Compromisso")}
-                  className="v6-btn primary text-xs"
+                  className="text-xs font-semibold text-[#92006f] hover:underline cursor-pointer"
                 >
-                  <Plus className="w-3.5 h-3.5" />
-                  <span>Novo registo</span>
+                  + Novo registo
                 </button>
+              </div>
+              <div className="divide-y divide-[#f0eae6] text-xs">
+                {events.slice(0, 6).map((e) => {
+                  const normType = normalizeEventType(e.type);
+                  return (
+                    <div
+                      key={e.id}
+                      className="py-2.5 flex items-center justify-between gap-4 hover:bg-[#fdfbf9] px-2 rounded"
+                    >
+                      <div className="flex items-center gap-3 min-w-0">
+                        <div className="w-16 shrink-0 text-left">
+                          <strong className="font-serif-v6 text-sm text-[#28202a] block leading-tight">
+                            {e.time}
+                          </strong>
+                          <span className="text-[10px] text-[#776f73] font-medium">
+                            {formatIsoDatePt(e.date)}
+                          </span>
+                        </div>
+                        <span className="w-7 h-7 rounded-lg bg-[#f4eee8] text-[#7b175f] flex items-center justify-center shrink-0">
+                          {normType.includes("Prazo") ? "⚖" : "📅"}
+                        </span>
+                        <div className="min-w-0">
+                          <div className="flex items-center gap-2">
+                            <strong className="text-[#28202a] font-semibold truncate block">
+                              {e.title}
+                            </strong>
+                            <span
+                              className={`v6-badge text-[10px]! py-0! px-1.5! shrink-0 ${
+                                normType.includes("Prazo")
+                                  ? "wait"
+                                  : normType.includes("Férias")
+                                  ? "start"
+                                  : ""
+                              }`}
+                            >
+                              {normType}
+                            </span>
+                          </div>
+                          {e.subtitle && (
+                            <span className="text-[11px] text-[#776f73] truncate block mt-0.5">
+                              {e.subtitle}
+                            </span>
+                          )}
+                        </div>
+                      </div>
+                      <div className="flex items-center gap-2 shrink-0">
+                        <button
+                          type="button"
+                          onClick={() =>
+                            onEditEvent ? onEditEvent(e) : onSwitchTab("calendar")
+                          }
+                          className="v6-btn py-1 px-2.5 text-[11px]"
+                        >
+                          Editar
+                        </button>
+                      </div>
+                    </div>
+                  );
+                })}
+                {events.length === 0 && (
+                  <p className="py-4 text-center text-[#776f73] italic">
+                    Sem prazos ou compromissos registados.
+                  </p>
+                )}
+              </div>
+            </div>
+
+            {/* Botão de atalho para o Calendário por baixo (como na Versão 6) */}
+            <div className="pt-3 border-t border-[#f0eae6] flex items-center justify-between">
+              <button
+                type="button"
+                onClick={() => onSwitchTab("calendar")}
+                className="v6-btn gold text-xs font-semibold"
+              >
+                <span>📅 Abrir Calendário Geral</span>
+              </button>
+              <span className="text-[11px] text-[#776f73]">
+                Sincronizado com Agendas e Prazos
+              </span>
+            </div>
+          </section>
+
+          {/* Do lado direito: Acesso Rápido com os 3 botões (+ Nova Tarefa; + Novo Compromisso; + Novo Prazo) */}
+          <section className="lg:col-span-4 v6-card flex flex-col justify-between space-y-3">
+            <div className="space-y-3">
+              <div>
+                <h2 className="font-serif-v6 text-[21px] text-[#28202a] m-0">
+                  Acesso Rápido
+                </h2>
+                <p className="text-xs text-[#776f73] mt-0.5">
+                  Atalhos diretos para registo imediato
+                </p>
+              </div>
+
+              <div className="space-y-2.5 pt-1">
                 <button
                   type="button"
-                  onClick={() => onSwitchTab("calendar")}
-                  className="v6-btn text-xs"
+                  onClick={onOpenNewTaskModal}
+                  className="w-full v6-btn primary py-3 px-4 justify-start text-sm font-semibold shadow-xs"
                 >
-                  Abrir calendário
+                  <span className="w-6 h-6 rounded-full bg-white/20 flex items-center justify-center text-xs">
+                    📋
+                  </span>
+                  <span>+ Nova Tarefa</span>
+                </button>
+
+                <button
+                  type="button"
+                  onClick={() => onOpenNewEventModal("Compromisso")}
+                  className="w-full v6-btn gold py-3 px-4 justify-start text-sm font-semibold"
+                >
+                  <span className="w-6 h-6 rounded-full bg-[#966c2d]/15 flex items-center justify-center text-xs">
+                    📅
+                  </span>
+                  <span>+ Novo Compromisso</span>
+                </button>
+
+                <button
+                  type="button"
+                  onClick={() => onOpenNewEventModal("Prazo")}
+                  className="w-full v6-btn py-3 px-4 justify-start text-sm font-semibold border-[#e2d3c1] bg-[#fdfaf6] hover:bg-[#f6efe4]"
+                >
+                  <span className="w-6 h-6 rounded-full bg-[#59083e]/10 text-[#59083e] flex items-center justify-center text-xs">
+                    ⚖️
+                  </span>
+                  <span>+ Novo Prazo</span>
                 </button>
               </div>
             </div>
-            <div className="divide-y divide-[#f0eae6] text-xs">
-              {events.slice(0, 8).map((e) => {
-                const normType = normalizeEventType(e.type);
-                return (
-                  <div
-                    key={e.id}
-                    className="py-2.5 flex items-center justify-between gap-4 hover:bg-[#fdfbf9] px-2 rounded"
-                  >
-                    <div className="flex items-center gap-3 min-w-0">
-                      <div className="w-16 shrink-0 text-left">
-                        <strong className="font-serif-v6 text-sm text-[#28202a] block leading-tight">
-                          {e.time}
-                        </strong>
-                        <span className="text-[10px] text-[#776f73] font-medium">
-                          {formatIsoDatePt(e.date)}
-                        </span>
-                      </div>
-                      <span className="w-7 h-7 rounded-lg bg-[#f4eee8] text-[#7b175f] flex items-center justify-center shrink-0">
-                        {normType.includes("Prazo") ? "⚖" : "▦"}
-                      </span>
-                      <div className="min-w-0">
-                        <div className="flex items-center gap-2">
-                          <strong className="text-[#28202a] font-semibold truncate block">
-                            {e.title}
-                          </strong>
-                          <span
-                            className={`v6-badge text-[10px]! py-0! px-1.5! shrink-0 ${
-                              normType.includes("Prazo")
-                                ? "wait"
-                                : normType.includes("Férias")
-                                ? "start"
-                                : ""
-                            }`}
-                          >
-                            {normType}
-                          </span>
-                        </div>
-                        {e.subtitle && (
-                          <span className="text-[11px] text-[#776f73] truncate block mt-0.5">
-                            {e.subtitle}
-                          </span>
-                        )}
-                      </div>
-                    </div>
-                    <div className="flex items-center gap-2 shrink-0">
-                      <button
-                        type="button"
-                        onClick={() =>
-                          onEditEvent ? onEditEvent(e) : onSwitchTab("calendar")
-                        }
-                        className="v6-btn py-1 px-2.5 text-[11px]"
-                      >
-                        Editar
-                      </button>
-                    </div>
-                  </div>
-                );
-              })}
-              {events.length === 0 && (
-                <p className="py-4 text-center text-[#776f73] italic">
-                  Sem prazos ou compromissos registados.
-                </p>
-              )}
+
+            <div className="pt-2 border-t border-[#f0eae6] text-[11px] text-[#776f73]">
+              Os novos registos ficam automaticamente visíveis na equipa e no calendário.
             </div>
           </section>
         </div>
+
+        {/* Final do Painel de Direção: Controlo de Tarefas (compilado por Advogada, equivalente ao Atividade por Advogada da V5.2) */}
+        <section className="v6-card space-y-3">
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <div>
+              <h2 className="font-serif-v6 text-[21px] text-[#28202a] m-0">
+                Controlo de Tarefas
+              </h2>
+              <p className="text-xs text-[#776f73] mt-0.5">
+                Informação compilada por Advogada · Estados, carga ativa e tempo registado
+              </p>
+            </div>
+            <button
+              type="button"
+              onClick={() => onSwitchTab("tasks")}
+              className="v6-btn text-xs"
+            >
+              Ver Gestão de Tarefas ›
+            </button>
+          </div>
+
+          <div className="overflow-x-auto">
+            <table className="w-full text-left border-collapse text-xs">
+              <thead>
+                <tr className="bg-[#f7f3ef] text-[#50454b] border-b border-[#e8dfd9]">
+                  <th className="py-2.5 px-3">Advogada</th>
+                  <th className="py-2.5 px-3 text-center">Por iniciar</th>
+                  <th className="py-2.5 px-3 text-center">Em curso</th>
+                  <th className="py-2.5 px-3 text-center">A aguardar</th>
+                  <th className="py-2.5 px-3 text-center">Redistribuídas</th>
+                  <th className="py-2.5 px-3 text-center">Concluídas</th>
+                  <th className="py-2.5 px-3 text-center">Total Ativas</th>
+                  <th className="py-2.5 px-3 text-right">Tempo Registado</th>
+                  <th className="py-2.5 px-3 text-right">Ação</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-[#f0eae6]">
+                {usersList
+                  .filter((u) => u.is_active !== false)
+                  .map((u) => {
+                    const uTasks = activeTasks.filter(
+                      (t) =>
+                        t.assigned_to === u.id ||
+                        (t.lawyer_name &&
+                          t.lawyer_name
+                            .toLowerCase()
+                            .includes(u.name.replace("Dr.ª ", "").toLowerCase()))
+                    );
+                    const cStart = uTasks.filter(
+                      (t) => getTaskV6Status(t) === "Por iniciar"
+                    ).length;
+                    const cRun = uTasks.filter(
+                      (t) => getTaskV6Status(t) === "Em curso"
+                    ).length;
+                    const cWait = uTasks.filter((t) =>
+                      getTaskV6Status(t).includes("aguardar")
+                    ).length;
+                    const cRedist = uTasks.filter(
+                      (t) => getTaskV6Status(t) === "Redistribuída"
+                    ).length;
+                    const cDone = uTasks.filter(
+                      (t) => getTaskV6Status(t) === "Concluída"
+                    ).length;
+                    const cActive = uTasks.filter(
+                      (t) => getTaskV6Status(t) !== "Concluída"
+                    ).length;
+                    const totalSecs = uTasks.reduce(
+                      (acc, t) => acc + (t.total_duration_seconds || 0),
+                      0
+                    );
+                    const hrs = Math.floor(totalSecs / 3600);
+                    const mins = Math.floor((totalSecs % 3600) / 60);
+
+                    return (
+                      <tr key={u.id} className="hover:bg-[#fdfbf9]">
+                        <td className="py-3 px-3 font-semibold text-[#28202a]">
+                          <div>{u.name}</div>
+                          <div className="text-[10.5px] text-[#776f73] font-normal">
+                            {u.email}
+                          </div>
+                        </td>
+                        <td className="py-3 px-3 text-center">
+                          <span className="v6-badge start">{cStart}</span>
+                        </td>
+                        <td className="py-3 px-3 text-center">
+                          <span className="v6-badge">{cRun}</span>
+                        </td>
+                        <td className="py-3 px-3 text-center">
+                          <span className="v6-badge wait">{cWait}</span>
+                        </td>
+                        <td className="py-3 px-3 text-center">
+                          <span className="v6-badge redist">{cRedist}</span>
+                        </td>
+                        <td className="py-3 px-3 text-center">
+                          <span className="v6-badge done">{cDone}</span>
+                        </td>
+                        <td className="py-3 px-3 text-center font-bold text-[#59083e]">
+                          {cActive}
+                        </td>
+                        <td className="py-3 px-3 text-right font-semibold text-[#28202a]">
+                          {hrs}h {String(mins).padStart(2, "0")}m
+                        </td>
+                        <td className="py-3 px-3 text-right">
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setLawyerFilter(u.id);
+                              onSwitchTab("tasks");
+                            }}
+                            className="v6-btn py-1 px-2.5 text-[11px]"
+                          >
+                            Ver tarefas
+                          </button>
+                        </td>
+                      </tr>
+                    );
+                  })}
+              </tbody>
+            </table>
+          </div>
+        </section>
       </div>
     );
   }
@@ -666,18 +848,26 @@ export default function WorkspaceV6Tab({
             </div>
           </div>
 
-          {/* 5th Card: Agenda de hoje */}
+          {/* 5th Card: Agenda de hoje (Sombreado diferenciado para maior destaque!) */}
           <div
             onClick={() => onSwitchTab("calendar")}
-            className="col-span-2 lg:col-span-1 v6-card py-4 px-4 flex flex-col justify-center cursor-pointer hover:border-[#c5a467] transition-all"
+            style={{
+              background: "linear-gradient(135deg, #fdf6eb 0%, #f1dfc1 100%)",
+              borderColor: "#d3b178",
+              boxShadow:
+                "0 12px 28px rgba(89, 8, 62, 0.15), inset 0 1px 0 rgba(255, 255, 255, 0.85)",
+            }}
+            className="col-span-2 lg:col-span-1 v6-card py-4 px-4 flex flex-col justify-center cursor-pointer hover:scale-[1.01] transition-all"
           >
-            <div className="flex items-center gap-2 text-xs font-bold text-[#966c2d] uppercase tracking-wider">
-              <span>📅</span>
+            <div className="flex items-center gap-2 text-xs font-bold text-[#59083e] uppercase tracking-wider">
+              <span className="w-7 h-7 rounded-full bg-white/80 text-[#966c2d] shadow-xs flex items-center justify-center text-sm">
+                📅
+              </span>
               <span>Agenda de hoje</span>
             </div>
-            <div className="mt-2 flex items-center gap-2 text-xs text-[#28202a] font-semibold">
+            <div className="mt-2.5 flex items-center gap-2 text-xs text-[#28202a] font-bold">
               <span>{compromissosCount} Compromissos</span>
-              <span className="text-[#c5a467]">|</span>
+              <span className="text-[#966c2d]">|</span>
               <span>{prazosCount} Prazo</span>
             </div>
           </div>
@@ -970,8 +1160,28 @@ export default function WorkspaceV6Tab({
                           {formatIsoDatePt(e.date)}
                         </span>
                       </div>
-                      <span className="w-7 h-7 rounded-lg bg-[#f4eee8] text-[#7b175f] flex items-center justify-center shrink-0">
-                        {normType.includes("Prazo") ? "⚖" : "▦"}
+                       <span
+                        className="w-8 h-8 rounded-full flex items-center justify-center shrink-0 text-sm shadow-2xs border"
+                        style={{
+                          backgroundColor: normType.includes("Prazo")
+                            ? "#fff0d6"
+                            : normType.includes("Férias")
+                            ? "#e0eefc"
+                            : "#faebf6",
+                          borderColor: normType.includes("Prazo")
+                            ? "#eed6a7"
+                            : normType.includes("Férias")
+                            ? "#b6d4fe"
+                            : "#f0cde6",
+                        }}
+                      >
+                        {normType.includes("Prazo")
+                          ? "⚖️"
+                          : normType.includes("Diligência")
+                          ? "🏛️"
+                          : normType.includes("Férias")
+                          ? "🌴"
+                          : "📅"}
                       </span>
                       <div className="min-w-0">
                         <div className="flex items-center gap-1.5">
@@ -1030,43 +1240,51 @@ export default function WorkspaceV6Tab({
         </div>
 
         {/* Footer Quick-Action Cards matching minha_area_trabalho.jpeg */}
-        <div className={`grid grid-cols-1 sm:grid-cols-2 ${isAdmin ? "lg:grid-cols-5" : "lg:grid-cols-4"} gap-3`}>
-          {isAdmin && (
-            <button
-              type="button"
-              onClick={onOpenNewClientModal}
-              className="v6-card py-3.5 px-4 flex items-center justify-center gap-2 font-serif-v6 text-sm text-[#59083e] hover:border-[#c5a467] cursor-pointer transition-all"
-            >
-              <Plus className="w-4 h-4 text-[#966c2d]" />
-              <span>Novo cliente</span>
-            </button>
-          )}
+        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-3">
+          <button
+            type="button"
+            onClick={() =>
+              isAdmin ? onOpenNewClientModal() : onSwitchTab("clients")
+            }
+            className="v6-card py-3.5 px-4 flex items-center justify-center gap-2.5 font-serif-v6 text-sm text-[#59083e] hover:border-[#c5a467] hover:bg-[#fdfaf6] cursor-pointer transition-all"
+          >
+            <span className="w-7 h-7 rounded-full bg-[#f4ead9] border border-[#e2d0b1] flex items-center justify-center text-sm shrink-0">
+              👤
+            </span>
+            <span className="font-semibold">+ Novo cliente</span>
+          </button>
 
           <button
             type="button"
             onClick={onOpenNewTaskModal}
-            className="v6-card py-3.5 px-4 flex items-center justify-center gap-2 font-serif-v6 text-sm text-[#59083e] hover:border-[#c5a467] cursor-pointer transition-all"
+            className="v6-card py-3.5 px-4 flex items-center justify-center gap-2.5 font-serif-v6 text-sm text-[#59083e] hover:border-[#c5a467] hover:bg-[#fdfaf6] cursor-pointer transition-all"
           >
-            <Plus className="w-4 h-4 text-[#966c2d]" />
-            <span>Nova tarefa</span>
+            <span className="w-7 h-7 rounded-full bg-[#faebf6] border border-[#efd0e6] flex items-center justify-center text-sm shrink-0">
+              📋
+            </span>
+            <span className="font-semibold">+ Nova tarefa</span>
           </button>
 
           <button
             type="button"
             onClick={() => onOpenNewEventModal("Compromisso")}
-            className="v6-card py-3.5 px-4 flex items-center justify-center gap-2 font-serif-v6 text-sm text-[#59083e] hover:border-[#c5a467] cursor-pointer transition-all"
+            className="v6-card py-3.5 px-4 flex items-center justify-center gap-2.5 font-serif-v6 text-sm text-[#59083e] hover:border-[#c5a467] hover:bg-[#fdfaf6] cursor-pointer transition-all"
           >
-            <Plus className="w-4 h-4 text-[#966c2d]" />
-            <span>Novo compromisso</span>
+            <span className="w-7 h-7 rounded-full bg-[#e0eefc] border border-[#c2dcf7] flex items-center justify-center text-sm shrink-0">
+              📅
+            </span>
+            <span className="font-semibold">+ Novo compromisso</span>
           </button>
 
           <button
             type="button"
             onClick={() => onOpenNewEventModal("Prazo")}
-            className="v6-card py-3.5 px-4 flex items-center justify-center gap-2 font-serif-v6 text-sm text-[#59083e] hover:border-[#c5a467] cursor-pointer transition-all"
+            className="v6-card py-3.5 px-4 flex items-center justify-center gap-2.5 font-serif-v6 text-sm text-[#59083e] hover:border-[#c5a467] hover:bg-[#fdfaf6] cursor-pointer transition-all"
           >
-            <Plus className="w-4 h-4 text-[#966c2d]" />
-            <span>Novo prazo</span>
+            <span className="w-7 h-7 rounded-full bg-[#fff0d6] border border-[#eed6a7] flex items-center justify-center text-sm shrink-0">
+              ⚖️
+            </span>
+            <span className="font-semibold">+ Novo prazo</span>
           </button>
 
           <div className="v6-card py-3 px-4 bg-[#f9f5f1] flex items-center gap-3">

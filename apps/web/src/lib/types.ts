@@ -27,8 +27,26 @@ export type TaskV6Status =
   | "A aguardar"
   | "A aguardar cliente"
   | "A aguardar entidade"
+  | "Redistribuída"
   | "Concluída"
   | "Cancelada";
+
+export interface TaskRedistributionAlert {
+  id: string;
+  taskId: string;
+  taskTitle: string;
+  clientName: string;
+  fromUserId?: string;
+  fromUserName: string;
+  toUserId?: string;
+  toUserName: string;
+  targetUserId?: string;
+  targetUserName: string;
+  roleInChange: "previous_owner" | "new_owner";
+  changedBy: string;
+  createdAt: string;
+  acknowledgedAt?: string;
+}
 
 export interface Task {
   id: string;

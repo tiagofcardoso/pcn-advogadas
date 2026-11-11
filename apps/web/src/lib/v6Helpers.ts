@@ -13,6 +13,7 @@ export const V6_STATUS_LIST: TaskV6Status[] = [
   "Em curso",
   "A aguardar cliente",
   "A aguardar entidade",
+  "Redistribuída",
   "Concluída",
 ];
 
@@ -45,6 +46,7 @@ export function mapV6StatusToBackend(
       return "paused";
     case "Concluída":
       return "completed";
+    case "Redistribuída":
     case "Por iniciar":
     default:
       return "assigned";
@@ -53,6 +55,7 @@ export function mapV6StatusToBackend(
 
 export function getV6BadgeClass(status: TaskV6Status): string {
   if (status === "Concluída") return "v6-badge done";
+  if (status === "Redistribuída") return "v6-badge redist";
   if (status.includes("aguardar")) return "v6-badge wait";
   if (status === "Por iniciar") return "v6-badge start";
   return "v6-badge";
@@ -265,7 +268,7 @@ export function sortTasksByUrgency(tasks: Task[]): Task[] {
 
 /**
  * Generates and opens the A4 Editorial Fee Note PDF matching
- * `sample/PCN_Nota_Honorarios_Editorial_V3-3.pdf`
+ * Dr.ª Patrícia's final Aptos Light 2-page layout (`PCN_Nota_Honorarios_Revista.pdf`).
  */
 export function openEditorialFeeNotePdf(params: {
   refCode: string;
@@ -295,20 +298,17 @@ export function openEditorialFeeNotePdf(params: {
   const finalBalance =
     Math.round((subtotalWithVat - provisions - credits) * 100) / 100;
 
-  const clientDisplay = client.number
-    ? `${client.name} — Cliente PCN ${client.number}`
-    : client.name;
+  const clientDisplay = client.name;
   const subjectDisplay =
     meta.subject?.trim() ||
     client.process_reference ||
-    "Registos, contratos e acompanhamento jurídico";
+    "Prestação de serviços jurídicos";
   const periodDisplay = meta.period?.trim() || "Outubro de 2026";
   const lawyerSign = signatoryName || "Patrícia da Costa Neto";
   const logoUrl = `${window.location.origin}/logo_pcn_official.png`;
 
-  const fmtEuro = (v: number, showDashIfZero = false) => {
+  const fmtEuroAlways = (v: number) => {
     const num = Number(v || 0);
-    if (showDashIfZero && Math.abs(num) < 0.005) return "—";
     return (
       num.toLocaleString("pt-PT", {
         minimumFractionDigits: 2,
@@ -317,35 +317,202 @@ export function openEditorialFeeNotePdf(params: {
     );
   };
 
-  const rowsHtml = lines
-    .map((l, idx) => {
-      const bg = idx % 2 === 1 ? "#FAF8F5" : "#FFFFFF";
+  const fmtEuroBlankIfZero = (v: number) => {
+    const num = Number(v || 0);
+    if (Math.abs(num) < 0.005) return "";
+    return fmtEuroAlways(num);
+  };
+
+  // Chunk lines into pages of up to 28 rows per page (matching Page 1 of the sample PDF)
+  const ROWS_PER_PAGE = 28;
+  const linePages: FeeNoteCustomLine[][] = [];
+  if (lines.length === 0) {
+    linePages.push([]);
+  } else {
+    for (let i = 0; i < lines.length; i += ROWS_PER_PAGE) {
+      linePages.push(lines.slice(i, i + ROWS_PER_PAGE));
+    }
+  }
+
+  const renderTopHeader = () => `
+    <div style="display:flex; align-items:center; gap:14px; margin-bottom:20px;">
+      <div style="flex:1; height:1px; background:#C5B38E;"></div>
+      <img src="${logoUrl}" alt="PCN Advogadas" style="height:54px; max-width:140px; object-fit:contain;" />
+    </div>
+  `;
+
+  const renderBottomFooter = (pageNum: number) => `
+    <div style="margin-top:auto; padding-top:16px;">
+      <svg viewBox="0 0 600 22" width="100%" height="20" preserveAspectRatio="none" style="display:block;">
+        <path d="M 0 18 Q 220 6 430 12 T 600 16" fill="none" stroke="#C5B38E" stroke-width="2.2" opacity="0.55" />
+        <path d="M 0 20 Q 250 10 470 15 T 600 19" fill="none" stroke="#D8C8A8" stroke-width="3.5" opacity="0.35" />
+      </svg>
+      <div style="display:flex; justify-content:flex-end; align-items:center; font-size:9.5px; font-weight:300; color:#666666; padding-top:6px; letter-spacing:0.2px;">
+        <span>PCN ADVOGADAS &nbsp;&middot;&nbsp; Página ${pageNum}</span>
+      </div>
+    </div>
+  `;
+
+  const tablePagesHtml = linePages
+    .map((pageLines, pageIdx) => {
+      const rowsHtml = pageLines
+        .map(
+          (l) => `
+          <tr>
+            <td style="padding:3.8px 8px; border-bottom:1px solid #EFEFEF; color:#333333; font-size:10px; font-weight:300; white-space:nowrap; vertical-align:top;">
+              ${formatIsoDatePt(l.date)}
+            </td>
+            <td style="padding:3.8px 8px; border-bottom:1px solid #EFEFEF; color:#333333; font-size:10px; font-weight:300; line-height:1.32; vertical-align:top;">
+              <div>${l.description}</div>
+            </td>
+            <td style="padding:3.8px 8px; border-bottom:1px solid #EFEFEF; color:#333333; font-size:10px; font-weight:300; text-align:center; white-space:nowrap; vertical-align:top;">
+              ${fmtEuroBlankIfZero(l.documented_expenses)}
+            </td>
+            <td style="padding:3.8px 8px; border-bottom:1px solid #EFEFEF; color:#333333; font-size:10px; font-weight:300; text-align:center; white-space:nowrap; vertical-align:top;">
+              ${fmtEuroBlankIfZero(l.undocumented_expenses)}
+            </td>
+            <td style="padding:3.8px 8px; border-bottom:1px solid #EFEFEF; color:#333333; font-size:10px; font-weight:300; text-align:right; white-space:nowrap; vertical-align:top;">
+              ${fmtEuroBlankIfZero(l.fees)}
+            </td>
+          </tr>
+        `
+        )
+        .join("");
+
+      const metadataSection =
+        pageIdx === 0
+          ? `
+        <div style="margin-bottom:14px;">
+          <h1 style="font-size:13px; font-weight:700; color:#700053; margin:0; letter-spacing:0.2px; text-transform:uppercase;">
+            NOTA DE HONORÁRIOS
+          </h1>
+          <div style="font-size:10.5px; font-weight:300; color:#333333; margin-top:4px; text-transform:uppercase;">
+            ${client.name} &middot; ${refCode}
+          </div>
+        </div>
+
+        <div style="background:#F6F6EE; padding:12px 14px; display:grid; grid-template-columns:1.25fr 1fr; gap:10px 24px; margin-bottom:18px;">
+          <div>
+            <div style="font-size:9.5px; font-weight:300; color:#444444; text-transform:uppercase;">
+              CLIENTE
+            </div>
+            <div style="font-size:10.5px; font-weight:300; color:#222222; margin-top:3px; margin-bottom:10px;">
+              ${clientDisplay}
+            </div>
+
+            <div style="font-size:9.5px; font-weight:300; color:#444444; text-transform:uppercase;">
+              ASSUNTO
+            </div>
+            <div style="font-size:10.5px; font-weight:300; color:#222222; margin-top:3px;">
+              ${subjectDisplay}
+            </div>
+          </div>
+
+          <div>
+            <div style="font-size:9.5px; font-weight:300; color:#444444; text-transform:uppercase;">
+              DATA DE EMISSÃO
+            </div>
+            <div style="font-size:10.5px; font-weight:300; color:#222222; margin-top:3px; margin-bottom:10px;">
+              ${issueDatePt}
+            </div>
+
+            <div style="font-size:9.5px; font-weight:300; color:#444444; text-transform:uppercase;">
+              PERÍODO
+            </div>
+            <div style="font-size:10.5px; font-weight:300; color:#222222; margin-top:3px;">
+              ${periodDisplay}
+            </div>
+          </div>
+        </div>
+      `
+          : "";
+
       return `
-        <tr style="background:${bg};">
-          <td style="padding:11px 12px; border-bottom:1px solid #EBE5DC; color:#28202a; font-size:11.5px; white-space:nowrap; vertical-align:top;">
-            ${formatIsoDatePt(l.date)}
-          </td>
-          <td style="padding:11px 12px; border-bottom:1px solid #EBE5DC; color:#28202a; font-size:11.5px; line-height:1.45; vertical-align:top;">
-            <div>${l.description}</div>
-            ${
-              l.hours
-                ? `<div style="font-size:10px; color:#776f73; margin-top:2px;">Tempo registado: ${l.hours}</div>`
-                : ""
-            }
-          </td>
-          <td style="padding:11px 12px; border-bottom:1px solid #EBE5DC; color:#28202a; font-size:11.5px; text-align:right; white-space:nowrap; vertical-align:top;">
-            ${fmtEuro(l.documented_expenses, true)}
-          </td>
-          <td style="padding:11px 12px; border-bottom:1px solid #EBE5DC; color:#28202a; font-size:11.5px; text-align:right; white-space:nowrap; vertical-align:top;">
-            ${fmtEuro(l.undocumented_expenses, true)}
-          </td>
-          <td style="padding:11px 12px; border-bottom:1px solid #EBE5DC; color:#28202a; font-size:11.5px; text-align:right; white-space:nowrap; vertical-align:top;">
-            ${fmtEuro(l.fees, false)}
-          </td>
-        </tr>
-      `;
+      <div class="a4-sheet">
+        <div>
+          ${renderTopHeader()}
+          ${metadataSection}
+          <table style="width:100%; border-collapse:collapse;">
+            <thead>
+              <tr style="background:#6D074A; color:#FFFFFF; font-size:10px; font-weight:600;">
+                <th style="padding:7px 8px; text-align:center; width:78px;">Data</th>
+                <th style="padding:7px 8px; text-align:center;">Descrição da Tarefa</th>
+                <th style="padding:7px 8px; text-align:center; width:104px;">Despesas<br/>documentadas</th>
+                <th style="padding:7px 8px; text-align:center; width:108px;">Despesas não<br/>documentadas</th>
+                <th style="padding:7px 8px; text-align:right; width:86px;">Honorários</th>
+              </tr>
+            </thead>
+            <tbody>
+              ${rowsHtml}
+            </tbody>
+          </table>
+        </div>
+        ${renderBottomFooter(pageIdx + 1)}
+      </div>
+    `;
     })
     .join("");
+
+  const apuramentoPageNum = linePages.length + 1;
+  const apuramentoPageHtml = `
+    <div class="a4-sheet page-break">
+      <div>
+        ${renderTopHeader()}
+
+        <div style="margin-top:10px;">
+          <div style="font-size:10.5px; font-weight:300; color:#333333; text-transform:uppercase; margin-bottom:14px;">
+            APURAMENTO
+          </div>
+
+          <div style="display:flex; justify-content:space-between; padding:6px 6px; font-size:10.5px; font-weight:300; color:#333333;">
+            <span>Honorários</span>
+            <span>${fmtEuroAlways(totalFees)}</span>
+          </div>
+          <div style="display:flex; justify-content:space-between; padding:6px 6px; font-size:10.5px; font-weight:300; color:#333333;">
+            <span>Despesas documentadas</span>
+            <span>${fmtEuroAlways(totalDocExpenses)}</span>
+          </div>
+          <div style="display:flex; justify-content:space-between; padding:6px 6px; font-size:10.5px; font-weight:300; color:#333333;">
+            <span>Despesas não documentadas</span>
+            <span>${fmtEuroAlways(totalUndocExpenses)}</span>
+          </div>
+          <div style="display:flex; justify-content:space-between; padding:6px 6px; font-size:10.5px; font-weight:300; color:#333333;">
+            <span>IVA (${meta.apply_vat ? "23% — simulação" : "Isento / 0%"})</span>
+            <span>${fmtEuroAlways(vatAmount)}</span>
+          </div>
+          <div style="display:flex; justify-content:space-between; padding:6px 6px; font-size:10.5px; font-weight:300; color:#333333;">
+            <span>Subtotal</span>
+            <span>${fmtEuroAlways(subtotalWithVat)}</span>
+          </div>
+          <div style="display:flex; justify-content:space-between; padding:6px 6px; font-size:10.5px; font-weight:300; color:#333333;">
+            <span>Provisões recebidas (a deduzir)</span>
+            <span>${provisions > 0 ? "-" + fmtEuroAlways(provisions) : fmtEuroAlways(0)}</span>
+          </div>
+          <div style="display:flex; justify-content:space-between; padding:6px 6px; font-size:10.5px; font-weight:300; color:#333333; margin-bottom:4px;">
+            <span>Créditos / pagamentos adicionais</span>
+            <span>${credits > 0 ? "-" + fmtEuroAlways(credits) : fmtEuroAlways(0)}</span>
+          </div>
+
+          <div style="height:1px; background:#C5B38E; margin:2px 0;"></div>
+          <div style="background:#F6F6EE; padding:7px 6px; display:flex; justify-content:space-between; align-items:center; font-size:10.5px; font-weight:300; color:#333333;">
+            <span>SALDO FINAL</span>
+            <span>${fmtEuroAlways(finalBalance)}</span>
+          </div>
+        </div>
+
+        <div style="margin-top:26px; font-size:10.5px; font-weight:300; color:#333333; line-height:1.6;">
+          <div>A Advogada,</div>
+          <div style="margin-top:4px;">${lawyerSign}</div>
+        </div>
+
+        <div style="margin-top:22px; font-size:10px; font-weight:300; color:#333333; line-height:1.45;">
+          Documento demonstrativo com dados fictícios. A incidência de IVA, a classificação das despesas e a imputação de provisões dependem da situação concreta e deverão ser confirmadas antes da emissão.
+        </div>
+      </div>
+
+      ${renderBottomFooter(apuramentoPageNum)}
+    </div>
+  `;
 
   const htmlDoc = `<!DOCTYPE html>
 <html lang="pt-PT">
@@ -355,7 +522,7 @@ export function openEditorialFeeNotePdf(params: {
   <style>
     @page {
       size: A4 portrait;
-      margin: 14mm 16mm;
+      margin: 12mm 16mm;
     }
     * {
       box-sizing: border-box;
@@ -366,8 +533,9 @@ export function openEditorialFeeNotePdf(params: {
       margin: 0;
       padding: 0;
       background: #E8E3DA;
-      font-family: Arial, Helvetica, sans-serif;
-      color: #28202a;
+      font-family: 'Aptos Light', 'Aptos', 'Calibri Light', 'Segoe UI Light', Arial, sans-serif;
+      font-weight: 300;
+      color: #333333;
     }
     .toolbar {
       position: sticky;
@@ -388,7 +556,7 @@ export function openEditorialFeeNotePdf(params: {
       padding: 8px 18px;
       border-radius: 6px;
       font-size: 12px;
-      font-weight: 700;
+      font-weight: 600;
       cursor: pointer;
     }
     .toolbar-btn-close {
@@ -406,7 +574,7 @@ export function openEditorialFeeNotePdf(params: {
       min-height: 297mm;
       margin: 24px auto;
       background: #FFFFFF;
-      padding: 18mm 20mm 16mm 20mm;
+      padding: 14mm 18mm 12mm 18mm;
       box-shadow: 0 12px 36px rgba(0,0,0,0.14);
       display: flex;
       flex-direction: column;
@@ -418,10 +586,14 @@ export function openEditorialFeeNotePdf(params: {
       .toolbar { display: none !important; }
       .a4-sheet {
         width: 100%;
-        min-height: 268mm;
+        min-height: 271mm;
         margin: 0;
         padding: 0;
         box-shadow: none;
+      }
+      .page-break {
+        page-break-before: always;
+        break-before: page;
       }
     }
   </style>
@@ -429,7 +601,7 @@ export function openEditorialFeeNotePdf(params: {
 <body>
   <div class="toolbar">
     <div>
-      <strong style="font-size:13px; color:#e9c885; font-family:Georgia,serif;">PCN ADVOGADAS · Nota de Honorários Editorial V3</strong>
+      <strong style="font-size:13px; color:#e9c885;">PCN ADVOGADAS &middot; Nota de Honorários (Aptos Light)</strong>
       <span style="font-size:12px; color:#e6d4e0; margin-left:12px;">${refCode} — ${clientDisplay}</span>
     </div>
     <div>
@@ -438,151 +610,8 @@ export function openEditorialFeeNotePdf(params: {
     </div>
   </div>
 
-  <div class="a4-sheet">
-    <div>
-      <!-- Top Right Official Logo -->
-      <div style="display:flex; justify-content:flex-end; margin-bottom:10px;">
-        <img src="${logoUrl}" alt="PCN Advogadas" style="max-height:74px; max-width:170px; object-fit:contain;" />
-      </div>
-
-      <!-- Gold Rule -->
-      <div style="height:1.5px; background:#C5A467; width:100%; margin-bottom:22px;"></div>
-
-      <!-- Editorial Title -->
-      <div style="margin-bottom:18px;">
-        <h1 style="font-family:Georgia, 'Times New Roman', serif; font-size:23px; font-weight:700; color:#59083E; margin:0; letter-spacing:0.4px;">
-          NOTA DE HONORÁRIOS
-        </h1>
-        <div style="font-size:11px; color:#776f73; margin-top:4px;">
-          ${refCode}
-        </div>
-      </div>
-
-      <!-- Client & Metadata Cream Box -->
-      <div style="background:#F7F6F0; border:1px solid #E5DEC9; border-radius:2px; padding:14px 18px; display:grid; grid-template-columns:1.35fr 1fr; gap:20px; margin-bottom:22px;">
-        <div>
-          <div style="font-family:Georgia, serif; font-size:9.5px; font-weight:700; color:#59083E; text-transform:uppercase; letter-spacing:0.5px;">
-            CLIENTE
-          </div>
-          <div style="font-size:12px; color:#28202a; margin-top:3px; margin-bottom:12px;">
-            ${clientDisplay}
-          </div>
-
-          <div style="font-family:Georgia, serif; font-size:9.5px; font-weight:700; color:#59083E; text-transform:uppercase; letter-spacing:0.5px;">
-            ASSUNTO
-          </div>
-          <div style="font-size:12px; color:#28202a; margin-top:3px;">
-            ${subjectDisplay}
-          </div>
-        </div>
-
-        <div>
-          <div style="font-family:Georgia, serif; font-size:9.5px; font-weight:700; color:#59083E; text-transform:uppercase; letter-spacing:0.5px;">
-            DATA DE EMISSÃO
-          </div>
-          <div style="font-size:12px; color:#28202a; margin-top:3px; margin-bottom:12px;">
-            ${issueDatePt}
-          </div>
-
-          <div style="font-family:Georgia, serif; font-size:9.5px; font-weight:700; color:#59083E; text-transform:uppercase; letter-spacing:0.5px;">
-            PERÍODO
-          </div>
-          <div style="font-size:12px; color:#28202a; margin-top:3px;">
-            ${periodDisplay}
-          </div>
-        </div>
-      </div>
-
-      <!-- 5-Column Editorial Table -->
-      <table style="width:100%; border-collapse:collapse; border:1px solid #E5DEC9;">
-        <thead>
-          <tr style="background:#59083E; color:#FFFFFF; font-family:Georgia, serif; font-size:9.5px; text-transform:uppercase; letter-spacing:0.4px;">
-            <th style="padding:10px 12px; text-align:left; width:86px;">DATA</th>
-            <th style="padding:10px 12px; text-align:left;">DESCRIÇÃO DA TAREFA</th>
-            <th style="padding:10px 12px; text-align:right; width:108px;">DESPESAS<br/>DOCUMENTADAS</th>
-            <th style="padding:10px 12px; text-align:right; width:118px;">DESPESAS NÃO<br/>DOCUMENTADAS</th>
-            <th style="padding:10px 12px; text-align:right; width:96px;">HONORÁRIOS</th>
-          </tr>
-        </thead>
-        <tbody>
-          ${rowsHtml}
-          <tr style="background:#F3EFE6; border-top:1.5px solid #C5A467; font-family:Georgia, serif; font-weight:700; font-size:11px; color:#59083E;">
-            <td colspan="2" style="padding:10px 12px;">SUBTOTAL (VALORES SEM IVA)</td>
-            <td style="padding:10px 12px; text-align:right;">${fmtEuro(totalDocExpenses)}</td>
-            <td style="padding:10px 12px; text-align:right;">${fmtEuro(totalUndocExpenses)}</td>
-            <td style="padding:10px 12px; text-align:right;">${fmtEuro(totalFees)}</td>
-          </tr>
-        </tbody>
-      </table>
-
-      <!-- APURAMENTO Block -->
-      <div style="margin-top:28px; display:flex; justify-content:flex-end;">
-        <div style="width:310px;">
-          <div style="font-family:Georgia, serif; font-size:11px; font-weight:700; color:#59083E; text-transform:uppercase; letter-spacing:0.5px; padding-bottom:6px; border-bottom:1.5px solid #C5A467; margin-bottom:8px;">
-            APURAMENTO
-          </div>
-
-          <div style="display:flex; justify-content:space-between; padding:5px 4px; font-size:11.5px;">
-            <span style="color:#50454b;">Honorários</span>
-            <span>${fmtEuro(totalFees)}</span>
-          </div>
-          <div style="display:flex; justify-content:space-between; padding:5px 4px; font-size:11.5px;">
-            <span style="color:#50454b;">Despesas documentadas</span>
-            <span>${fmtEuro(totalDocExpenses)}</span>
-          </div>
-          <div style="display:flex; justify-content:space-between; padding:5px 4px; font-size:11.5px;">
-            <span style="color:#50454b;">Despesas não documentadas</span>
-            <span>${fmtEuro(totalUndocExpenses)}</span>
-          </div>
-          <div style="display:flex; justify-content:space-between; padding:5px 4px; font-size:11.5px;">
-            <span style="color:#50454b;">IVA (${meta.apply_vat ? "23% — simulação" : "Isento / 0%"})</span>
-            <span>${fmtEuro(vatAmount)}</span>
-          </div>
-          <div style="display:flex; justify-content:space-between; padding:6px 4px; font-size:11.5px; font-weight:700; border-top:1px solid #EBE5DC; margin-top:2px;">
-            <span style="color:#28202a;">Subtotal</span>
-            <span>${fmtEuro(subtotalWithVat)}</span>
-          </div>
-          <div style="display:flex; justify-content:space-between; padding:5px 4px; font-size:11.5px;">
-            <span style="color:#50454b;">Provisões recebidas (a deduzir)</span>
-            <span>${provisions > 0 ? "- " + fmtEuro(provisions) : fmtEuro(0)}</span>
-          </div>
-          <div style="display:flex; justify-content:space-between; padding:5px 4px; font-size:11.5px; margin-bottom:8px;">
-            <span style="color:#50454b;">Créditos / pagamentos adicionais</span>
-            <span>${credits > 0 ? "- " + fmtEuro(credits) : fmtEuro(0)}</span>
-          </div>
-
-          <div style="height:1.5px; background:#C5A467; margin-bottom:6px;"></div>
-          <div style="background:#F3EFE6; padding:10px 12px; display:flex; justify-content:space-between; align-items:center; font-family:Georgia, serif; font-size:13px; font-weight:700; color:#59083E;">
-            <span>SALDO FINAL</span>
-            <span>${fmtEuro(finalBalance)}</span>
-          </div>
-        </div>
-      </div>
-
-      <!-- Signature Block -->
-      <div style="margin-top:42px; display:flex; justify-content:flex-end;">
-        <div style="width:230px; text-align:left; font-size:11.5px; color:#50454b;">
-          <div style="margin-bottom:26px;">A Advogada,</div>
-          <div style="border-top:1px solid #999; padding-top:6px; font-family:Georgia, serif; font-weight:700; color:#28202a;">
-            ${lawyerSign}
-          </div>
-        </div>
-      </div>
-    </div>
-
-    <!-- Editorial Wave Footer -->
-    <div style="margin-top:32px;">
-      <svg viewBox="0 0 600 42" width="100%" height="36" preserveAspectRatio="none" style="display:block;">
-        <path d="M 0 34 Q 190 40 370 20 T 600 6" fill="none" stroke="#C5A467" stroke-width="1.6" opacity="0.85" />
-        <path d="M 120 40 Q 330 28 470 12 T 600 18 L 600 42 L 120 42 Z" fill="#59083E" opacity="0.92" />
-        <path d="M 220 42 Q 390 30 520 16 T 600 24 L 600 42 Z" fill="#92006F" opacity="0.75" />
-      </svg>
-      <div style="display:flex; justify-content:space-between; align-items:center; font-size:9.5px; color:#776f73; padding-top:4px;">
-        <span>PCN ADVOGADAS</span>
-        <span>Página 1</span>
-      </div>
-    </div>
-  </div>
+  ${tablePagesHtml}
+  ${apuramentoPageHtml}
 
   <script>
     window.onload = function() {

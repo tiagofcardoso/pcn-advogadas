@@ -1,4 +1,4 @@
-@import "tailwindcss";
+,,@import "tailwindcss";
 
 @layer base {
   :root {
@@ -24,12 +24,15 @@
 
     /* Barra dourada estilo metal torcido oficial */
     --gold-twisted-img: url("/gold_twisted_bar.png");
+    --font-aptos: 'Aptos Light', 'Aptos', 'Calibri Light', 'Segoe UI Light', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+    --font-serif: 'Aptos Light', 'Aptos', 'Calibri Light', 'Segoe UI Light', sans-serif;
   }
 
   body {
     background-color: var(--paper);
     color: var(--ink);
-    font-family: Arial, Helvetica, 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+    font-family: var(--font-aptos);
+    font-weight: 300;
     -webkit-font-smoothing: antialiased;
     overscroll-behavior-y: contain;
     -webkit-tap-highlight-color: transparent;
@@ -37,7 +40,7 @@
 }
 
 .font-serif-v6 {
-  font-family: Georgia, 'Times New Roman', serif;
+  font-family: var(--font-aptos);
 }
 
 /* V6 App Shell, Sidebar & Topbar */
@@ -153,10 +156,22 @@
   padding: 11px 12px;
   border-radius: 8px;
   margin: 2px 0;
-  font-family: Georgia, serif;
+  font-family: var(--font-aptos);
+  font-weight: 300;
   font-size: 14px;
   cursor: pointer;
   transition: all 0.15s ease;
+}
+
+.v6-nav-group-sub {
+  margin-left: 14px;
+  padding-left: 8px;
+  border-left: 1px solid rgba(233, 200, 133, 0.35);
+}
+
+.v6-nav-group-sub button {
+  font-size: 13px;
+  padding: 9px 10px;
 }
 
 .v6-nav button.active,
@@ -221,9 +236,9 @@
 }
 
 .v6-top h1 {
-  font-family: Georgia, serif;
+  font-family: var(--font-aptos);
   font-size: 22px;
-  font-weight: 700;
+  font-weight: 600;
   color: var(--plum);
   margin: 0;
   line-height: 1.2;
@@ -313,7 +328,8 @@
 
 .v6-metric b {
   display: block;
-  font: 32px Georgia, serif;
+  font: 32px var(--font-aptos);
+  font-weight: 600;
   color: var(--plum);
   line-height: 1.1;
 }
@@ -324,7 +340,8 @@
 }
 
 .v6-timer {
-  font: 45px Georgia, serif;
+  font: 45px var(--font-aptos);
+  font-weight: 600;
   text-align: center;
   padding: 18px;
   background: linear-gradient(110deg, #f8f2eb, #fff);
@@ -336,7 +353,7 @@
 
 .v6-timer small {
   display: block;
-  font: 12px Arial, sans-serif;
+  font: 12px var(--font-aptos);
   color: #73676e;
   margin-top: 7px;
 }
@@ -404,6 +421,12 @@
 .v6-badge.wait {
   background: #fff0d6;
   color: #805c17;
+}
+
+.v6-badge.redist {
+  background: #f3e5f5;
+  color: #6a1b9a;
+  border: 1px solid #ce93d8;
 }
 
 .v6-badge.done {
