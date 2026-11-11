@@ -164,11 +164,11 @@ async def claim_task(
 async def assign_task(
     task_id: str,
     body: TaskAssignRequest,
-    admin: Annotated[User, Depends(require_admin)],
+    user: Annotated[User, Depends(require_full_access)],
     session: Annotated[AsyncSession, Depends(get_session)],
 ) -> TaskRead:
     task_svc = TaskService(session)
-    task = await task_svc.assign_task(admin, task_id, body.assigned_to)
+    task = await task_svc.assign_task(user, task_id, body.assigned_to)
     return TaskRead.model_validate(task)
 
 

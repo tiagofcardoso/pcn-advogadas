@@ -600,5 +600,40 @@ export async function deleteUserApi(token: string, userId: string) {
   });
 }
 
+// ── Notificações em Tempo Real: Tarefas Redistribuídas + ACK ──
+
+export async function getRedistributionNoticesApi(token: string) {
+  return apiFetch<any[]>("/notifications/redistributions", { token });
+}
+
+export async function getRedistributedTaskIdsApi(token: string) {
+  return apiFetch<string[]>("/notifications/redistributions/tasks", { token });
+}
+
+export async function createRedistributionNoticesApi(
+  token: string,
+  payload: {
+    task_id: string;
+    task_title: string;
+    client_name: string;
+    from_user_id: string;
+    to_user_id: string;
+  }
+) {
+  return apiFetch<any[]>("/notifications/redistributions", {
+    method: "POST",
+    token,
+    body: JSON.stringify(payload),
+  });
+}
+
+export async function ackRedistributionNoticeApi(token: string, noticeId: string) {
+  return apiFetch<any>(`/notifications/redistributions/${noticeId}/ack`, {
+    method: "POST",
+    token,
+  });
+}
+
+
 
 

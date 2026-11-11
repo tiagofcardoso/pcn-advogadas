@@ -150,6 +150,10 @@ import {
   updateUserApi,
   updateMyProfileApi,
   deleteUserApi,
+  getRedistributionNoticesApi,
+  getRedistributedTaskIdsApi,
+  createRedistributionNoticesApi,
+  ackRedistributionNoticeApi,
 } from "@/lib/api";
 
 function formatIsoToEuropean(iso?: string): string {
@@ -854,9 +858,41 @@ export default function App() {
   // Collapsible Sidebar Group "Gestão PCN" (exclusivo Direção/Admin)
   const [isGestaoPcnOpen, setIsGestaoPcnOpen] = useState<boolean>(true);
 
-  // Alertas de Redistribuição de Tarefa (Sininho 🔔 + Popup com ACK OK)
+  // Alertas de Redistribuição de Tarefa (Sininho 🔔 + Popup com ACK OK em Tempo Real via PostgreSQL)
   const [redistributionAlerts, setRedistributionAlerts] = useState<TaskRedistributionAlert[]>([]);
   const [isNotifDropdownOpen, setIsNotifDropdownOpen] = useState<boolean>(false);
+  const lastSeenNoticeIdsRef = useRef<Set<string>>(new Set());
+
+  const mapServerNoticeToAlert = (n: any): TaskRedistributionAlert => {
+    const dt = n.created_at ? new Date(n.created_at) : new Date();
+    const formattedAt = isNaN(dt.getTime())
+      ? String(n.created_at || "")
+      : dt.toLocaleString("pt-PT", {
+          day: "2-digit",
+          month: "2-digit",
+          year: "numeric",
+          hour: "2-digit",
+          minute: "2-digit",
+        });
+    const targetName =
+      n.role_in_change === "previous_owner" ? n.from_user_name : n.to_user_name;
+    return {
+      id: n.id,
+      taskId: n.task_id,
+      taskTitle: n.task_title,
+      clientName: n.client_name || "Cliente",
+      fromUserId: n.from_user_id || undefined,
+      fromUserName: n.from_user_name,
+      toUserId: n.to_user_id || undefined,
+      toUserName: n.to_user_name,
+      targetUserId: n.target_user_id,
+      targetUserName: targetName,
+      roleInChange: n.role_in_change === "previous_owner" ? "previous_owner" : "new_owner",
+      changedBy: n.changed_by || "Direção PCN",
+      createdAt: formattedAt,
+      acknowledgedAt: n.acknowledged_at || undefined,
+    };
+  };
 
   useEffect(() => {
     if (typeof window === "undefined") return;
@@ -876,10 +912,110 @@ export default function App() {
     return () => window.removeEventListener("storage", loadAlerts);
   }, []);
 
+  // Polling em Tempo Real (a cada 4s) de avisos de redistribuição e estado Redistribuída no PostgreSQL
+  useEffect(() => {
+    if (!isAuthenticated || !authToken || !apiConnected) return;
+    let cancelled = false;
+
+    const pollRealtimeNotifications = async () => {
+      try {
+        const [serverNotices, redistTaskIds] = await Promise.all([
+          getRedistributionNoticesApi(authToken).catch(() => null),
+          getRedistributedTaskIdsApi(authToken).catch(() => null),
+        ]);
+        if (cancelled) return;
+
+        let hasNewUnseenNotice = false;
+        if (Array.isArray(serverNotices)) {
+          const mappedServer = serverNotices.map(mapServerNoticeToAlert);
+          for (const item of mappedServer) {
+            if (!lastSeenNoticeIdsRef.current.has(item.id)) {
+              lastSeenNoticeIdsRef.current.add(item.id);
+              hasNewUnseenNotice = true;
+            }
+          }
+          setRedistributionAlerts((prev) => {
+            const localDemoOnly = prev.filter((a) => a.id.startsWith("redist_demo_"));
+            const merged = [...mappedServer, ...localDemoOnly];
+            if (typeof window !== "undefined") {
+              try {
+                localStorage.setItem("pcn_redistribution_alerts", JSON.stringify(merged));
+              } catch {}
+            }
+            return merged;
+          });
+        }
+
+        if (Array.isArray(redistTaskIds) && redistTaskIds.length > 0) {
+          const redistSet = new Set(redistTaskIds);
+          setTasks((prev) =>
+            prev.map((t) =>
+              redistSet.has(t.id) &&
+              t.status !== "completed" &&
+              t.status !== "archived" &&
+              t.v6_status !== "Concluída"
+                ? { ...t, v6_status: "Redistribuída" }
+                : t
+            )
+          );
+        }
+
+        if (hasNewUnseenNotice) {
+          const freshTasks = await getDirectionBoard(authToken).catch(() => null);
+          if (!cancelled && Array.isArray(freshTasks)) {
+            const redistSet = new Set(Array.isArray(redistTaskIds) ? redistTaskIds : []);
+            setTasks((prev) => {
+              const prevById = new Map(prev.map((p) => [p.id, p]));
+              return freshTasks.map((t: any) => {
+                const existing = prevById.get(t.id);
+                const isRedist = redistSet.has(t.id);
+                return {
+                  id: t.id,
+                  title: t.title,
+                  description: t.description,
+                  client_id: t.client_id,
+                  client_name: t.client?.name || existing?.client_name || "Cliente",
+                  task_type: t.task_type?.name || existing?.task_type || "Geral",
+                  task_type_id: t.task_type_id || t.task_type?.id || existing?.task_type_id,
+                  status: t.status,
+                  v6_status:
+                    isRedist && t.status !== "completed"
+                      ? "Redistribuída"
+                      : existing?.v6_status,
+                  priority: existing?.priority || (t.is_urgent_deadline ? "Urgente" : "Normal"),
+                  origin: existing?.origin,
+                  entity: existing?.entity,
+                  assigned_to: t.assigned_to,
+                  lawyer_name: t.assignee?.name || "—",
+                  due_date: t.due_date ? t.due_date.split("T")[0] : undefined,
+                  total_duration_seconds:
+                    existing && t.status === "in_progress"
+                      ? Math.max(existing.total_duration_seconds || 0, t.total_duration_seconds || 0)
+                      : t.total_duration_seconds || 0,
+                  fee_amount: existing?.fee_amount,
+                  documented_expenses: existing?.documented_expenses,
+                  undocumented_expenses: existing?.undocumented_expenses,
+                };
+              });
+            });
+          }
+        }
+      } catch {}
+    };
+
+    pollRealtimeNotifications();
+    const intervalId = setInterval(pollRealtimeNotifications, 4000);
+    return () => {
+      cancelled = true;
+      clearInterval(intervalId);
+    };
+  }, [isAuthenticated, authToken, apiConnected, currentUser?.id]);
+
   const isAlertForCurrentUser = (alertItem: TaskRedistributionAlert): boolean => {
     if (!currentUser) return false;
-    if (alertItem.targetUserId && alertItem.targetUserId === currentUser.id) {
-      return true;
+    // Se o aviso tem targetUserId, comparamos estritamente pelo ID (evita falsos positivos por apelido comum como "Cardoso")
+    if (alertItem.targetUserId && currentUser.id) {
+      return alertItem.targetUserId === currentUser.id;
     }
     const cleanTarget = (alertItem.targetUserName || "")
       .replace("Dr.ª ", "")
@@ -890,11 +1026,7 @@ export default function App() {
       .trim()
       .toLowerCase();
     if (!cleanTarget || !cleanCurrent) return false;
-    return (
-      cleanTarget === cleanCurrent ||
-      cleanCurrent.includes(cleanTarget) ||
-      cleanTarget.includes(cleanCurrent)
-    );
+    return cleanTarget === cleanCurrent;
   };
 
   const myPendingRedistAlerts = redistributionAlerts.filter(
@@ -2636,6 +2768,9 @@ export default function App() {
 
   const handleAckRedistributionAlert = (alertItem: TaskRedistributionAlert) => {
     const nowIso = new Date().toISOString();
+    if (authToken && apiConnected && !alertItem.id.startsWith("redist_")) {
+      ackRedistributionNoticeApi(authToken, alertItem.id).catch(() => {});
+    }
     setRedistributionAlerts((prev) => {
       const updated = prev.map((a) =>
         a.id === alertItem.id ? { ...a, acknowledgedAt: nowIso } : a
@@ -2765,53 +2900,79 @@ export default function App() {
       );
 
       if (wasRedistributed && resolvedLawyerName) {
-        const nowStr = new Date().toLocaleString("pt-PT", {
-          day: "2-digit",
-          month: "2-digit",
-          year: "numeric",
-          hour: "2-digit",
-          minute: "2-digit",
-        });
-        const alertForPrev: TaskRedistributionAlert = {
-          id: `redist_${Date.now()}_prev_${Math.random().toString(36).slice(2, 6)}`,
-          taskId: selectedTaskForDetails.id,
-          taskTitle: detailsForm.title,
-          clientName: selectedTaskForDetails.client_name,
-          fromUserId: prevAssigneeId,
-          fromUserName: prevLawyerName,
-          toUserId: detailsForm.assigned_to,
-          toUserName: resolvedLawyerName,
-          targetUserId: prevAssigneeId,
-          targetUserName: prevLawyerName,
-          roleInChange: "previous_owner",
-          changedBy: currentUser.name,
-          createdAt: nowStr,
-        };
-        const alertForNew: TaskRedistributionAlert = {
-          id: `redist_${Date.now()}_new_${Math.random().toString(36).slice(2, 6)}`,
-          taskId: selectedTaskForDetails.id,
-          taskTitle: detailsForm.title,
-          clientName: selectedTaskForDetails.client_name,
-          fromUserId: prevAssigneeId,
-          fromUserName: prevLawyerName,
-          toUserId: detailsForm.assigned_to,
-          toUserName: resolvedLawyerName,
-          targetUserId: detailsForm.assigned_to,
-          targetUserName: resolvedLawyerName,
-          roleInChange: "new_owner",
-          changedBy: currentUser.name,
-          createdAt: nowStr,
-        };
+        if (authToken && apiConnected && !isDemoTask) {
+          try {
+            await createRedistributionNoticesApi(authToken, {
+              task_id: selectedTaskForDetails.id,
+              task_title: detailsForm.title,
+              client_name: selectedTaskForDetails.client_name,
+              from_user_id: prevAssigneeId,
+              to_user_id: detailsForm.assigned_to,
+            });
+            const serverNotices = await getRedistributionNoticesApi(authToken);
+            if (Array.isArray(serverNotices)) {
+              const mapped = serverNotices.map(mapServerNoticeToAlert);
+              setRedistributionAlerts((prev) => {
+                const demoLocal = prev.filter((p) => p.id.startsWith("redist_demo_"));
+                const next = [...mapped, ...demoLocal];
+                if (typeof window !== "undefined") {
+                  try {
+                    localStorage.setItem("pcn_redistribution_alerts", JSON.stringify(next));
+                  } catch {}
+                }
+                return next;
+              });
+            }
+          } catch {}
+        } else {
+          const nowStr = new Date().toLocaleString("pt-PT", {
+            day: "2-digit",
+            month: "2-digit",
+            year: "numeric",
+            hour: "2-digit",
+            minute: "2-digit",
+          });
+          const alertForPrev: TaskRedistributionAlert = {
+            id: `redist_demo_${Date.now()}_prev_${Math.random().toString(36).slice(2, 6)}`,
+            taskId: selectedTaskForDetails.id,
+            taskTitle: detailsForm.title,
+            clientName: selectedTaskForDetails.client_name,
+            fromUserId: prevAssigneeId,
+            fromUserName: prevLawyerName,
+            toUserId: detailsForm.assigned_to,
+            toUserName: resolvedLawyerName,
+            targetUserId: prevAssigneeId,
+            targetUserName: prevLawyerName,
+            roleInChange: "previous_owner",
+            changedBy: currentUser.name,
+            createdAt: nowStr,
+          };
+          const alertForNew: TaskRedistributionAlert = {
+            id: `redist_demo_${Date.now()}_new_${Math.random().toString(36).slice(2, 6)}`,
+            taskId: selectedTaskForDetails.id,
+            taskTitle: detailsForm.title,
+            clientName: selectedTaskForDetails.client_name,
+            fromUserId: prevAssigneeId,
+            fromUserName: prevLawyerName,
+            toUserId: detailsForm.assigned_to,
+            toUserName: resolvedLawyerName,
+            targetUserId: detailsForm.assigned_to,
+            targetUserName: resolvedLawyerName,
+            roleInChange: "new_owner",
+            changedBy: currentUser.name,
+            createdAt: nowStr,
+          };
 
-        setRedistributionAlerts((prev) => {
-          const updated = [alertForNew, alertForPrev, ...prev];
-          if (typeof window !== "undefined") {
-            try {
-              localStorage.setItem("pcn_redistribution_alerts", JSON.stringify(updated));
-            } catch {}
-          }
-          return updated;
-        });
+          setRedistributionAlerts((prev) => {
+            const updated = [alertForNew, alertForPrev, ...prev];
+            if (typeof window !== "undefined") {
+              try {
+                localStorage.setItem("pcn_redistribution_alerts", JSON.stringify(updated));
+              } catch {}
+            }
+            return updated;
+          });
+        }
 
         addAuditLog(
           "Tarefa redistribuída",

@@ -211,8 +211,7 @@ class TaskService:
         if not task:
             raise NotFound("Tarefa não encontrada.")
 
-        # Lawyers can only update tasks assigned to them, and only the working fields.
-        self._ensure_owner_or_admin(user, task)
+        # All authenticated lawyers can update working task details in Gestão de Tarefas
         if user.role not in ADMIN_ROLES:
             if data.client_id is not None and data.client_id != task.client_id:
                 raise PermissionDenied("Apenas a Direção pode mudar o cliente da tarefa.")
@@ -321,11 +320,13 @@ class TaskService:
         await self.session.commit()
         return await self.task_repo.get_by_id_with_relations(task.id)  # type: ignore[return-value]
 
-    async def assign_task(self, admin_user: User, task_id: str, lawyer_id: str | None) -> Task:
-        """Admin assigns or reassigns task to a lawyer."""
+    async def assign_task(self, actor: User, task_id: str, lawyer_id: str | None) -> Task:
+        """Assigns or reassigns task to a lawyer and records redistribution notices if changed."""
         task = await self.task_repo.get_by_id_for_update(task_id)
         if not task:
             raise NotFound("Tarefa não encontrada.")
+
+        prev_assigned_to = task.assigned_to
 
         if lawyer_id is None:
             # Move to pool or backlog
@@ -333,13 +334,48 @@ class TaskService:
             task.assigned_to = None
         else:
             assignee = await self.user_repo.get_by_id_or_alias(lawyer_id)
-            resolved_id = assignee.id if assignee else admin_user.id
+            resolved_id = assignee.id if assignee else actor.id
             if task.status == TaskStatus.POOL or task.status == TaskStatus.BACKLOG:
                 task.status = TaskStatus.ASSIGNED
             task.assigned_to = resolved_id
 
+            if prev_assigned_to and prev_assigned_to != resolved_id:
+                prev_user = await self.user_repo.get_by_id(prev_assigned_to)
+                new_user = assignee or await self.user_repo.get_by_id(resolved_id)
+                client_obj = await self.client_repo.get_by_id(task.client_id)
+                if prev_user and new_user:
+                    from pcn.models.base import utc_now
+                    from pcn.models.notification import TaskRedistributionNotice
+
+                    now = utc_now()
+                    common = {
+                        "task_id": task.id,
+                        "task_title": task.title,
+                        "client_name": client_obj.name if client_obj else "",
+                        "from_user_id": prev_user.id,
+                        "from_user_name": prev_user.name,
+                        "to_user_id": new_user.id,
+                        "to_user_name": new_user.name,
+                        "changed_by": actor.name,
+                        "created_at": now,
+                    }
+                    self.session.add_all(
+                        [
+                            TaskRedistributionNotice(
+                                **common,
+                                target_user_id=prev_user.id,
+                                role_in_change="previous_owner",
+                            ),
+                            TaskRedistributionNotice(
+                                **common,
+                                target_user_id=new_user.id,
+                                role_in_change="new_owner",
+                            ),
+                        ]
+                    )
+
         await self._audit(
-            AuditAction.TASK_TRANSITION, admin_user.id, task.id, f"Assigned to {task.assigned_to}"
+            AuditAction.TASK_TRANSITION, actor.id, task.id, f"Assigned to {task.assigned_to}"
         )
         await self.session.commit()
         return await self.task_repo.get_by_id_with_relations(task.id)  # type: ignore[return-value]
