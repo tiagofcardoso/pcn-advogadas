@@ -13,11 +13,15 @@ import {
 import {
   DEFAULT_GCAL_ID,
   buildGoogleCalendarEmbedUrl,
+  formatDaysAndHours,
   formatIsoDatePt,
+  getClientTaskStatusBreakdown,
   getPriorityBadgeStyle,
   getTaskDeadlineSemaphore,
   getTaskV6Status,
+  getTaskWaitingSeconds,
   getV6BadgeClass,
+  isWaitingStatus,
   normalizeEventType,
   sortTasksByUrgency,
   V6_STATUS_LIST,
@@ -55,6 +59,7 @@ interface WorkspaceV6Props {
   onOpenTaskDetails: (task: Task) => void;
   onDeleteTask: (task: Task) => void;
   onOpenNewTaskModal: () => void;
+  onOpenNewTaskForClient?: (clientId: string) => void;
   onOpenNewClientModal: () => void;
   onOpenNewEventModal: (type?: CalendarEvent["type"]) => void;
   onEditEvent?: (evt: CalendarEvent) => void;
@@ -81,6 +86,7 @@ export default function WorkspaceV6Tab({
   onOpenTaskDetails,
   onDeleteTask,
   onOpenNewTaskModal,
+  onOpenNewTaskForClient,
   onOpenNewClientModal,
   onOpenNewEventModal,
   onEditEvent,
@@ -645,6 +651,7 @@ export default function WorkspaceV6Tab({
                   <th className="py-2.5 px-3">Advogada</th>
                   <th className="py-2.5 px-3 text-center">Por iniciar</th>
                   <th className="py-2.5 px-3 text-center">Em curso</th>
+                  <th className="py-2.5 px-3 text-center">Pausadas</th>
                   <th className="py-2.5 px-3 text-center">A aguardar</th>
                   <th className="py-2.5 px-3 text-center">Redistribuídas</th>
                   <th className="py-2.5 px-3 text-center">Concluídas</th>
@@ -670,6 +677,9 @@ export default function WorkspaceV6Tab({
                     ).length;
                     const cRun = uTasks.filter(
                       (t) => getTaskV6Status(t) === "Em curso"
+                    ).length;
+                    const cPaused = uTasks.filter(
+                      (t) => getTaskV6Status(t) === "Pausada"
                     ).length;
                     const cWait = uTasks.filter((t) =>
                       getTaskV6Status(t).includes("aguardar")
@@ -703,6 +713,9 @@ export default function WorkspaceV6Tab({
                         </td>
                         <td className="py-3 px-3 text-center">
                           <span className="v6-badge">{cRun}</span>
+                        </td>
+                        <td className="py-3 px-3 text-center">
+                          <span className="v6-badge paused">{cPaused}</span>
                         </td>
                         <td className="py-3 px-3 text-center">
                           <span className="v6-badge wait">{cWait}</span>
@@ -1307,7 +1320,7 @@ export default function WorkspaceV6Tab({
   }
 
   // ─────────────────────────────────────────────────────────────────────────────
-  // 3. GESTÃO DE TAREFAS (V6.0 Row-Based Table + Prioridade + Tempo + Semáforo)
+  // 3. GESTÃO DE TAREFAS (Agrupado por Cliente estilo V5.2 + Colunas: Cliente → Descrição → Responsável)
   // ─────────────────────────────────────────────────────────────────────────────
   const filteredTableTasks = sortTasksByUrgency(
     activeTasks
@@ -1333,6 +1346,210 @@ export default function WorkspaceV6Tab({
       )
   );
 
+  // Agrupamento de tarefas por Cliente mantendo a ordem de urgência / atividade
+  const groupedByClientMap = new Map<
+    string,
+    {
+      clientId: string;
+      clientName: string;
+      clientNumber?: string;
+      items: Task[];
+    }
+  >();
+
+  for (const task of filteredTableTasks) {
+    const cid = task.client_id || "sem_cliente";
+    const cObj = clients.find((x) => x.id === task.client_id);
+    const existing = groupedByClientMap.get(cid);
+    if (existing) {
+      existing.items.push(task);
+    } else {
+      groupedByClientMap.set(cid, {
+        clientId: cid,
+        clientName: cObj?.name || task.client_name || "Cliente",
+        clientNumber: cObj?.number || task.client_number,
+        items: [task],
+      });
+    }
+  }
+
+  const clientGroups = Array.from(groupedByClientMap.values()).sort((a, b) => {
+    const aOpen = a.items.filter((t) => getTaskV6Status(t) !== "Concluída").length;
+    const bOpen = b.items.filter((t) => getTaskV6Status(t) !== "Concluída").length;
+    if ((aOpen > 0) !== (bOpen > 0)) return bOpen - aOpen;
+    return 0; // preserves sortTasksByUrgency order from filteredTableTasks
+  });
+
+  const renderTaskRow = (task: Task, cObj?: Client) => {
+    const v6Status = getTaskV6Status(task);
+    const prio = getPriorityBadgeStyle(task.priority);
+    const sem = getTaskDeadlineSemaphore(task);
+    const isRunning = task.status === "in_progress";
+    const waitingSecs = getTaskWaitingSeconds(task);
+    const showWaitingBadge = isWaitingStatus(v6Status) || waitingSecs > 0;
+
+    return (
+      <tr
+        key={task.id}
+        className={`hover:bg-[#fdfbf9] ${isRunning ? "bg-[#fbf3f9]/60" : ""}`}
+        style={{
+          backgroundColor: !isRunning && sem.rowBg ? sem.rowBg : undefined,
+        }}
+      >
+        {/* 1. Cliente */}
+        <td className="py-3 px-3.5 text-[#28202a] align-top min-w-[160px]">
+          <div className="font-semibold text-[#28202a]">
+            {cObj ? cObj.name : task.client_name}
+          </div>
+          {(cObj?.number || task.client_number) && (
+            <span className="text-[11px] text-[#776f73] font-medium">
+              {cObj?.number || task.client_number}
+            </span>
+          )}
+        </td>
+
+        {/* 2. Descrição da Tarefa */}
+        <td className="py-3 px-3.5 align-top min-w-[230px]">
+          <button
+            type="button"
+            onClick={() => onOpenTaskDetails(task)}
+            className="font-semibold text-[#7b175f] hover:underline text-left cursor-pointer block"
+          >
+            {task.title}
+          </button>
+          <span className="text-[11px] text-[#776f73] block mt-0.5">
+            {task.task_type}
+            {task.origin ? ` · ${task.origin}` : ""}
+            {task.entity ? ` · ${task.entity}` : ""}
+            {task.process_reference ? ` · Ref.: ${task.process_reference}` : ""}
+          </span>
+        </td>
+
+        {/* 3. Responsável */}
+        <td className="py-3 px-3.5 font-medium text-[#28202a] align-top">
+          {resolveLawyerLabel(task)}
+        </td>
+
+        {/* 4. Prioridade */}
+        <td className="py-3 px-3.5 align-top">
+          <span
+            className="inline-block px-2.5 py-0.5 rounded-full text-xs font-semibold border"
+            style={{
+              backgroundColor: prio.bg,
+              color: prio.text,
+              borderColor: prio.border,
+            }}
+          >
+            {prio.label}
+          </span>
+        </td>
+
+        {/* 5. Tempo */}
+        <td className="py-3 px-3.5 whitespace-nowrap align-top">
+          <div className="inline-flex items-center gap-2">
+            <span
+              className={`font-mono text-xs font-bold px-2 py-1 rounded border ${
+                isRunning
+                  ? "bg-[#f4e3ef] text-[#7b175f] border-[#d9b3cf]"
+                  : "bg-[#faf8f6] text-[#28202a] border-[#e9e0dd]"
+              }`}
+            >
+              {formatSeconds(task.total_duration_seconds || 0)}
+            </span>
+
+            {canWorkOn(task) && v6Status !== "Concluída" && (
+              <button
+                type="button"
+                onClick={() =>
+                  isRunning ? onPauseTimer(task) : onStartTimer(task)
+                }
+                className={`v6-btn py-1 px-2 text-xs ${
+                  isRunning ? "gold" : "primary"
+                }`}
+                title={isRunning ? "Pausar cronómetro" : "Iniciar cronómetro"}
+              >
+                {isRunning ? "Ⅱ" : "▶"}
+              </button>
+            )}
+          </div>
+        </td>
+
+        {/* 6. Estado (+ Tempo em Espera em dias e horas) */}
+        <td className="py-3 px-3.5 align-top">
+          <span className={getV6BadgeClass(v6Status)}>{v6Status}</span>
+          {showWaitingBadge && (
+            <div
+              className="mt-1 inline-flex items-center gap-1 px-2 py-0.5 rounded-md bg-[#fff6e6] border border-[#ebd2a6] text-[#7a5414] text-[10.5px] font-semibold"
+              title="Tempo decorrido em espera de cliente / entidade / terceiros (não contabilizado como horas faturáveis)"
+            >
+              <span>⏳ Espera: {formatDaysAndHours(waitingSecs)}</span>
+            </div>
+          )}
+        </td>
+
+        {/* 7. Prazo & Acompanhamento */}
+        <td className="py-3 px-3.5 whitespace-nowrap align-top">
+          <span
+            className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-bold border"
+            style={{
+              backgroundColor: sem.bg,
+              color: sem.text,
+              borderColor: sem.border,
+            }}
+          >
+            <span
+              className="w-2 h-2 rounded-full shrink-0"
+              style={{ backgroundColor: sem.dotColor }}
+            />
+            <span>
+              {sem.formattedDate} · {sem.label}
+            </span>
+          </span>
+          {task.follow_up_date && (
+            <div className="text-[10.5px] text-[#6d5d66] font-medium mt-1">
+              Acomp.: {formatIsoDatePt(task.follow_up_date)}
+            </div>
+          )}
+        </td>
+
+        {/* 8. Ações */}
+        <td className="py-3 px-3.5 text-right whitespace-nowrap align-top">
+          <div className="inline-flex items-center gap-1.5">
+            <button
+              type="button"
+              onClick={() => onOpenTaskDetails(task)}
+              className="v6-btn py-1 px-2.5 text-xs"
+            >
+              Editar / Horas
+            </button>
+
+            {canWorkOn(task) && v6Status !== "Concluída" && (
+              <button
+                type="button"
+                onClick={() => onCompleteTask(task)}
+                className="v6-btn gold py-1 px-2 text-xs"
+                title="Concluir tarefa"
+              >
+                ✓
+              </button>
+            )}
+
+            {isAdmin && (
+              <button
+                type="button"
+                onClick={() => onDeleteTask(task)}
+                className="v6-btn danger py-1 px-2 text-xs"
+                title="Eliminar tarefa"
+              >
+                <Trash2 className="w-3.5 h-3.5" />
+              </button>
+            )}
+          </div>
+        </td>
+      </tr>
+    );
+  };
+
   return (
     <div className="space-y-5">
       {/* Header */}
@@ -1342,7 +1559,7 @@ export default function WorkspaceV6Tab({
             Gestão de Tarefas
           </h1>
           <p className="text-[#6e6569] text-sm mt-0.5">
-            Registo único e partilhado por toda a equipa · Ordenadas da mais
+            Registo único e partilhado agrupado por Cliente · Ordenadas da mais
             urgente para a menos urgente
           </p>
         </div>
@@ -1413,7 +1630,8 @@ export default function WorkspaceV6Tab({
           </select>
 
           <span className="text-[#776f73] font-medium ml-1">
-            {filteredTableTasks.length} tarefa(s)
+            {filteredTableTasks.length} tarefa(s) em {clientGroups.length}{" "}
+            cliente(s)
           </span>
         </div>
 
@@ -1429,191 +1647,78 @@ export default function WorkspaceV6Tab({
         </div>
       </div>
 
-      {/* V6 Shared Row Table with Priority & Time */}
-      <div className="v6-card p-0 overflow-hidden">
-        <div className="overflow-x-auto">
-          <table className="w-full text-left border-collapse text-[13px]">
-            <thead>
-              <tr className="bg-[#f7f3ef] text-[#50454b] border-b border-[#f0eae6]">
-                <th className="py-3 px-3.5">Tarefa</th>
-                <th className="py-3 px-3.5">Cliente</th>
-                <th className="py-3 px-3.5">Responsável</th>
-                <th className="py-3 px-3.5">Prioridade</th>
-                <th className="py-3 px-3.5">Tempo</th>
-                <th className="py-3 px-3.5">Estado</th>
-                <th className="py-3 px-3.5">Prazo</th>
-                <th className="py-3 px-3.5 text-right">Ações</th>
-              </tr>
-            </thead>
-            <tbody className="divide-y divide-[#f0eae6]">
-              {filteredTableTasks.map((task) => {
-                const v6Status = getTaskV6Status(task);
-                const prio = getPriorityBadgeStyle(task.priority);
-                const sem = getTaskDeadlineSemaphore(task);
-                const isRunning = task.status === "in_progress";
-                const cObj = clients.find((x) => x.id === task.client_id);
-
-                return (
-                  <tr
-                    key={task.id}
-                    className={`hover:bg-[#fdfbf9] ${
-                      isRunning ? "bg-[#fbf3f9]/60" : ""
-                    }`}
-                    style={{
-                      backgroundColor: !isRunning && sem.rowBg ? sem.rowBg : undefined,
-                    }}
-                  >
-                    <td className="py-3 px-3.5">
-                      <button
-                        type="button"
-                        onClick={() => onOpenTaskDetails(task)}
-                        className="font-semibold text-[#7b175f] hover:underline text-left cursor-pointer block"
-                      >
-                        {task.title}
-                      </button>
-                      <span className="text-[11px] text-[#776f73]">
-                        {task.task_type}
-                        {task.origin ? ` · ${task.origin}` : ""}
-                        {task.entity ? ` · ${task.entity}` : ""}
-                      </span>
-                    </td>
-
-                    <td className="py-3 px-3.5 text-[#28202a]">
-                      {cObj
-                        ? `${cObj.name}${
-                            cObj.number ? ` · PCN ${cObj.number}` : ""
-                          }`
-                        : task.client_name}
-                    </td>
-
-                    <td className="py-3 px-3.5 font-medium text-[#28202a]">
-                      {resolveLawyerLabel(task)}
-                    </td>
-
-                    <td className="py-3 px-3.5">
-                      <span
-                        className="inline-block px-2.5 py-0.5 rounded-full text-xs font-semibold border"
-                        style={{
-                          backgroundColor: prio.bg,
-                          color: prio.text,
-                          borderColor: prio.border,
-                        }}
-                      >
-                        {prio.label}
-                      </span>
-                    </td>
-
-                    <td className="py-3 px-3.5 whitespace-nowrap">
-                      <div className="inline-flex items-center gap-2">
-                        <span
-                          className={`font-mono text-xs font-bold px-2 py-1 rounded border ${
-                            isRunning
-                              ? "bg-[#f4e3ef] text-[#7b175f] border-[#d9b3cf]"
-                              : "bg-[#faf8f6] text-[#28202a] border-[#e9e0dd]"
-                          }`}
-                        >
-                          {formatSeconds(task.total_duration_seconds || 0)}
-                        </span>
-
-                        {canWorkOn(task) && v6Status !== "Concluída" && (
-                          <button
-                            type="button"
-                            onClick={() =>
-                              isRunning
-                                ? onPauseTimer(task)
-                                : onStartTimer(task)
-                            }
-                            className={`v6-btn py-1 px-2 text-xs ${
-                              isRunning ? "gold" : "primary"
-                            }`}
-                            title={
-                              isRunning
-                                ? "Pausar cronómetro"
-                                : "Iniciar cronómetro"
-                            }
-                          >
-                            {isRunning ? "Ⅱ" : "▶"}
-                          </button>
-                        )}
-                      </div>
-                    </td>
-
-                    <td className="py-3 px-3.5">
-                      <span className={getV6BadgeClass(v6Status)}>
-                        {v6Status}
-                      </span>
-                    </td>
-
-                    <td className="py-3 px-3.5 whitespace-nowrap">
-                      <span
-                        className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-bold border"
-                        style={{
-                          backgroundColor: sem.bg,
-                          color: sem.text,
-                          borderColor: sem.border,
-                        }}
-                      >
-                        <span
-                          className="w-2 h-2 rounded-full shrink-0"
-                          style={{ backgroundColor: sem.dotColor }}
-                        />
-                        <span>
-                          {sem.formattedDate} · {sem.label}
-                        </span>
-                      </span>
-                    </td>
-
-                    <td className="py-3 px-3.5 text-right whitespace-nowrap">
-                      <div className="inline-flex items-center gap-1.5">
-                        <button
-                          type="button"
-                          onClick={() => onOpenTaskDetails(task)}
-                          className="v6-btn py-1 px-2.5 text-xs"
-                        >
-                          Editar / Horas
-                        </button>
-
-                        {canWorkOn(task) && v6Status !== "Concluída" && (
-                          <button
-                            type="button"
-                            onClick={() => onCompleteTask(task)}
-                            className="v6-btn gold py-1 px-2 text-xs"
-                            title="Concluir tarefa"
-                          >
-                            ✓
-                          </button>
-                        )}
-
-                        {isAdmin && (
-                          <button
-                            type="button"
-                            onClick={() => onDeleteTask(task)}
-                            className="v6-btn danger py-1 px-2 text-xs"
-                            title="Eliminar tarefa"
-                          >
-                            <Trash2 className="w-3.5 h-3.5" />
-                          </button>
-                        )}
-                      </div>
-                    </td>
-                  </tr>
-                );
-              })}
-
-              {filteredTableTasks.length === 0 && (
-                <tr>
-                  <td
-                    colSpan={8}
-                    className="py-10 text-center text-xs text-[#776f73] italic"
-                  >
-                    Nenhuma tarefa encontrada para os filtros selecionados.
-                  </td>
-                </tr>
-              )}
-            </tbody>
-          </table>
+      {/* Quadro Agrupado por Cliente (Estilo V5.2 mantendo tabela V6 e nova ordem de colunas) */}
+      {clientGroups.length === 0 ? (
+        <div className="v6-card py-12 text-center text-xs text-[#776f73] italic">
+          Nenhuma tarefa encontrada para os filtros selecionados.
         </div>
-      </div>
+      ) : (
+        <div className="space-y-4">
+          {clientGroups.map((group) => {
+            const cObj = clients.find((x) => x.id === group.clientId);
+            const breakdown = getClientTaskStatusBreakdown(group.items);
+
+            return (
+              <div key={group.clientId} className="v6-card p-0 overflow-hidden">
+                {/* Cabeçalho do Bloco do Cliente */}
+                <div className="flex flex-wrap items-center justify-between gap-3 px-4 py-3 bg-[#f7f3ef] border-b border-[#e8dfd9]">
+                  <div>
+                    <div className="flex flex-wrap items-center gap-2">
+                      <h2 className="font-serif-v6 text-[18px] text-[#28202a] m-0">
+                        {group.clientName}
+                      </h2>
+                      {group.clientNumber && (
+                        <span className="v6-badge wait text-[11px]! py-0.5! px-2!">
+                          {group.clientNumber}
+                        </span>
+                      )}
+                    </div>
+                    <p className="text-[11.5px] text-[#6e6569] mt-0.5">
+                      {breakdown.parts.length > 0
+                        ? breakdown.parts.join(" · ")
+                        : `${group.items.length} tarefa(s)`}
+                    </p>
+                  </div>
+
+                  <button
+                    type="button"
+                    onClick={() =>
+                      onOpenNewTaskForClient
+                        ? onOpenNewTaskForClient(group.clientId)
+                        : onOpenNewTaskModal()
+                    }
+                    className="v6-btn gold sm font-semibold"
+                  >
+                    <Plus className="w-3.5 h-3.5" />
+                    <span>Tarefa para este Cliente</span>
+                  </button>
+                </div>
+
+                {/* Tabela de Tarefas do Cliente */}
+                <div className="overflow-x-auto">
+                  <table className="w-full text-left border-collapse text-[13px]">
+                    <thead>
+                      <tr className="bg-[#faf8f6] text-[#50454b] border-b border-[#f0eae6] text-xs">
+                        <th className="py-2.5 px-3.5">Cliente</th>
+                        <th className="py-2.5 px-3.5">Descrição da Tarefa</th>
+                        <th className="py-2.5 px-3.5">Responsável</th>
+                        <th className="py-2.5 px-3.5">Prioridade</th>
+                        <th className="py-2.5 px-3.5">Tempo</th>
+                        <th className="py-2.5 px-3.5">Estado</th>
+                        <th className="py-2.5 px-3.5">Prazo</th>
+                        <th className="py-2.5 px-3.5 text-right">Ações</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-[#f0eae6]">
+                      {group.items.map((task) => renderTaskRow(task, cObj))}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      )}
     </div>
   );
 }

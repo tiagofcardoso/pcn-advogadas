@@ -423,6 +423,12 @@
   color: #805c17;
 }
 
+.v6-badge.paused {
+  background: #efe9e3;
+  color: #5d493c;
+  border: 1px solid #d9cbbd;
+}
+
 .v6-badge.redist {
   background: #f3e5f5;
   color: #6a1b9a;

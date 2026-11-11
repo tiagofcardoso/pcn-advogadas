@@ -21,12 +21,21 @@ export interface ServiceCategory {
 
 export type TaskPriority = "Normal" | "Alta" | "Urgente";
 
+export interface TaskWaitingPeriod {
+  id: string;
+  reason: string;
+  started_at: string;
+  ended_at?: string | null;
+}
+
 export type TaskV6Status =
   | "Por iniciar"
   | "Em curso"
+  | "Pausada"
   | "A aguardar"
   | "A aguardar cliente"
   | "A aguardar entidade"
+  | "A aguardar terceiros"
   | "Redistribuída"
   | "Concluída"
   | "Cancelada";
@@ -60,8 +69,16 @@ export interface Task {
   status: "backlog" | "pool" | "assigned" | "in_progress" | "paused" | "completed" | "archived";
   v6_status?: TaskV6Status;
   priority?: TaskPriority;
+  request_date?: string;
   origin?: string;
+  communication_ref?: string;
+  start_date?: string;
   entity?: string;
+  process_reference?: string;
+  follow_up_date?: string;
+  waiting_started_at?: string | null;
+  waiting_total_seconds?: number;
+  waiting_periods?: TaskWaitingPeriod[];
   created_date?: string;
   assigned_to?: string;
   lawyer_name?: string;

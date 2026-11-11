@@ -1,7 +1,8 @@
 """Task ORM model."""
 
+import json
 from datetime import datetime
-from typing import TYPE_CHECKING, Optional
+from typing import TYPE_CHECKING, Any, Optional
 
 from sqlalchemy import (
     DateTime,
@@ -63,9 +64,21 @@ class Task(Base, TimestampMixin):
         String(36), ForeignKey("fee_notes.id", ondelete="SET NULL"), nullable=True, index=True
     )
     completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    metadata_json: Mapped[str | None] = mapped_column(Text, nullable=True)
 
     # Optimistic locking version
     version: Mapped[int] = mapped_column(Integer, default=1, nullable=False)
+
+    @property
+    def meta(self) -> dict[str, Any]:
+        """Deserializes extended operational task metadata safely."""
+        if not self.metadata_json:
+            return {}
+        try:
+            parsed = json.loads(self.metadata_json)
+            return parsed if isinstance(parsed, dict) else {}
+        except (TypeError, ValueError):
+            return {}
 
     client: Mapped["Client"] = relationship("Client", back_populates="tasks")
     task_type: Mapped["TaskType"] = relationship("TaskType", back_populates="tasks")

@@ -2,6 +2,7 @@
 
 from datetime import UTC, datetime
 from decimal import Decimal
+from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
@@ -27,6 +28,7 @@ class TaskCreate(BaseModel):
     due_date: datetime | None = None
     is_urgent_deadline: bool = False
     publish_to_pool: bool = False
+    meta: dict[str, Any] | None = None
 
     @field_validator("due_date")
     @classmethod
@@ -46,6 +48,7 @@ class TaskUpdate(BaseModel):
     fee_amount: Decimal | None = None
     status: TaskStatus | None = None
     total_duration_seconds: int | None = Field(None, ge=0)
+    meta: dict[str, Any] | None = None
 
     @field_validator("due_date")
     @classmethod
@@ -87,6 +90,7 @@ class TaskRead(BaseModel):
     fee_amount: Decimal | None = None
     fee_note_id: str | None = None
     completed_at: datetime | None = None
+    meta: dict[str, Any] = Field(default_factory=dict)
     created_at: datetime
     updated_at: datetime
 

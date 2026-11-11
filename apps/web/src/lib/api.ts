@@ -168,6 +168,7 @@ export async function createTaskApi(
     due_date?: string | null;
     is_urgent_deadline?: boolean;
     publish_to_pool?: boolean;
+    meta?: Record<string, any>;
   }
 ) {
   return apiFetch<any>("/tasks", {
@@ -200,6 +201,7 @@ export async function updateTaskApi(
     fee_amount?: number;
     status?: string;
     total_duration_seconds?: number;
+    meta?: Record<string, any>;
   }
 ) {
   return apiFetch<any>(`/tasks/${taskId}`, {

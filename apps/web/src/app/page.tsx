@@ -96,7 +96,11 @@ import {
   V6_STATUS_LIST,
   buildUnifiedEvents,
   normalizeEventType,
+  applyWaitingTransition,
+  getClientTaskStatusBreakdown,
+  toDatetimeLocalValue,
 } from "@/lib/v6Helpers";
+import TaskFormFields, { UnifiedTaskFormState } from "@/components/TaskFormFields";
 import WorkspaceV6Tab from "@/components/WorkspaceV6Tab";
 import CalendarV6Tab from "@/components/CalendarV6Tab";
 import FeeNotesV6Tab from "@/components/FeeNotesV6Tab";
@@ -816,34 +820,32 @@ export default function App() {
     "all" | "pool" | "assigned" | "in_progress" | "paused" | "completed"
   >("all");
 
-  // Task Details & Reassign Modal State (inclui edição manual de tempo, prioridade e estado V6)
+  // Task Details & Reassign Modal State (unificado com Nova Tarefa + Espera Externa + Tempo)
   const [selectedTaskForDetails, setSelectedTaskForDetails] = useState<Task | null>(null);
-  const [detailsForm, setDetailsForm] = useState<{
-    title: string;
-    description: string;
-    assigned_to: string;
-    due_date: string;
-    status: Task["status"];
-    v6_status: TaskV6Status;
-    priority: TaskPriority;
-    origin: string;
-    entity: string;
-    duration_hours: number;
-    duration_minutes: number;
-    duration_seconds: number;
-  }>({
+  const [detailsForm, setDetailsForm] = useState<UnifiedTaskFormState>({
     title: "",
-    description: "",
+    client_id: "",
+    task_type_id: "tp_2",
+    custom_type_name: "",
+    custom_rate: "120",
     assigned_to: "pool",
+    request_date: "",
+    origin: "E-mail",
+    communication_ref: "",
+    start_date: "",
     due_date: "",
-    status: "assigned",
     v6_status: "Por iniciar",
     priority: "Normal",
-    origin: "",
     entity: "",
+    process_reference: "",
+    follow_up_date: "",
+    waiting_started_at: "",
+    waiting_total_seconds: 0,
+    waiting_periods: [],
     duration_hours: 0,
     duration_minutes: 0,
     duration_seconds: 0,
+    description: "",
   });
   const [isSubmittingDetails, setIsSubmittingDetails] = useState<boolean>(false);
 
@@ -966,37 +968,12 @@ export default function App() {
             const redistSet = new Set(Array.isArray(redistTaskIds) ? redistTaskIds : []);
             setTasks((prev) => {
               const prevById = new Map(prev.map((p) => [p.id, p]));
-              return freshTasks.map((t: any) => {
-                const existing = prevById.get(t.id);
-                const isRedist = redistSet.has(t.id);
-                return {
-                  id: t.id,
-                  title: t.title,
-                  description: t.description,
-                  client_id: t.client_id,
-                  client_name: t.client?.name || existing?.client_name || "Cliente",
-                  task_type: t.task_type?.name || existing?.task_type || "Geral",
-                  task_type_id: t.task_type_id || t.task_type?.id || existing?.task_type_id,
-                  status: t.status,
-                  v6_status:
-                    isRedist && t.status !== "completed"
-                      ? "Redistribuída"
-                      : existing?.v6_status,
-                  priority: existing?.priority || (t.is_urgent_deadline ? "Urgente" : "Normal"),
-                  origin: existing?.origin,
-                  entity: existing?.entity,
-                  assigned_to: t.assigned_to,
-                  lawyer_name: t.assignee?.name || "—",
-                  due_date: t.due_date ? t.due_date.split("T")[0] : undefined,
-                  total_duration_seconds:
-                    existing && t.status === "in_progress"
-                      ? Math.max(existing.total_duration_seconds || 0, t.total_duration_seconds || 0)
-                      : t.total_duration_seconds || 0,
-                  fee_amount: existing?.fee_amount,
-                  documented_expenses: existing?.documented_expenses,
-                  undocumented_expenses: existing?.undocumented_expenses,
-                };
-              });
+              return freshTasks.map((t: any) =>
+                hydrateApiTask(t, {
+                  existing: prevById.get(t.id),
+                  isRedistributed: redistSet.has(t.id),
+                })
+              );
             });
           }
         }
@@ -1010,6 +987,78 @@ export default function App() {
       clearInterval(intervalId);
     };
   }, [isAuthenticated, authToken, apiConnected, currentUser?.id]);
+
+  const hydrateApiTask = (
+    t: any,
+    options?: {
+      localMeta?: Record<string, any>;
+      existing?: Task;
+      isRedistributed?: boolean;
+      resolvedDuration?: number;
+      parsedFee?: number;
+    }
+  ): Task => {
+    const serverMeta = t.meta && typeof t.meta === "object" ? t.meta : {};
+    const localMeta = options?.localMeta || {};
+    const existing = options?.existing;
+    const m = { ...localMeta, ...serverMeta };
+    const duration =
+      options?.resolvedDuration !== undefined
+        ? options.resolvedDuration
+        : existing && t.status === "in_progress"
+          ? Math.max(existing.total_duration_seconds || 0, t.total_duration_seconds || 0)
+          : t.total_duration_seconds || 0;
+
+    let v6St: TaskV6Status | undefined =
+      m.v6_status || existing?.v6_status || undefined;
+    if (options?.isRedistributed && t.status !== "completed" && t.status !== "archived") {
+      v6St = "Redistribuída";
+    } else if (t.status === "paused" && v6St === "Em curso") {
+      v6St = "Pausada";
+    } else if (t.status === "in_progress") {
+      v6St = "Em curso";
+    } else if (t.status === "completed") {
+      v6St = "Concluída";
+    }
+
+    return {
+      id: t.id,
+      title: t.title,
+      description: t.description,
+      client_id: t.client_id,
+      client_name: t.client?.name || existing?.client_name || "Cliente",
+      task_type: t.task_type?.name || existing?.task_type || "Geral",
+      task_type_id: t.task_type_id || t.task_type?.id || existing?.task_type_id,
+      status: t.status,
+      v6_status: v6St,
+      priority: m.priority || existing?.priority || (t.is_urgent_deadline ? "Urgente" : "Normal"),
+      request_date: m.request_date || existing?.request_date,
+      origin: m.origin || existing?.origin,
+      communication_ref: m.communication_ref || existing?.communication_ref,
+      start_date: m.start_date || existing?.start_date,
+      entity: m.entity || existing?.entity,
+      process_reference: m.process_reference || existing?.process_reference,
+      follow_up_date: m.follow_up_date || existing?.follow_up_date,
+      waiting_started_at:
+        m.waiting_started_at !== undefined
+          ? m.waiting_started_at
+          : existing?.waiting_started_at ?? null,
+      waiting_total_seconds:
+        m.waiting_total_seconds !== undefined
+          ? Number(m.waiting_total_seconds) || 0
+          : existing?.waiting_total_seconds || 0,
+      waiting_periods: Array.isArray(m.waiting_periods)
+        ? m.waiting_periods
+        : existing?.waiting_periods || [],
+      assigned_to: t.assigned_to,
+      lawyer_name: t.assignee?.name || "—",
+      due_date: t.due_date ? t.due_date.split("T")[0] : undefined,
+      total_duration_seconds: duration,
+      fee_amount: options?.parsedFee ?? existing?.fee_amount,
+      documented_expenses: m.documented_expenses ?? existing?.documented_expenses,
+      undocumented_expenses: m.undocumented_expenses ?? existing?.undocumented_expenses,
+    };
+  };
 
   const isAlertForCurrentUser = (alertItem: TaskRedistributionAlert): boolean => {
     if (!currentUser) return false;
@@ -1100,20 +1149,38 @@ export default function App() {
     const liveTask = tasks.find((t) => t.id === task.id) || task;
     const totalSec = Math.max(0, liveTask.total_duration_seconds || 0);
     const v6St = getTaskV6Status(liveTask);
+    const matchedCat =
+      serviceCategories.find((c) => c.id === liveTask.task_type_id) ||
+      serviceCategories.find(
+        (c) =>
+          c.name.trim().toLowerCase() ===
+          (liveTask.task_type || "").trim().toLowerCase()
+      );
     setSelectedTaskForDetails(liveTask);
     setDetailsForm({
       title: liveTask.title,
-      description: liveTask.description || "",
+      client_id: liveTask.client_id || (clients[0]?.id ?? ""),
+      task_type_id: matchedCat?.id || liveTask.task_type_id || serviceCategories[0]?.id || "tp_2",
+      custom_type_name: "",
+      custom_rate: String(matchedCat?.hourly_rate || 120),
       assigned_to: resolveAssigneeValue(liveTask),
-      due_date: liveTask.due_date || getTodayDateString(),
-      status: liveTask.status,
+      request_date: liveTask.request_date || liveTask.created_date || getTodayDateString(),
+      origin: liveTask.origin || "E-mail",
+      communication_ref: liveTask.communication_ref || "",
+      start_date: liveTask.start_date || getTodayDateString(),
+      due_date: liveTask.due_date || "",
       v6_status: v6St,
       priority: liveTask.priority || "Normal",
-      origin: liveTask.origin || "",
       entity: liveTask.entity || "",
+      process_reference: liveTask.process_reference || "",
+      follow_up_date: liveTask.follow_up_date || "",
+      waiting_started_at: toDatetimeLocalValue(liveTask.waiting_started_at),
+      waiting_total_seconds: liveTask.waiting_total_seconds || 0,
+      waiting_periods: Array.isArray(liveTask.waiting_periods) ? liveTask.waiting_periods : [],
       duration_hours: Math.floor(totalSec / 3600),
       duration_minutes: Math.floor((totalSec % 3600) / 60),
       duration_seconds: totalSec % 60,
+      description: liveTask.description || "",
     });
   };
 
@@ -1231,37 +1298,60 @@ export default function App() {
     }
   };
 
-  // New Task Form (inclui Prioridade, Estado V6, Origem, Entidade e Tempo Inicial)
-  const [taskFormTitle, setTaskFormTitle] = useState("");
-  const [taskFormDescription, setTaskFormDescription] = useState("");
-  const [taskFormClientId, setTaskFormClientId] = useState("");
-  const [taskFormTypeId, setTaskFormTypeId] = useState("tp_2");
-  const [taskFormCustomTypeName, setTaskFormCustomTypeName] = useState("");
-  const [taskFormCustomRate, setTaskFormCustomRate] = useState<string>("120");
-  const [taskFormAssignee, setTaskFormAssignee] = useState("usr_patricia");
-  const [taskFormDueDate, setTaskFormDueDate] = useState("");
-  const [taskFormPriority, setTaskFormPriority] = useState<TaskPriority>("Normal");
-  const [taskFormV6Status, setTaskFormV6Status] = useState<TaskV6Status>("Por iniciar");
-  const [taskFormOrigin, setTaskFormOrigin] = useState("");
-  const [taskFormEntity, setTaskFormEntity] = useState("");
-  const [taskFormDurationHours, setTaskFormDurationHours] = useState<number>(0);
-  const [taskFormDurationMinutes, setTaskFormDurationMinutes] = useState<number>(0);
-  const [taskFormIsUrgent, setTaskFormIsUrgent] = useState(false);
-  const [taskFormPublishToPool, setTaskFormPublishToPool] = useState(false);
+  // New Task Form (unificado com Editar Tarefa — padrão V5.2 + Tempos + Espera Externa)
+  const buildEmptyTaskForm = (
+    preClientId?: string,
+    defaultDate: string = ""
+  ): UnifiedTaskFormState => {
+    const defaultCat = serviceCategories[0];
+    return {
+      title: "",
+      client_id: preClientId || clients[0]?.id || "",
+      task_type_id: defaultCat?.id || "tp_2",
+      custom_type_name: "",
+      custom_rate: String(defaultCat?.hourly_rate ?? 120),
+      assigned_to: currentUser?.id || usersList[0]?.id || "usr_patricia",
+      request_date: defaultDate,
+      origin: "E-mail",
+      communication_ref: "",
+      start_date: defaultDate,
+      due_date: defaultDate,
+      v6_status: "Por iniciar",
+      priority: "Normal",
+      entity: "",
+      process_reference: "",
+      follow_up_date: "",
+      waiting_started_at: "",
+      waiting_total_seconds: 0,
+      waiting_periods: [],
+      duration_hours: 0,
+      duration_minutes: 0,
+      duration_seconds: 0,
+      description: "",
+    };
+  };
+
+  const [newTaskForm, setNewTaskForm] = useState<UnifiedTaskFormState>(() =>
+    buildEmptyTaskForm()
+  );
   const [isSubmittingTask, setIsSubmittingTask] = useState(false);
+
+  const openNewTaskModal = (preselectedClientId?: string) => {
+    setNewTaskForm(buildEmptyTaskForm(preselectedClientId, getTodayDateString()));
+    setIsNewTaskModalOpen(true);
+  };
 
   // Define a data atual no cliente após o mount
   useEffect(() => {
     const today = getTodayDateString();
-    setTaskFormDueDate((prev) => prev || today);
+    setNewTaskForm((prev) => ({
+      ...prev,
+      due_date: prev.due_date || today,
+      request_date: prev.request_date || today,
+      start_date: prev.start_date || today,
+    }));
     setCalcStartDate((prev) => prev || today);
   }, []);
-
-  useEffect(() => {
-    if (isNewTaskModalOpen) {
-      setTaskFormDueDate(getTodayDateString());
-    }
-  }, [isNewTaskModalOpen]);
 
   // New / Edit Client Form (inclui N.º PCN e Data de aniversário MM-DD)
   const [clientFormNumber, setClientFormNumber] = useState("");
@@ -1303,9 +1393,9 @@ export default function App() {
   // Garante que o cliente selecionado para novas tarefas ou notas é sempre válido
   useEffect(() => {
     if (clients.length > 0) {
-      setTaskFormClientId((prev) => {
-        const exists = clients.some((c) => c.id === prev);
-        return exists && prev ? prev : clients[0].id;
+      setNewTaskForm((prev) => {
+        const exists = clients.some((c) => c.id === prev.client_id);
+        return exists && prev.client_id ? prev : { ...prev, client_id: clients[0].id };
       });
       setSelectedFeeClient((prev) => {
         const exists = clients.some((c) => c.id === prev);
@@ -1389,28 +1479,11 @@ export default function App() {
               initialThreshold = 3600;
             }
             alertedHoursRef.current[t.id] = initialThreshold;
-            const meta = localTaskMeta[t.id] || {};
-            return {
-              id: t.id,
-              title: t.title,
-              description: t.description,
-              client_id: t.client_id,
-              client_name: t.client?.name || "Cliente",
-              task_type: t.task_type?.name || "Geral",
-              task_type_id: t.task_type_id || t.task_type?.id,
-              status: t.status,
-              v6_status: meta.v6_status || undefined,
-              priority: meta.priority || (t.is_urgent_deadline ? "Urgente" : "Normal"),
-              origin: meta.origin || undefined,
-              entity: meta.entity || undefined,
-              assigned_to: t.assigned_to,
-              lawyer_name: t.assignee?.name || "—",
-              due_date: t.due_date ? t.due_date.split("T")[0] : undefined,
-              total_duration_seconds: dur,
-              fee_amount: parsedFee,
-              documented_expenses: meta.documented_expenses,
-              undocumented_expenses: meta.undocumented_expenses,
-            };
+            return hydrateApiTask(t, {
+              localMeta: localTaskMeta[t.id] || {},
+              resolvedDuration: dur,
+              parsedFee,
+            });
           });
           loadedTasks = mappedTasks;
           setTasks(mappedTasks);
@@ -1487,10 +1560,10 @@ export default function App() {
             };
           });
           persistCategoriesLocal(mergedCats);
-          setTaskFormTypeId((prev) =>
-            prev === "__custom__" || mergedCats.some((c) => c.id === prev)
+          setNewTaskForm((prev) =>
+            prev.task_type_id === "__custom__" || mergedCats.some((c) => c.id === prev.task_type_id)
               ? prev
-              : mergedCats[0].id
+              : { ...prev, task_type_id: mergedCats[0].id }
           );
         }
       } catch (e) {
@@ -1572,9 +1645,9 @@ export default function App() {
           });
           setClients(enrichedClients);
           if (enrichedClients.length > 0) {
-            setTaskFormClientId((prev) => {
-              const exists = enrichedClients.some((c: any) => c.id === prev);
-              return exists ? prev : enrichedClients[0].id;
+            setNewTaskForm((prev) => {
+              const exists = enrichedClients.some((c: any) => c.id === prev.client_id);
+              return exists ? prev : { ...prev, client_id: enrichedClients[0].id };
             });
             setSelectedFeeClient((prev) => {
               const exists = enrichedClients.some((c: any) => c.id === prev);
@@ -1594,9 +1667,9 @@ export default function App() {
           loadedUsers = apiUsers;
           setUsersList(apiUsers);
           setUsersFetchedAt(Date.now());
-          setTaskFormAssignee((prev) => {
-            const exists = apiUsers.some((u: any) => u.id === prev);
-            return exists ? prev : apiUsers[0].id;
+          setNewTaskForm((prev) => {
+            const exists = apiUsers.some((u: any) => u.id === prev.assigned_to);
+            return exists ? prev : { ...prev, assigned_to: apiUsers[0].id };
           });
         }
       } catch (e) {
@@ -2600,7 +2673,7 @@ export default function App() {
     }
 
     removeTaskFromLocalTimers(targetId);
-    saveTaskMetaLocal(targetId, { v6_status: "A aguardar" });
+    saveTaskMetaLocal(targetId, { v6_status: "Pausada" });
 
     const otherRunning = tasks.find((t) => t.id !== targetId && t.status === "in_progress");
     if (targetId === activeTaskId) {
@@ -2617,7 +2690,7 @@ export default function App() {
     setTasks((prev) =>
       (prev.length > 0 ? prev : DEMO_TASKS).map((t) =>
         t.id === targetId
-          ? { ...t, status: "paused", v6_status: "A aguardar", total_duration_seconds: finalSeconds }
+          ? { ...t, status: "paused", v6_status: "Pausada", total_duration_seconds: finalSeconds }
           : t
       )
     );
@@ -2813,42 +2886,80 @@ export default function App() {
           : detailsForm.v6_status;
 
       const mappedBackendStatus = mapV6StatusToBackend(effectiveV6Status);
-
-      const finalStatus: Task["status"] = isPool
-        ? "pool"
-        : detailsForm.status === "pool"
-          ? mappedBackendStatus
-          : mappedBackendStatus;
+      const finalStatus: Task["status"] = isPool ? "pool" : mappedBackendStatus;
 
       const manualDurationSeconds = Math.max(
         0,
         (Number(detailsForm.duration_hours) || 0) * 3600 +
-        (Number(detailsForm.duration_minutes) || 0) * 60 +
-        (Number(detailsForm.duration_seconds) || 0)
+          (Number(detailsForm.duration_minutes) || 0) * 60 +
+          (Number(detailsForm.duration_seconds) || 0)
       );
+
+      const waitingState = applyWaitingTransition({
+        previousWaitingStartedAt: selectedTaskForDetails.waiting_started_at,
+        previousWaitingTotalSeconds: detailsForm.waiting_total_seconds,
+        previousWaitingPeriods: detailsForm.waiting_periods,
+        previousV6Status: getTaskV6Status(selectedTaskForDetails),
+        nextV6Status: effectiveV6Status,
+        editedWaitingStartedAt: detailsForm.waiting_started_at,
+      });
+
+      const isCustomCat = detailsForm.task_type_id === "__custom__";
+      const parsedCustomRate = Math.max(0, parseFloat(detailsForm.custom_rate) || 120);
+      const selectedCat: ServiceCategory = isCustomCat
+        ? {
+            id: `cat_${Date.now()}`,
+            name: detailsForm.custom_type_name.trim() || "Serviço Personalizado",
+            hourly_rate: parsedCustomRate,
+            default_billable: true,
+            color: "#92006F",
+          }
+        : serviceCategories.find((c) => c.id === detailsForm.task_type_id) ||
+          serviceCategories[0] || {
+            id: selectedTaskForDetails.task_type_id || "tp_1",
+            name: selectedTaskForDetails.task_type || "Geral",
+            hourly_rate: 120,
+            color: "#92006F",
+          };
+
+      const selectedClientObj = clients.find((c) => c.id === detailsForm.client_id);
+
+      const metaPayload = {
+        v6_status: effectiveV6Status,
+        priority: detailsForm.priority,
+        request_date: detailsForm.request_date || undefined,
+        origin: detailsForm.origin,
+        communication_ref: detailsForm.communication_ref.trim(),
+        start_date: detailsForm.start_date || undefined,
+        entity: detailsForm.entity.trim(),
+        process_reference: detailsForm.process_reference.trim(),
+        follow_up_date: detailsForm.follow_up_date || undefined,
+        waiting_started_at: waitingState.waiting_started_at,
+        waiting_total_seconds: waitingState.waiting_total_seconds,
+        waiting_periods: waitingState.waiting_periods,
+      };
 
       let updatedFromServer: any = null;
       const isDemoTask = selectedTaskForDetails.id.startsWith("tsk_");
       if (authToken && apiConnected && !isDemoTask) {
         if (isPool) {
           await assignTaskApi(selectedTaskForDetails.id, null, authToken);
-          updatedFromServer = await updateTaskApi(selectedTaskForDetails.id, authToken, {
-            title: detailsForm.title,
-            description: detailsForm.description,
-            due_date: detailsForm.due_date ? `${detailsForm.due_date}T18:00:00` : null,
-            status: finalStatus,
-            total_duration_seconds: manualDurationSeconds,
-          });
         } else {
           await assignTaskApi(selectedTaskForDetails.id, detailsForm.assigned_to, authToken);
-          updatedFromServer = await updateTaskApi(selectedTaskForDetails.id, authToken, {
-            title: detailsForm.title,
-            description: detailsForm.description,
-            due_date: detailsForm.due_date ? `${detailsForm.due_date}T18:00:00` : null,
-            status: finalStatus,
-            total_duration_seconds: manualDurationSeconds,
-          });
         }
+        updatedFromServer = await updateTaskApi(selectedTaskForDetails.id, authToken, {
+          title: detailsForm.title.trim(),
+          description: detailsForm.description,
+          client_id: detailsForm.client_id || selectedTaskForDetails.client_id,
+          task_type_id: isCustomCat ? undefined : selectedCat.id,
+          task_type_name: isCustomCat ? selectedCat.name : undefined,
+          hourly_rate: isCustomCat ? selectedCat.hourly_rate : undefined,
+          due_date: detailsForm.due_date ? `${detailsForm.due_date}T18:00:00Z` : null,
+          is_urgent_deadline: detailsForm.priority === "Urgente",
+          status: finalStatus,
+          total_duration_seconds: manualDurationSeconds,
+          meta: metaPayload,
+        });
       }
       if (finalStatus !== "in_progress") {
         removeTaskFromLocalTimers(selectedTaskForDetails.id);
@@ -2867,34 +2978,47 @@ export default function App() {
         setTimerSeconds(manualDurationSeconds);
       }
 
-      saveTaskMetaLocal(selectedTaskForDetails.id, {
-        v6_status: effectiveV6Status,
-        priority: detailsForm.priority,
-        origin: detailsForm.origin,
-        entity: detailsForm.entity,
-      });
+      saveTaskMetaLocal(selectedTaskForDetails.id, metaPayload);
 
       const resolvedLawyerName = isPool
         ? undefined
         : updatedFromServer?.assignee?.name || getLawyerNameById(detailsForm.assigned_to);
+      const resolvedClientName =
+        updatedFromServer?.client?.name ||
+        selectedClientObj?.name ||
+        selectedTaskForDetails.client_name;
+      const resolvedTaskTypeId = updatedFromServer?.task_type?.id || selectedCat.id;
+      const resolvedTaskTypeName = updatedFromServer?.task_type?.name || selectedCat.name;
 
       setTasks((prev) =>
         (prev.length > 0 ? prev : DEMO_TASKS).map((t) =>
           t.id === selectedTaskForDetails.id
             ? {
-              ...t,
-              title: detailsForm.title,
-              description: detailsForm.description,
-              status: finalStatus,
-              v6_status: effectiveV6Status,
-              priority: detailsForm.priority,
-              origin: detailsForm.origin,
-              entity: detailsForm.entity,
-              assigned_to: isPool ? undefined : updatedFromServer?.assigned_to || detailsForm.assigned_to,
-              lawyer_name: resolvedLawyerName,
-              due_date: detailsForm.due_date || undefined,
-              total_duration_seconds: manualDurationSeconds,
-            }
+                ...t,
+                title: detailsForm.title.trim(),
+                description: detailsForm.description,
+                client_id: detailsForm.client_id || t.client_id,
+                client_name: resolvedClientName,
+                task_type_id: resolvedTaskTypeId,
+                task_type: resolvedTaskTypeName,
+                status: finalStatus,
+                v6_status: effectiveV6Status,
+                priority: detailsForm.priority,
+                request_date: metaPayload.request_date,
+                origin: metaPayload.origin,
+                communication_ref: metaPayload.communication_ref,
+                start_date: metaPayload.start_date,
+                entity: metaPayload.entity,
+                process_reference: metaPayload.process_reference,
+                follow_up_date: metaPayload.follow_up_date,
+                waiting_started_at: waitingState.waiting_started_at,
+                waiting_total_seconds: waitingState.waiting_total_seconds,
+                waiting_periods: waitingState.waiting_periods,
+                assigned_to: isPool ? undefined : updatedFromServer?.assigned_to || detailsForm.assigned_to,
+                lawyer_name: resolvedLawyerName,
+                due_date: detailsForm.due_date || undefined,
+                total_duration_seconds: manualDurationSeconds,
+              }
             : t
         )
       );
@@ -3122,9 +3246,9 @@ PCN Advogadas · Plataforma Forense`;
 
   const handleCreateTask = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!taskFormTitle.trim()) return;
+    if (!newTaskForm.title.trim()) return;
 
-    const effectiveClientId = taskFormClientId || (clients.length > 0 ? clients[0].id : "");
+    const effectiveClientId = newTaskForm.client_id || (clients.length > 0 ? clients[0].id : "");
     if (!effectiveClientId) {
       alert("Por favor, registe um cliente antes de criar tarefas.");
       return;
@@ -3132,10 +3256,10 @@ PCN Advogadas · Plataforma Forense`;
 
     setIsSubmittingTask(true);
     try {
-      const isCustomCat = taskFormTypeId === "__custom__";
-      const parsedCustomRate = Math.max(0, parseFloat(taskFormCustomRate) || 120);
+      const isCustomCat = newTaskForm.task_type_id === "__custom__";
+      const parsedCustomRate = Math.max(0, parseFloat(newTaskForm.custom_rate) || 120);
       const predefinedCat =
-        serviceCategories.find((c) => c.id === taskFormTypeId) ||
+        serviceCategories.find((c) => c.id === newTaskForm.task_type_id) ||
         serviceCategories[0] || {
           id: "tp_1",
           name: "Certidões e Registos",
@@ -3145,38 +3269,64 @@ PCN Advogadas · Plataforma Forense`;
       const selectedCat: ServiceCategory = isCustomCat
         ? {
             id: `cat_${Date.now()}`,
-            name: taskFormCustomTypeName.trim() || "Serviço Personalizado",
+            name: newTaskForm.custom_type_name.trim() || "Serviço Personalizado",
             hourly_rate: parsedCustomRate,
             default_billable: true,
             color: "#92006F",
           }
         : predefinedCat;
 
+      const isPool = newTaskForm.assigned_to === "pool";
       const selectedClient = clients.find((c) => c.id === effectiveClientId);
-      const resolvedLawyerName = taskFormPublishToPool
+      const resolvedLawyerName = isPool
         ? undefined
-        : getLawyerNameById(taskFormAssignee);
+        : getLawyerNameById(newTaskForm.assigned_to);
       const initialDurationSec = Math.max(
         0,
-        (Number(taskFormDurationHours) || 0) * 3600 +
-          (Number(taskFormDurationMinutes) || 0) * 60
+        (Number(newTaskForm.duration_hours) || 0) * 3600 +
+          (Number(newTaskForm.duration_minutes) || 0) * 60 +
+          (Number(newTaskForm.duration_seconds) || 0)
       );
-      const mappedBackendSt = taskFormPublishToPool
+      const mappedBackendSt = isPool
         ? "pool"
-        : mapV6StatusToBackend(taskFormV6Status);
+        : mapV6StatusToBackend(newTaskForm.v6_status);
+
+      const waitingState = applyWaitingTransition({
+        previousWaitingStartedAt: null,
+        previousWaitingTotalSeconds: newTaskForm.waiting_total_seconds,
+        previousWaitingPeriods: newTaskForm.waiting_periods,
+        nextV6Status: newTaskForm.v6_status,
+        editedWaitingStartedAt: newTaskForm.waiting_started_at,
+      });
+
+      const metaPayload = {
+        v6_status: newTaskForm.v6_status,
+        priority: newTaskForm.priority,
+        request_date: newTaskForm.request_date || undefined,
+        origin: newTaskForm.origin,
+        communication_ref: newTaskForm.communication_ref.trim(),
+        start_date: newTaskForm.start_date || undefined,
+        entity: newTaskForm.entity.trim(),
+        process_reference: newTaskForm.process_reference.trim(),
+        follow_up_date: newTaskForm.follow_up_date || undefined,
+        waiting_started_at: waitingState.waiting_started_at,
+        waiting_total_seconds: waitingState.waiting_total_seconds,
+        waiting_periods: waitingState.waiting_periods,
+      };
 
       if (authToken && apiConnected) {
         const created = await createTaskApi(authToken, {
-          title: taskFormTitle.trim(),
-          description: taskFormDescription.trim() || undefined,
+          title: newTaskForm.title.trim(),
+          description: newTaskForm.description.trim() || undefined,
           client_id: effectiveClientId,
           task_type_id: selectedCat.id,
           task_type_name: selectedCat.name,
           hourly_rate: selectedCat.hourly_rate,
-          assigned_to: taskFormPublishToPool ? null : taskFormAssignee,
-          due_date: taskFormDueDate ? `${taskFormDueDate}T18:00:00Z` : null,
-          is_urgent_deadline: taskFormIsUrgent || taskFormPriority === "Urgente",
-          publish_to_pool: taskFormPublishToPool,
+          assigned_to: isPool ? null : newTaskForm.assigned_to,
+          due_date: newTaskForm.due_date ? `${newTaskForm.due_date}T18:00:00Z` : null,
+          is_urgent_deadline: newTaskForm.priority === "Urgente",
+          publish_to_pool: isPool,
+          meta: metaPayload,
         });
 
         if (created?.task_type?.id) {
@@ -3201,16 +3351,12 @@ PCN Advogadas · Plataforma Forense`;
             await updateTaskApi(created.id, authToken, {
               status: mappedBackendSt,
               total_duration_seconds: initialDurationSec,
+              meta: metaPayload,
             });
           } catch { }
         }
 
-        saveTaskMetaLocal(created.id, {
-          v6_status: taskFormV6Status,
-          priority: taskFormPriority,
-          origin: taskFormOrigin.trim(),
-          entity: taskFormEntity.trim(),
-        });
+        saveTaskMetaLocal(created.id, metaPayload);
 
         const newTask: Task = {
           id: created.id,
@@ -3221,41 +3367,52 @@ PCN Advogadas · Plataforma Forense`;
           task_type: selectedCat.name,
           task_type_id: selectedCat.id,
           status: mappedBackendSt,
-          v6_status: taskFormV6Status,
-          priority: taskFormPriority,
-          origin: taskFormOrigin.trim(),
-          entity: taskFormEntity.trim(),
-          assigned_to: taskFormPublishToPool ? undefined : created.assigned_to || taskFormAssignee,
-          lawyer_name: taskFormPublishToPool ? undefined : created.assignee?.name || resolvedLawyerName,
-          due_date: taskFormDueDate,
+          v6_status: newTaskForm.v6_status,
+          priority: newTaskForm.priority,
+          request_date: metaPayload.request_date,
+          origin: metaPayload.origin,
+          communication_ref: metaPayload.communication_ref,
+          start_date: metaPayload.start_date,
+          entity: metaPayload.entity,
+          process_reference: metaPayload.process_reference,
+          follow_up_date: metaPayload.follow_up_date,
+          waiting_started_at: waitingState.waiting_started_at,
+          waiting_total_seconds: waitingState.waiting_total_seconds,
+          waiting_periods: waitingState.waiting_periods,
+          assigned_to: isPool ? undefined : created.assigned_to || newTaskForm.assigned_to,
+          lawyer_name: isPool ? undefined : created.assignee?.name || resolvedLawyerName,
+          due_date: newTaskForm.due_date || undefined,
           total_duration_seconds: initialDurationSec,
         };
 
         setTasks((prev) => [newTask, ...prev]);
       } else {
         const newId = `tsk_${Date.now()}`;
-        saveTaskMetaLocal(newId, {
-          v6_status: taskFormV6Status,
-          priority: taskFormPriority,
-          origin: taskFormOrigin.trim(),
-          entity: taskFormEntity.trim(),
-        });
+        saveTaskMetaLocal(newId, metaPayload);
         const newTask: Task = {
           id: newId,
-          title: taskFormTitle.trim(),
-          description: taskFormDescription.trim(),
+          title: newTaskForm.title.trim(),
+          description: newTaskForm.description.trim(),
           client_id: effectiveClientId,
           client_name: selectedClient?.name || "Cliente",
           task_type: selectedCat.name,
           task_type_id: selectedCat.id,
           status: mappedBackendSt,
-          v6_status: taskFormV6Status,
-          priority: taskFormPriority,
-          origin: taskFormOrigin.trim(),
-          entity: taskFormEntity.trim(),
-          assigned_to: taskFormPublishToPool ? undefined : taskFormAssignee,
+          v6_status: newTaskForm.v6_status,
+          priority: newTaskForm.priority,
+          request_date: metaPayload.request_date,
+          origin: metaPayload.origin,
+          communication_ref: metaPayload.communication_ref,
+          start_date: metaPayload.start_date,
+          entity: metaPayload.entity,
+          process_reference: metaPayload.process_reference,
+          follow_up_date: metaPayload.follow_up_date,
+          waiting_started_at: waitingState.waiting_started_at,
+          waiting_total_seconds: waitingState.waiting_total_seconds,
+          waiting_periods: waitingState.waiting_periods,
+          assigned_to: isPool ? undefined : newTaskForm.assigned_to,
           lawyer_name: resolvedLawyerName,
-          due_date: taskFormDueDate,
+          due_date: newTaskForm.due_date || undefined,
           total_duration_seconds: initialDurationSec,
         };
         setTasks((prev) => [newTask, ...prev]);
@@ -3263,21 +3420,12 @@ PCN Advogadas · Plataforma Forense`;
 
       addAuditLog(
         "Tarefa criada",
-        `${taskFormTitle.trim()} (${selectedClient?.name || "Cliente"}) · Prioridade: ${taskFormPriority}`
+        `${newTaskForm.title.trim()} (${selectedClient?.name || "Cliente"}) · Prioridade: ${newTaskForm.priority}`
       );
-      setModalFeedback(`Tarefa criada (${taskFormPriority} · ${selectedCat.name})!`);
+      setModalFeedback(`Tarefa criada (${newTaskForm.priority} · ${selectedCat.name})!`);
       setTimeout(() => setModalFeedback(null), 3500);
       setIsNewTaskModalOpen(false);
-      setTaskFormTitle("");
-      setTaskFormDescription("");
-      setTaskFormCustomTypeName("");
-      setTaskFormPriority("Normal");
-      setTaskFormV6Status("Por iniciar");
-      setTaskFormOrigin("");
-      setTaskFormEntity("");
-      setTaskFormDurationHours(0);
-      setTaskFormDurationMinutes(0);
-      setTaskFormDueDate(getTodayDateString());
+      setNewTaskForm(buildEmptyTaskForm());
     } catch (err: any) {
       alert("Erro ao criar tarefa: " + err.message);
     } finally {
@@ -3531,7 +3679,7 @@ PCN Advogadas · Plataforma Forense`;
           notes: clientFormNotes.trim(),
         };
         setClients((prev) => [...prev, newClient]);
-        setTaskFormClientId((prev) => prev || newClient.id);
+        setNewTaskForm((prev) => (prev.client_id ? prev : { ...prev, client_id: newClient.id }));
         setSelectedFeeClient((prev) => prev || newClient.id);
         addAuditLog("Cliente criado", `${effectiveNum} · ${newClient.name}`);
         setModalFeedback("Novo cliente registado com sucesso!");
@@ -3553,7 +3701,7 @@ PCN Advogadas · Plataforma Forense`;
           notes: clientFormNotes.trim(),
         };
         setClients((prev) => [...prev, newClient]);
-        setTaskFormClientId((prev) => prev || newClient.id);
+        setNewTaskForm((prev) => (prev.client_id ? prev : { ...prev, client_id: newClient.id }));
         setSelectedFeeClient((prev) => prev || newClient.id);
         addAuditLog("Cliente criado", `${effectiveNum} · ${newClient.name}`);
         setModalFeedback("Novo cliente registado com sucesso!");
@@ -4624,7 +4772,7 @@ PCN Advogadas · Plataforma Forense`;
             <button
               type="button"
               className="v6-btn primary"
-              onClick={() => setIsNewTaskModalOpen(true)}
+              onClick={() => openNewTaskModal()}
             >
               + Nova tarefa
             </button>
@@ -4652,7 +4800,8 @@ PCN Advogadas · Plataforma Forense`;
               onCompleteTask={handleCompleteTask}
               onOpenTaskDetails={openTaskDetails}
               onDeleteTask={confirmDeleteTask}
-              onOpenNewTaskModal={() => setIsNewTaskModalOpen(true)}
+              onOpenNewTaskModal={() => openNewTaskModal()}
+              onOpenNewTaskForClient={(cid) => openNewTaskModal(cid)}
               onOpenNewClientModal={openNewClientModal}
               onOpenNewEventModal={(type) => openQuickEventModal(type)}
               onEditEvent={openEditEventFromAnyTab}
@@ -4669,8 +4818,8 @@ PCN Advogadas · Plataforma Forense`;
                 <div>
                   <h3>Clientes PCN</h3>
                   <p>
-                    Base cadastral de constituintes com N.º PCN, NIF, referência processual e data de
-                    aniversário (MM-DD).
+                    Registo cadastral de clientes com N.º PCN, NIF, contactos, data de aniversário e
+                    estado das tarefas associadas.
                   </p>
                 </div>
                 <div className="flex flex-wrap items-center gap-2">
@@ -4698,7 +4847,6 @@ PCN Advogadas · Plataforma Forense`;
                       <th>N.º PCN</th>
                       <th>Nome / Designação</th>
                       <th>NIF</th>
-                      <th>Processo / Referência</th>
                       <th>Contacto</th>
                       <th>Aniversário</th>
                       <th>Tarefas</th>
@@ -4708,7 +4856,7 @@ PCN Advogadas · Plataforma Forense`;
                   <tbody>
                     {filteredClientsList.length === 0 ? (
                       <tr>
-                        <td colSpan={8}>
+                        <td colSpan={7}>
                           <div className="v6-empty">Nenhum cliente encontrado.</div>
                         </td>
                       </tr>
@@ -4717,6 +4865,7 @@ PCN Advogadas · Plataforma Forense`;
                         const cTasks = effectiveTasks.filter(
                           (t) => t.client_id === c.id && t.status !== "archived"
                         );
+                        const breakdown = getClientTaskStatusBreakdown(cTasks);
                         const totalSec = cTasks.reduce(
                           (acc, t) => acc + (t.total_duration_seconds || 0),
                           0
@@ -4737,7 +4886,6 @@ PCN Advogadas · Plataforma Forense`;
                               )}
                             </td>
                             <td className="font-mono text-xs">{c.nif || "—"}</td>
-                            <td>{c.process_reference || "Assessoria Geral"}</td>
                             <td>
                               <div className="text-xs">{c.email || "—"}</div>
                               <div className="v6-muted text-xs">{c.phone || ""}</div>
@@ -4752,13 +4900,29 @@ PCN Advogadas · Plataforma Forense`;
                               )}
                             </td>
                             <td>
-                              <div className="text-xs font-bold">{cTasks.length} tarefa(s)</div>
-                              <div className="v6-muted text-xs">
-                                {h}h {String(m).padStart(2, "0")}m
-                              </div>
+                              {cTasks.length === 0 ? (
+                                <span className="v6-muted text-xs">Sem tarefas registadas</span>
+                              ) : (
+                                <>
+                                  <div className="text-xs font-semibold text-[#28202a]">
+                                    {breakdown.parts.join(" / ")}
+                                  </div>
+                                  <div className="v6-muted text-[11px] mt-0.5">
+                                    Total: {cTasks.length} tarefa(s) · {h}h {String(m).padStart(2, "0")}m
+                                  </div>
+                                </>
+                              )}
                             </td>
                             <td className="text-right">
-                              <div className="flex items-center justify-end gap-1.5">
+                              <div className="flex items-center justify-end gap-1.5 flex-wrap">
+                                <button
+                                  type="button"
+                                  className="v6-btn sm primary"
+                                  onClick={() => openNewTaskModal(c.id)}
+                                  title="Criar nova tarefa associada a este cliente"
+                                >
+                                  + Tarefa
+                                </button>
                                 <button
                                   type="button"
                                   className="v6-btn sm"
@@ -5471,7 +5635,7 @@ PCN Advogadas · Plataforma Forense`;
           ) : (
             <button
               type="button"
-              onClick={() => setIsNewTaskModalOpen(true)}
+              onClick={() => openNewTaskModal()}
               className="v6-bottom-nav-item"
             >
               <span className="ico">＋</span>
@@ -5504,202 +5668,38 @@ PCN Advogadas · Plataforma Forense`;
           </div>
         )}
 
-        {/* ── MODAL V6: NOVA TAREFA (COM PRIORIDADE, ESTADO V6 E TEMPO) ── */}
+        {/* ── MODAL V6: NOVA TAREFA (UNIFICADO COM EDITAR TAREFA + TEMPOS + ESPERA) ── */}
         {isNewTaskModalOpen && (
           <div
             className="v6-modal-backdrop"
             onClick={() => setIsNewTaskModalOpen(false)}
           >
             <div className="v6-modal" onClick={(e) => e.stopPropagation()}>
-              <h3>Nova Tarefa PCN</h3>
-              <form onSubmit={handleCreateTask}>
-                <div className="v6-form-grid">
-                  <div className="v6-field full">
-                    <label>Título da tarefa *</label>
-                    <input
-                      type="text"
-                      required
-                      placeholder="Ex.: Contestação / Requerimento / Parecer..."
-                      value={taskFormTitle}
-                      onChange={(e) => setTaskFormTitle(e.target.value)}
-                    />
-                  </div>
-
-                  <div className="v6-field">
-                    <label>Cliente *</label>
-                    <select
-                      value={taskFormClientId || (effectiveClients[0]?.id ?? "")}
-                      onChange={(e) => setTaskFormClientId(e.target.value)}
-                    >
-                      {effectiveClients.map((c, idx) => (
-                        <option key={c.id} value={c.id}>
-                          {c.number || `PCN ${String(idx + 1).padStart(4, "0")}`} — {c.name}
-                        </option>
-                      ))}
-                    </select>
-                  </div>
-
-                  <div className="v6-field">
-                    <label>Categoria de Serviço</label>
-                    <select
-                      value={taskFormTypeId}
-                      onChange={(e) => {
-                        const val = e.target.value;
-                        setTaskFormTypeId(val);
-                        if (val !== "__custom__") {
-                          const found = serviceCategories.find((c) => c.id === val);
-                          if (found) setTaskFormCustomRate(String(found.hourly_rate));
-                        }
-                      }}
-                    >
-                      {serviceCategories.map((cat) => (
-                        <option key={cat.id} value={cat.id}>
-                          {cat.name} ({cat.hourly_rate.toFixed(2)} €/h)
-                        </option>
-                      ))}
-                      <option value="__custom__">✍️ Outra / Texto livre (Personalizada)...</option>
-                    </select>
-                  </div>
-
-                  {taskFormTypeId === "__custom__" && (
-                    <>
-                      <div className="v6-field">
-                        <label>Serviço / Categoria (Texto livre) *</label>
-                        <input
-                          type="text"
-                          required
-                          placeholder="Ex.: Requerimento avulso, Diligência, Parecer..."
-                          value={taskFormCustomTypeName}
-                          onChange={(e) => setTaskFormCustomTypeName(e.target.value)}
-                        />
-                      </div>
-                      <div className="v6-field">
-                        <label>Taxa / Valor Hora (€/h)</label>
-                        <input
-                          type="number"
-                          step="0.01"
-                          min={0}
-                          placeholder="120.00"
-                          value={taskFormCustomRate}
-                          onChange={(e) => setTaskFormCustomRate(e.target.value)}
-                        />
-                      </div>
-                    </>
-                  )}
-
-                  <div className="v6-field">
-                    <label>Responsável</label>
-                    <select
-                      value={taskFormPublishToPool ? "pool" : taskFormAssignee}
-                      onChange={(e) => {
-                        if (e.target.value === "pool") {
-                          setTaskFormPublishToPool(true);
-                        } else {
-                          setTaskFormPublishToPool(false);
-                          setTaskFormAssignee(e.target.value);
-                        }
-                      }}
-                    >
-                      {effectiveUsers.map((u: any) => (
-                        <option key={u.id} value={u.id}>
-                          {u.name} ({ROLE_LABELS[u.role] || "Advogada"})
-                        </option>
-                      ))}
-                      <option value="pool">Pool Partilhada (Sem responsável fixo)</option>
-                    </select>
-                  </div>
-
-                  <div className="v6-field">
-                    <label>Prioridade</label>
-                    <select
-                      value={taskFormPriority}
-                      onChange={(e) => setTaskFormPriority(e.target.value as TaskPriority)}
-                    >
-                      <option value="Normal">Normal</option>
-                      <option value="Alta">Alta</option>
-                      <option value="Urgente">Urgente</option>
-                    </select>
-                  </div>
-
-                  <div className="v6-field">
-                    <label>Estado</label>
-                    <select
-                      value={taskFormV6Status}
-                      onChange={(e) => setTaskFormV6Status(e.target.value as TaskV6Status)}
-                    >
-                      {V6_STATUS_LIST.map((st) => (
-                        <option key={st} value={st}>
-                          {st}
-                        </option>
-                      ))}
-                    </select>
-                  </div>
-
-                  <div className="v6-field">
-                    <label>Prazo</label>
-                    <input
-                      type="date"
-                      value={taskFormDueDate}
-                      onChange={(e) => setTaskFormDueDate(e.target.value)}
-                    />
-                  </div>
-
-                  <div className="v6-field">
-                    <label>Tempo inicial (Horas)</label>
-                    <input
-                      type="number"
-                      min={0}
-                      value={taskFormDurationHours}
-                      onChange={(e) =>
-                        setTaskFormDurationHours(Math.max(0, parseInt(e.target.value, 10) || 0))
-                      }
-                    />
-                  </div>
-
-                  <div className="v6-field">
-                    <label>Tempo inicial (Minutos)</label>
-                    <input
-                      type="number"
-                      min={0}
-                      max={59}
-                      value={taskFormDurationMinutes}
-                      onChange={(e) =>
-                        setTaskFormDurationMinutes(
-                          Math.min(59, Math.max(0, parseInt(e.target.value, 10) || 0))
-                        )
-                      }
-                    />
-                  </div>
-
-                  <div className="v6-field">
-                    <label>Origem</label>
-                    <input
-                      type="text"
-                      placeholder="Ex.: Cliente / Tribunal / Direção..."
-                      value={taskFormOrigin}
-                      onChange={(e) => setTaskFormOrigin(e.target.value)}
-                    />
-                  </div>
-
-                  <div className="v6-field">
-                    <label>Entidade / Processo</label>
-                    <input
-                      type="text"
-                      placeholder="Ex.: Juízo Central Cível / Conservatória..."
-                      value={taskFormEntity}
-                      onChange={(e) => setTaskFormEntity(e.target.value)}
-                    />
-                  </div>
-
-                  <div className="v6-field full">
-                    <label>Descrição / Notas</label>
-                    <textarea
-                      placeholder="Instruções forenses, documentos ou observações..."
-                      value={taskFormDescription}
-                      onChange={(e) => setTaskFormDescription(e.target.value)}
-                    />
-                  </div>
+              <div className="flex items-start justify-between gap-3 pb-3.5 mb-4 border-b border-[#efe6e0]">
+                <div>
+                  <h3 className="m-0! p-0! border-0! text-[20px]">Nova Tarefa PCN</h3>
+                  <p className="text-xs text-[#736872] mt-1">
+                    Preencha os dados da diligência, prazos, estado e acompanhamento.
+                  </p>
                 </div>
+                <button
+                  type="button"
+                  onClick={() => setIsNewTaskModalOpen(false)}
+                  className="p-1.5 rounded-lg border border-[#e5d8d0] text-[#59083e] hover:bg-[#faf5f1] cursor-pointer transition-colors shrink-0"
+                  title="Fechar"
+                >
+                  <X className="w-4 h-4" />
+                </button>
+              </div>
+              <form onSubmit={handleCreateTask}>
+                <TaskFormFields
+                  form={newTaskForm}
+                  onChange={setNewTaskForm}
+                  clients={effectiveClients}
+                  users={effectiveUsers}
+                  serviceCategories={serviceCategories}
+                  formatSeconds={formatSeconds}
+                />
 
                 <div className="v6-modal-actions">
                   <button
@@ -5722,7 +5722,7 @@ PCN Advogadas · Plataforma Forense`;
           </div>
         )}
 
-        {/* ── MODAL V6: EDITAR / DETALHES DE TAREFA (COM PRIORIDADE, ESTADO E TEMPO) ── */}
+        {/* ── MODAL V6: EDITAR / DETALHES DE TAREFA (UNIFICADO COM NOVA TAREFA + TEMPOS + ESPERA) ── */}
         {selectedTaskForDetails && (
           <div
             className="v6-modal-backdrop"
@@ -5735,7 +5735,9 @@ PCN Advogadas · Plataforma Forense`;
                   <div className="flex flex-wrap items-center gap-2">
                     <h3 className="m-0! p-0! border-0! text-[20px]">Editar Tarefa</h3>
                     <span className="v6-badge wait">
-                      ◈ {selectedTaskForDetails.client_name}
+                      ◈{" "}
+                      {effectiveClients.find((c) => c.id === detailsForm.client_id)?.name ||
+                        selectedTaskForDetails.client_name}
                     </span>
                     {(() => {
                       const pStyle = getPriorityBadgeStyle(detailsForm.priority);
@@ -5757,7 +5759,7 @@ PCN Advogadas · Plataforma Forense`;
                     </span>
                   </div>
                   <p className="text-xs text-[#736872] mt-1">
-                    Atualize os dados operacionais, responsável, prazo e tempo dedicado à diligência.
+                    Atualize os dados operacionais, responsável, espera externa, prazo e tempo dedicado à tarefa.
                   </p>
                 </div>
                 <button
@@ -5771,270 +5773,15 @@ PCN Advogadas · Plataforma Forense`;
               </div>
 
               <form onSubmit={handleSaveTaskDetails}>
-                <div className="v6-form-grid">
-                  <div className="v6-field full">
-                    <label>Título da tarefa *</label>
-                    <input
-                      type="text"
-                      required
-                      placeholder="Ex.: Contestação Cível — Prazo Judicial Perentório"
-                      value={detailsForm.title}
-                      onChange={(e) =>
-                        setDetailsForm({ ...detailsForm, title: e.target.value })
-                      }
-                    />
-                  </div>
-
-                  <div className="v6-field">
-                    <label>Responsável</label>
-                    <select
-                      value={detailsForm.assigned_to}
-                      onChange={(e) =>
-                        setDetailsForm({ ...detailsForm, assigned_to: e.target.value })
-                      }
-                    >
-                      <option value="pool">Pool Partilhada (Sem responsável fixo)</option>
-                      {effectiveUsers.map((u: any) => (
-                        <option key={u.id} value={u.id}>
-                          {u.name} ({ROLE_LABELS[u.role] || "Advogada"})
-                        </option>
-                      ))}
-                    </select>
-                  </div>
-
-                  <div className="v6-field">
-                    <label>Prioridade</label>
-                    <select
-                      value={detailsForm.priority}
-                      onChange={(e) =>
-                        setDetailsForm({
-                          ...detailsForm,
-                          priority: e.target.value as TaskPriority,
-                        })
-                      }
-                    >
-                      <option value="Normal">Normal</option>
-                      <option value="Alta">Alta</option>
-                      <option value="Urgente">Urgente</option>
-                    </select>
-                  </div>
-
-                  <div className="v6-field">
-                    <label>Estado</label>
-                    <select
-                      value={detailsForm.v6_status}
-                      onChange={(e) => {
-                        const v6St = e.target.value as TaskV6Status;
-                        setDetailsForm({
-                          ...detailsForm,
-                          v6_status: v6St,
-                          status: mapV6StatusToBackend(v6St),
-                        });
-                      }}
-                    >
-                      {V6_STATUS_LIST.map((st) => (
-                        <option key={st} value={st}>
-                          {st}
-                        </option>
-                      ))}
-                    </select>
-                  </div>
-
-                  <div className="v6-field">
-                    <div className="flex items-center justify-between">
-                      <label>Prazo</label>
-                      {detailsForm.due_date && (() => {
-                        const sem = getTaskDeadlineSemaphore({
-                          ...selectedTaskForDetails,
-                          due_date: detailsForm.due_date,
-                          v6_status: detailsForm.v6_status,
-                        });
-                        if (sem.level === "red" || sem.level === "yellow") {
-                          return (
-                            <span
-                              className="text-[10px] font-bold px-2 py-0.5 rounded-full"
-                              style={{
-                                background: sem.bg,
-                                color: sem.text,
-                                border: `1px solid ${sem.border}`,
-                              }}
-                            >
-                              {sem.label}
-                            </span>
-                          );
-                        }
-                        return null;
-                      })()}
-                    </div>
-                    <input
-                      type="date"
-                      value={detailsForm.due_date}
-                      onChange={(e) =>
-                        setDetailsForm({ ...detailsForm, due_date: e.target.value })
-                      }
-                    />
-                  </div>
-
-                  <div className="v6-field">
-                    <label>Origem</label>
-                    <input
-                      type="text"
-                      placeholder="Ex.: Tribunal / Cliente / Direção"
-                      value={detailsForm.origin}
-                      onChange={(e) =>
-                        setDetailsForm({ ...detailsForm, origin: e.target.value })
-                      }
-                    />
-                  </div>
-
-                  <div className="v6-field">
-                    <label>Entidade</label>
-                    <input
-                      type="text"
-                      placeholder="Ex.: Juízo Central Cível / Conservatória"
-                      value={detailsForm.entity}
-                      onChange={(e) =>
-                        setDetailsForm({ ...detailsForm, entity: e.target.value })
-                      }
-                    />
-                  </div>
-
-                  {/* Painel Dedicado de Tempo Acumulado */}
-                  <div className="v6-field full">
-                    <div className="rounded-xl border border-[#e5d8d0] bg-[#faf6f2] p-3.5">
-                      <div className="flex flex-wrap items-center justify-between gap-2 mb-2.5">
-                        <span className="text-xs font-bold text-[#59083e] flex items-center gap-1.5">
-                          <Clock className="w-3.5 h-3.5 text-[#92006f]" />
-                          Tempo Acumulado na Tarefa
-                        </span>
-                        <span className="font-mono text-xs font-bold px-2.5 py-1 rounded-lg bg-[#59083e] text-[#e9c885]">
-                          Atual:{" "}
-                          {formatSeconds(
-                            (Number(detailsForm.duration_hours) || 0) * 3600 +
-                              (Number(detailsForm.duration_minutes) || 0) * 60 +
-                              (Number(detailsForm.duration_seconds) || 0)
-                          )}
-                        </span>
-                      </div>
-
-                      <div className="grid grid-cols-3 gap-3">
-                        <div>
-                          <span className="block text-[11px] font-semibold text-[#6d5d66] mb-1">
-                            Horas (h)
-                          </span>
-                          <input
-                            type="number"
-                            min={0}
-                            placeholder="0"
-                            value={detailsForm.duration_hours}
-                            onChange={(e) =>
-                              setDetailsForm({
-                                ...detailsForm,
-                                duration_hours: Math.max(0, parseInt(e.target.value, 10) || 0),
-                              })
-                            }
-                            className="bg-white! font-mono font-bold text-center"
-                          />
-                        </div>
-                        <div>
-                          <span className="block text-[11px] font-semibold text-[#6d5d66] mb-1">
-                            Minutos (min)
-                          </span>
-                          <input
-                            type="number"
-                            min={0}
-                            max={59}
-                            placeholder="0"
-                            value={detailsForm.duration_minutes}
-                            onChange={(e) =>
-                              setDetailsForm({
-                                ...detailsForm,
-                                duration_minutes: Math.max(0, parseInt(e.target.value, 10) || 0),
-                              })
-                            }
-                            className="bg-white! font-mono font-bold text-center"
-                          />
-                        </div>
-                        <div>
-                          <span className="block text-[11px] font-semibold text-[#6d5d66] mb-1">
-                            Segundos (seg)
-                          </span>
-                          <input
-                            type="number"
-                            min={0}
-                            max={59}
-                            placeholder="0"
-                            value={detailsForm.duration_seconds}
-                            onChange={(e) =>
-                              setDetailsForm({
-                                ...detailsForm,
-                                duration_seconds: Math.max(0, parseInt(e.target.value, 10) || 0),
-                              })
-                            }
-                            className="bg-white! font-mono font-bold text-center"
-                          />
-                        </div>
-                      </div>
-
-                      <div className="flex flex-wrap items-center justify-between gap-2 mt-3 pt-2.5 border-t border-[#ece2dc]">
-                        <div className="flex flex-wrap items-center gap-1.5">
-                          <span className="text-[11px] text-[#736872] mr-1">Adicionar rápido:</span>
-                          {[
-                            { label: "+15m", sec: 900 },
-                            { label: "+30m", sec: 1800 },
-                            { label: "+1h", sec: 3600 },
-                          ].map((b) => (
-                            <button
-                              key={b.label}
-                              type="button"
-                              className="v6-btn sm"
-                              onClick={() => {
-                                const cur =
-                                  (Number(detailsForm.duration_hours) || 0) * 3600 +
-                                  (Number(detailsForm.duration_minutes) || 0) * 60 +
-                                  (Number(detailsForm.duration_seconds) || 0) +
-                                  b.sec;
-                                setDetailsForm({
-                                  ...detailsForm,
-                                  duration_hours: Math.floor(cur / 3600),
-                                  duration_minutes: Math.floor((cur % 3600) / 60),
-                                  duration_seconds: cur % 60,
-                                });
-                              }}
-                            >
-                              {b.label}
-                            </button>
-                          ))}
-                        </div>
-                        <button
-                          type="button"
-                          className="v6-btn sm danger"
-                          onClick={() =>
-                            setDetailsForm({
-                              ...detailsForm,
-                              duration_hours: 0,
-                              duration_minutes: 0,
-                              duration_seconds: 0,
-                            })
-                          }
-                        >
-                          Zerar tempo
-                        </button>
-                      </div>
-                    </div>
-                  </div>
-
-                  <div className="v6-field full">
-                    <label>Descrição / Notas Forenses</label>
-                    <textarea
-                      placeholder="Registe observações, referências processuais ou próximos passos..."
-                      value={detailsForm.description}
-                      onChange={(e) =>
-                        setDetailsForm({ ...detailsForm, description: e.target.value })
-                      }
-                    />
-                  </div>
-                </div>
+                <TaskFormFields
+                  form={detailsForm}
+                  onChange={setDetailsForm}
+                  clients={effectiveClients}
+                  users={effectiveUsers}
+                  serviceCategories={serviceCategories}
+                  formatSeconds={formatSeconds}
+                  existingTask={selectedTaskForDetails}
+                />
 
                 <div className="v6-modal-actions justify-between!">
                   <div className="flex items-center gap-2">
@@ -6149,17 +5896,7 @@ PCN Advogadas · Plataforma Forense`;
                       onChange={(e) => setClientFormPhone(e.target.value)}
                     />
                   </div>
-                  <div className="v6-field">
-                    <label>Processo / Referência</label>
-                    <input
-                      type="text"
-                      maxLength={255}
-                      placeholder="Ex.: Proc. 512/26.4T8OVR"
-                      value={clientFormProcess}
-                      onChange={(e) => setClientFormProcess(e.target.value)}
-                    />
-                  </div>
-                  <div className="v6-field">
+                  <div className="v6-field full">
                     <label>Data de Aniversário</label>
                     <input
                       type="date"
@@ -6804,15 +6541,15 @@ PCN Advogadas · Plataforma Forense`;
                   </strong>
                 </div>
               </div>
-              <div className="v6-modal-actions justify-between!">
+              <div className="v6-modal-actions justify-between! flex-wrap gap-2">
                 <button
                   type="button"
-                  className="v6-btn ghost text-xs text-[#736872] hover:text-[#59083e] flex items-center gap-1.5 cursor-pointer"
+                  className="v6-btn text-xs text-[#59083e] border-[#e2d0b1] bg-[#fdfaf5] hover:bg-[#f6ead7] flex items-center gap-1.5 cursor-pointer"
                   onClick={handleSilenceOvertimeAlert}
-                  title="Silenciar para que o alerta não apareça mais nesta tarefa"
+                  title="Dispensar futuros alertas de 1 em 1 hora nesta tarefa"
                 >
                   <BellOff className="w-3.5 h-3.5" />
-                  <span>Silenciar</span>
+                  <span>Dispensar alerta nesta tarefa</span>
                 </button>
                 <div className="flex items-center gap-2">
                   <button

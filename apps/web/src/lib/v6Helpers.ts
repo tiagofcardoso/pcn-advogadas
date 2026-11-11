@@ -6,16 +6,31 @@ import {
   FeeNoteCustomLine,
   Task,
   TaskV6Status,
+  TaskWaitingPeriod,
 } from "./types";
+
+export const TASK_ORIGIN_OPTIONS = [
+  "Pessoal",
+  "E-mail",
+  "Telefonema",
+  "WhatsApp",
+  "Outros",
+] as const;
 
 export const V6_STATUS_LIST: TaskV6Status[] = [
   "Por iniciar",
   "Em curso",
+  "Pausada",
   "A aguardar cliente",
   "A aguardar entidade",
+  "A aguardar terceiros",
   "Redistribuída",
   "Concluída",
 ];
+
+export function isWaitingStatus(v6Status?: string): boolean {
+  return Boolean(v6Status && v6Status.toLowerCase().includes("aguardar"));
+}
 
 export function getTaskV6Status(task: Task): TaskV6Status {
   if (task.v6_status) return task.v6_status;
@@ -23,7 +38,7 @@ export function getTaskV6Status(task: Task): TaskV6Status {
     case "in_progress":
       return "Em curso";
     case "paused":
-      return "A aguardar cliente";
+      return "Pausada";
     case "completed":
     case "archived":
       return "Concluída";
@@ -41,8 +56,11 @@ export function mapV6StatusToBackend(
   switch (v6Status) {
     case "Em curso":
       return "in_progress";
+    case "Pausada":
+    case "A aguardar":
     case "A aguardar cliente":
     case "A aguardar entidade":
+    case "A aguardar terceiros":
       return "paused";
     case "Concluída":
       return "completed";
@@ -56,9 +74,164 @@ export function mapV6StatusToBackend(
 export function getV6BadgeClass(status: TaskV6Status): string {
   if (status === "Concluída") return "v6-badge done";
   if (status === "Redistribuída") return "v6-badge redist";
+  if (status === "Pausada") return "v6-badge paused";
   if (status.includes("aguardar")) return "v6-badge wait";
   if (status === "Por iniciar") return "v6-badge start";
   return "v6-badge";
+}
+
+/**
+ * Calcula o tempo total em espera externa (Terceiros / Entidade / Cliente),
+ * devolvendo o total em segundos (períodos já fechados + período ativo atual).
+ */
+export function getTaskWaitingSeconds(
+  task: Pick<Task, "v6_status" | "status" | "waiting_started_at" | "waiting_total_seconds">,
+  nowMs: number = Date.now()
+): number {
+  const closedSec = Math.max(0, Number(task.waiting_total_seconds) || 0);
+  const v6St = task.v6_status || "";
+  if (!isWaitingStatus(v6St) || !task.waiting_started_at) {
+    return closedSec;
+  }
+  const startMs = new Date(task.waiting_started_at).getTime();
+  if (isNaN(startMs)) return closedSec;
+  const liveElapsedSec = Math.max(0, Math.floor((nowMs - startMs) / 1000));
+  return closedSec + liveElapsedSec;
+}
+
+/**
+ * Formata uma duração em dias e horas (ex.: "3d 04h", "0d 06h").
+ */
+export function formatDaysAndHours(totalSeconds: number): string {
+  const clean = Math.max(0, Math.floor(totalSeconds || 0));
+  const totalHours = Math.floor(clean / 3600);
+  const days = Math.floor(totalHours / 24);
+  const hours = totalHours % 24;
+  return `${days}d ${String(hours).padStart(2, "0")}h`;
+}
+
+/**
+ * Converte uma ISO string UTC/local para input `datetime-local` ("YYYY-MM-DDTHH:mm").
+ */
+export function toDatetimeLocalValue(iso?: string | null): string {
+  if (!iso) return "";
+  const dt = new Date(iso);
+  if (isNaN(dt.getTime())) {
+    return String(iso).slice(0, 16);
+  }
+  const y = dt.getFullYear();
+  const m = String(dt.getMonth() + 1).padStart(2, "0");
+  const d = String(dt.getDate()).padStart(2, "0");
+  const hh = String(dt.getHours()).padStart(2, "0");
+  const mm = String(dt.getMinutes()).padStart(2, "0");
+  return `${y}-${m}-${d}T${hh}:${mm}`;
+}
+
+/**
+ * Aplica transição automática de contagem de espera externa quando o estado muda
+ * entre "A aguardar..." e outros estados, sem duplicar lógica entre criação e edição.
+ */
+export function applyWaitingTransition(params: {
+  previousWaitingStartedAt?: string | null;
+  previousWaitingTotalSeconds?: number;
+  previousWaitingPeriods?: TaskWaitingPeriod[];
+  previousV6Status?: TaskV6Status;
+  nextV6Status: TaskV6Status;
+  editedWaitingStartedAt?: string | null;
+  now?: Date;
+}): {
+  waiting_started_at: string | null;
+  waiting_total_seconds: number;
+  waiting_periods: TaskWaitingPeriod[];
+} {
+  const now = params.now || new Date();
+  const prevTotal = Math.max(0, Number(params.previousWaitingTotalSeconds) || 0);
+  const prevPeriods = Array.isArray(params.previousWaitingPeriods)
+    ? [...params.previousWaitingPeriods]
+    : [];
+  const enteringWaiting = isWaitingStatus(params.nextV6Status);
+  const prevStartedRaw = params.previousWaitingStartedAt || null;
+  const editedRaw = params.editedWaitingStartedAt?.trim() || "";
+
+  const toIsoOrNull = (val?: string | null): string | null => {
+    if (!val) return null;
+    const d = new Date(val);
+    return isNaN(d.getTime()) ? null : d.toISOString();
+  };
+
+  if (enteringWaiting) {
+    const resolvedStart = toIsoOrNull(editedRaw) || toIsoOrNull(prevStartedRaw) || now.toISOString();
+    return {
+      waiting_started_at: resolvedStart,
+      waiting_total_seconds: prevTotal,
+      waiting_periods: prevPeriods,
+    };
+  }
+
+  // Saindo de espera (ou criando já fora de espera)
+  if (prevStartedRaw) {
+    const startDate = new Date(prevStartedRaw);
+    const elapsed = isNaN(startDate.getTime())
+      ? 0
+      : Math.max(0, Math.floor((now.getTime() - startDate.getTime()) / 1000));
+    const closedPeriod: TaskWaitingPeriod = {
+      id: `wp_${now.getTime()}`,
+      reason: params.previousV6Status || "A aguardar",
+      started_at: isNaN(startDate.getTime()) ? now.toISOString() : startDate.toISOString(),
+      ended_at: now.toISOString(),
+    };
+    return {
+      waiting_started_at: null,
+      waiting_total_seconds: prevTotal + elapsed,
+      waiting_periods: [...prevPeriods, closedPeriod].slice(-25),
+    };
+  }
+
+  return {
+    waiting_started_at: null,
+    waiting_total_seconds: prevTotal,
+    waiting_periods: prevPeriods,
+  };
+}
+
+/**
+ * Resumo estatístico das tarefas de um cliente por estado (estilo V5.2).
+ */
+export function getClientTaskStatusBreakdown(tasks: Task[]): {
+  inProgress: number;
+  toStart: number;
+  paused: number;
+  waiting: number;
+  completed: number;
+  redistributed: number;
+  parts: string[];
+} {
+  let inProgress = 0;
+  let toStart = 0;
+  let paused = 0;
+  let waiting = 0;
+  let completed = 0;
+  let redistributed = 0;
+
+  for (const t of tasks) {
+    const st = getTaskV6Status(t);
+    if (st === "Em curso") inProgress++;
+    else if (st === "Por iniciar") toStart++;
+    else if (st === "Pausada") paused++;
+    else if (isWaitingStatus(st)) waiting++;
+    else if (st === "Redistribuída") redistributed++;
+    else if (st === "Concluída") completed++;
+  }
+
+  const parts: string[] = [];
+  if (inProgress > 0) parts.push(`${inProgress} em curso`);
+  if (waiting > 0) parts.push(`${waiting} pendente(s)`);
+  if (toStart > 0) parts.push(`${toStart} por iniciar`);
+  if (paused > 0) parts.push(`${paused} pausada(s)`);
+  if (redistributed > 0) parts.push(`${redistributed} redistribuída(s)`);
+  if (completed > 0) parts.push(`${completed} concluída(s)`);
+
+  return { inProgress, toStart, paused, waiting, completed, redistributed, parts };
 }
 
 export function getPriorityBadgeStyle(priority?: string): {

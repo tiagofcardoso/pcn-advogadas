@@ -49,17 +49,30 @@ async def run_seed(include_demo_data: bool = False) -> None:
     session_factory = get_session_factory()
     engine = session_factory.kw["bind"]
 
-    # Ensure tables exist and hourly_rate column is present
+    # Ensure tables exist and additive columns are present
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
-        try:
-            await conn.execute(
-                text(
-                    "ALTER TABLE task_types ADD COLUMN IF NOT EXISTS hourly_rate NUMERIC(10, 2) DEFAULT 120.00 NOT NULL"
-                )
-            )
-        except Exception:
-            pass
+        is_sqlite = conn.dialect.name == "sqlite"
+        if is_sqlite:
+            for table_name, col_name, col_def in (
+                ("task_types", "hourly_rate", "NUMERIC(10, 2) DEFAULT 120.00 NOT NULL"),
+                ("tasks", "metadata_json", "TEXT"),
+            ):
+                rows = (await conn.execute(text(f"PRAGMA table_info({table_name})"))).fetchall()
+                existing_cols = {r[1] for r in rows}
+                if col_name not in existing_cols:
+                    await conn.execute(
+                        text(f"ALTER TABLE {table_name} ADD COLUMN {col_name} {col_def}")
+                    )
+        else:
+            for ddl in (
+                "ALTER TABLE task_types ADD COLUMN IF NOT EXISTS hourly_rate NUMERIC(10, 2) DEFAULT 120.00 NOT NULL",
+                "ALTER TABLE tasks ADD COLUMN IF NOT EXISTS metadata_json TEXT",
+            ):
+                try:
+                    await conn.execute(text(ddl))
+                except Exception:
+                    pass
 
     async with session_factory() as session:
         # 1. Utilizadoras Essenciais da Sociedade

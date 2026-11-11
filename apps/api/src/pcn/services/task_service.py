@@ -1,6 +1,8 @@
 """Task and Timer Service implementing State Pattern and race-condition free time tracking."""
 
-from datetime import datetime
+import json
+from datetime import UTC, datetime
+from typing import Any
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -23,6 +25,64 @@ from pcn.schemas.time_session import ActiveTimerResponse
 _LAWYER_STATUSES = frozenset(
     {TaskStatus.ASSIGNED, TaskStatus.IN_PROGRESS, TaskStatus.PAUSED, TaskStatus.COMPLETED}
 )
+
+_ALLOWED_META_KEYS = frozenset(
+    {
+        "v6_status",
+        "priority",
+        "request_date",
+        "origin",
+        "communication_ref",
+        "start_date",
+        "entity",
+        "process_reference",
+        "follow_up_date",
+        "waiting_started_at",
+        "waiting_total_seconds",
+        "waiting_periods",
+        "documented_expenses",
+        "undocumented_expenses",
+    }
+)
+
+
+def _merge_task_meta(task: Task, patch: dict[str, Any] | None) -> None:
+    """Safely merges sanitized operational metadata into Task.metadata_json."""
+    if not patch or not isinstance(patch, dict):
+        return
+    current = dict(task.meta)
+    for key, val in patch.items():
+        if key in _ALLOWED_META_KEYS:
+            current[key] = val
+    task.metadata_json = json.dumps(current, ensure_ascii=False)
+
+
+def _close_open_waiting_if_any(meta: dict[str, Any], now: datetime) -> None:
+    """Closes an open external waiting period and accumulates elapsed seconds."""
+    started_raw = meta.get("waiting_started_at")
+    if not started_raw or not isinstance(started_raw, str):
+        return
+    try:
+        parsed_start = datetime.fromisoformat(started_raw.replace("Z", "+00:00"))
+        if parsed_start.tzinfo is None:
+            parsed_start = parsed_start.replace(tzinfo=UTC)
+        now_utc = now if now.tzinfo else now.replace(tzinfo=UTC)
+        elapsed = max(0, int((now_utc - parsed_start).total_seconds()))
+        meta["waiting_total_seconds"] = int(meta.get("waiting_total_seconds") or 0) + elapsed
+        periods = list(meta.get("waiting_periods") or [])
+        reason = str(meta.get("v6_status") or "A aguardar")
+        periods.append(
+            {
+                "id": f"wp_{int(now_utc.timestamp())}",
+                "reason": reason,
+                "started_at": parsed_start.isoformat(),
+                "ended_at": now_utc.isoformat(),
+            }
+        )
+        meta["waiting_periods"] = periods[-25:]
+    except (TypeError, ValueError):
+        pass
+    meta["waiting_started_at"] = None
 
 
 class TaskService:
@@ -193,6 +253,7 @@ class TaskService:
             due_date=data.due_date,
             is_urgent_deadline=data.is_urgent_deadline,
         )
+        _merge_task_meta(task, data.meta)
         await self.task_repo.add(task)
         await self.session.flush()
 
@@ -259,9 +320,9 @@ class TaskService:
         if data.is_urgent_deadline is not None:
             task.is_urgent_deadline = data.is_urgent_deadline
         if data.total_duration_seconds is not None:
-            task.total_duration_seconds = max(
-                task.total_duration_seconds or 0, data.total_duration_seconds
-            )
+            task.total_duration_seconds = data.total_duration_seconds
+        if data.meta is not None:
+            _merge_task_meta(task, data.meta)
 
         if data.status is not None:
             if data.status == TaskStatus.IN_PROGRESS:
@@ -441,6 +502,11 @@ class TaskService:
         )
         await self.session_repo.add(new_session)
 
+        meta = dict(task.meta)
+        _close_open_waiting_if_any(meta, now)
+        meta["v6_status"] = "Em curso"
+        _merge_task_meta(task, meta)
+
         await self._audit(AuditAction.TASK_TRANSITION, user.id, task.id, "Timer started")
         await self.session.commit()
         return await self.task_repo.get_by_id_with_relations(task.id)  # type: ignore[return-value]
@@ -464,6 +530,7 @@ class TaskService:
             task.status = TaskStatus.PAUSED
 
         await self._close_active_session_for_task(task, now, client_duration_seconds)
+        _merge_task_meta(task, {"v6_status": "Pausada"})
 
         await self._audit(AuditAction.TASK_TRANSITION, user.id, task.id, "Timer paused")
         await self.session.commit()
@@ -487,6 +554,11 @@ class TaskService:
         task.completed_at = now
 
         await self._close_active_session_for_task(task, now, client_duration_seconds)
+
+        meta = dict(task.meta)
+        _close_open_waiting_if_any(meta, now)
+        meta["v6_status"] = "Concluída"
+        _merge_task_meta(task, meta)
 
         await self._audit(AuditAction.TASK_TRANSITION, user.id, task.id, "Task completed")
         await self.session.commit()
