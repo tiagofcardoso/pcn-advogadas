@@ -323,115 +323,75 @@ export function openEditorialFeeNotePdf(params: {
     return fmtEuroAlways(num);
   };
 
-  // Chunk lines into pages of up to 28 rows per page (matching Page 1 of the sample PDF)
-  const ROWS_PER_PAGE = 28;
-  const linePages: FeeNoteCustomLine[][] = [];
-  if (lines.length === 0) {
-    linePages.push([]);
-  } else {
-    for (let i = 0; i < lines.length; i += ROWS_PER_PAGE) {
-      linePages.push(lines.slice(i, i + ROWS_PER_PAGE));
-    }
-  }
+  const cell = (extra: string) =>
+    `padding:3.8px 8px; border-bottom:1px solid #EFEFEF; color:#333333; font-size:10px; font-weight:300; vertical-align:top; ${extra}`;
 
-  const renderTopHeader = () => `
-    <div style="display:flex; align-items:center; gap:14px; margin-bottom:20px;">
-      <div style="flex:1; height:1px; background:#C5B38E;"></div>
-      <img src="${logoUrl}" alt="PCN Advogadas" style="height:54px; max-width:140px; object-fit:contain;" />
-    </div>
-  `;
+  const rowsHtml = lines
+    .map(
+      (l) => `
+        <tr style="page-break-inside:avoid; break-inside:avoid;">
+          <td style="${cell("white-space:nowrap;")}">${formatIsoDatePt(l.date)}</td>
+          <td style="${cell("line-height:1.32;")}"><div>${l.description}</div></td>
+          <td style="${cell("text-align:center; white-space:nowrap;")}">${fmtEuroBlankIfZero(l.documented_expenses)}</td>
+          <td style="${cell("text-align:center; white-space:nowrap;")}">${fmtEuroBlankIfZero(l.undocumented_expenses)}</td>
+          <td style="${cell("text-align:right; white-space:nowrap;")}">${fmtEuroBlankIfZero(l.fees)}</td>
+        </tr>`
+    )
+    .join("");
 
-  const renderBottomFooter = (pageNum: number) => `
-    <div style="margin-top:auto; padding-top:16px;">
-      <svg viewBox="0 0 600 22" width="100%" height="20" preserveAspectRatio="none" style="display:block;">
-        <path d="M 0 18 Q 220 6 430 12 T 600 16" fill="none" stroke="#C5B38E" stroke-width="2.2" opacity="0.55" />
-        <path d="M 0 20 Q 250 10 470 15 T 600 19" fill="none" stroke="#D8C8A8" stroke-width="3.5" opacity="0.35" />
-      </svg>
-      <div style="display:flex; justify-content:flex-end; align-items:center; font-size:9.5px; font-weight:300; color:#666666; padding-top:6px; letter-spacing:0.2px;">
-        <span>PCN ADVOGADAS &nbsp;&middot;&nbsp; Página ${pageNum}</span>
-      </div>
-    </div>
-  `;
+  const apRow = (label: string, value: string, extra = "") => `
+    <div style="display:flex; justify-content:space-between; padding:6px 6px; font-size:10.5px; font-weight:300; color:#333333; ${extra}">
+      <span>${label}</span><span>${value}</span>
+    </div>`;
 
-  const tablePagesHtml = linePages
-    .map((pageLines, pageIdx) => {
-      const rowsHtml = pageLines
-        .map(
-          (l) => `
-          <tr>
-            <td style="padding:3.8px 8px; border-bottom:1px solid #EFEFEF; color:#333333; font-size:10px; font-weight:300; white-space:nowrap; vertical-align:top;">
-              ${formatIsoDatePt(l.date)}
-            </td>
-            <td style="padding:3.8px 8px; border-bottom:1px solid #EFEFEF; color:#333333; font-size:10px; font-weight:300; line-height:1.32; vertical-align:top;">
-              <div>${l.description}</div>
-            </td>
-            <td style="padding:3.8px 8px; border-bottom:1px solid #EFEFEF; color:#333333; font-size:10px; font-weight:300; text-align:center; white-space:nowrap; vertical-align:top;">
-              ${fmtEuroBlankIfZero(l.documented_expenses)}
-            </td>
-            <td style="padding:3.8px 8px; border-bottom:1px solid #EFEFEF; color:#333333; font-size:10px; font-weight:300; text-align:center; white-space:nowrap; vertical-align:top;">
-              ${fmtEuroBlankIfZero(l.undocumented_expenses)}
-            </td>
-            <td style="padding:3.8px 8px; border-bottom:1px solid #EFEFEF; color:#333333; font-size:10px; font-weight:300; text-align:right; white-space:nowrap; vertical-align:top;">
-              ${fmtEuroBlankIfZero(l.fees)}
-            </td>
-          </tr>
-        `
-        )
-        .join("");
-
-      const metadataSection =
-        pageIdx === 0
-          ? `
-        <div style="margin-bottom:14px;">
-          <h1 style="font-size:13px; font-weight:700; color:#700053; margin:0; letter-spacing:0.2px; text-transform:uppercase;">
-            NOTA DE HONORÁRIOS
-          </h1>
-          <div style="font-size:10.5px; font-weight:300; color:#333333; margin-top:4px; text-transform:uppercase;">
-            ${client.name} &middot; ${refCode}
+  // Layout dinâmico: cabeçalho (thead) e rodapé (tfoot) repetem-se em cada página impressa;
+  // a tabela e o APURAMENTO fluem naturalmente, sem página fixa.
+  const bodyHtml = `
+  <div class="a4-sheet">
+    <table class="layout">
+      <thead>
+        <tr><td>
+          <div style="display:flex; align-items:center; gap:14px; margin-bottom:18px;">
+            <div style="flex:1; height:1px; background:#C5B38E;"></div>
+            <img src="${logoUrl}" alt="PCN Advogadas" style="height:54px; max-width:140px; object-fit:contain;" />
           </div>
-        </div>
+        </td></tr>
+      </thead>
+      <tfoot>
+        <tr><td>
+          <div style="padding-top:14px;">
+            <svg viewBox="0 0 600 22" width="100%" height="20" preserveAspectRatio="none" style="display:block;">
+              <path d="M 0 18 Q 220 6 430 12 T 600 16" fill="none" stroke="#C5B38E" stroke-width="2.2" opacity="0.55" />
+              <path d="M 0 20 Q 250 10 470 15 T 600 19" fill="none" stroke="#D8C8A8" stroke-width="3.5" opacity="0.35" />
+            </svg>
+            <div style="text-align:right; font-size:9.5px; font-weight:300; color:#666666; padding-top:6px;">
+              PCN ADVOGADAS &middot; <span class="page-num"></span>
+            </div>
+          </div>
+        </td></tr>
+      </tfoot>
+      <tbody>
+        <tr><td>
+          <div style="margin-bottom:14px;">
+            <h1 style="font-size:13px; font-weight:700; color:#700053; margin:0; letter-spacing:0.2px; text-transform:uppercase;">NOTA DE HONORÁRIOS</h1>
+            <div style="font-size:10.5px; font-weight:300; color:#333333; margin-top:4px; text-transform:uppercase;">${client.name} &middot; ${refCode}</div>
+          </div>
 
-        <div style="background:#F6F6EE; padding:12px 14px; display:grid; grid-template-columns:1.25fr 1fr; gap:10px 24px; margin-bottom:18px;">
-          <div>
-            <div style="font-size:9.5px; font-weight:300; color:#444444; text-transform:uppercase;">
-              CLIENTE
+          <div style="background:#F6F6EE; padding:12px 14px; display:grid; grid-template-columns:1.25fr 1fr; gap:10px 24px; margin-bottom:18px;">
+            <div>
+              <div class="lbl">CLIENTE</div>
+              <div class="val" style="margin-bottom:10px;">${clientDisplay}</div>
+              <div class="lbl">ASSUNTO</div>
+              <div class="val">${subjectDisplay}</div>
             </div>
-            <div style="font-size:10.5px; font-weight:300; color:#222222; margin-top:3px; margin-bottom:10px;">
-              ${clientDisplay}
-            </div>
-
-            <div style="font-size:9.5px; font-weight:300; color:#444444; text-transform:uppercase;">
-              ASSUNTO
-            </div>
-            <div style="font-size:10.5px; font-weight:300; color:#222222; margin-top:3px;">
-              ${subjectDisplay}
+            <div>
+              <div class="lbl">DATA DE EMISSÃO</div>
+              <div class="val" style="margin-bottom:10px;">${issueDatePt}</div>
+              <div class="lbl">PERÍODO</div>
+              <div class="val">${periodDisplay}</div>
             </div>
           </div>
 
-          <div>
-            <div style="font-size:9.5px; font-weight:300; color:#444444; text-transform:uppercase;">
-              DATA DE EMISSÃO
-            </div>
-            <div style="font-size:10.5px; font-weight:300; color:#222222; margin-top:3px; margin-bottom:10px;">
-              ${issueDatePt}
-            </div>
-
-            <div style="font-size:9.5px; font-weight:300; color:#444444; text-transform:uppercase;">
-              PERÍODO
-            </div>
-            <div style="font-size:10.5px; font-weight:300; color:#222222; margin-top:3px;">
-              ${periodDisplay}
-            </div>
-          </div>
-        </div>
-      `
-          : "";
-
-      return `
-      <div class="a4-sheet">
-        <div>
-          ${renderTopHeader()}
-          ${metadataSection}
           <table style="width:100%; border-collapse:collapse;">
             <thead>
               <tr style="background:#6D074A; color:#FFFFFF; font-size:10px; font-weight:600;">
@@ -442,77 +402,36 @@ export function openEditorialFeeNotePdf(params: {
                 <th style="padding:7px 8px; text-align:right; width:86px;">Honorários</th>
               </tr>
             </thead>
-            <tbody>
-              ${rowsHtml}
-            </tbody>
+            <tbody>${rowsHtml}</tbody>
           </table>
-        </div>
-        ${renderBottomFooter(pageIdx + 1)}
-      </div>
-    `;
-    })
-    .join("");
 
-  const apuramentoPageNum = linePages.length + 1;
-  const apuramentoPageHtml = `
-    <div class="a4-sheet page-break">
-      <div>
-        ${renderTopHeader()}
+          <div style="page-break-inside:avoid; break-inside:avoid; margin-top:26px;">
+            <div style="font-size:10.5px; font-weight:300; color:#333333; text-transform:uppercase; margin-bottom:10px;">APURAMENTO</div>
+            ${apRow("Honorários", fmtEuroAlways(totalFees))}
+            ${apRow("Despesas documentadas", fmtEuroAlways(totalDocExpenses))}
+            ${apRow("Despesas não documentadas", fmtEuroAlways(totalUndocExpenses))}
+            ${apRow(`IVA (${meta.apply_vat ? "23% — simulação" : "Isento / 0%"})`, fmtEuroAlways(vatAmount))}
+            ${apRow("Subtotal", fmtEuroAlways(subtotalWithVat))}
+            ${apRow("Provisões recebidas (a deduzir)", provisions > 0 ? "-" + fmtEuroAlways(provisions) : fmtEuroAlways(0))}
+            ${apRow("Créditos / pagamentos adicionais", credits > 0 ? "-" + fmtEuroAlways(credits) : fmtEuroAlways(0), "margin-bottom:4px;")}
+            <div style="height:1px; background:#C5B38E; margin:2px 0;"></div>
+            <div style="background:#F6F6EE; padding:7px 6px; display:flex; justify-content:space-between; align-items:center; font-size:10.5px; font-weight:300; color:#333333;">
+              <span>SALDO FINAL</span><span>${fmtEuroAlways(finalBalance)}</span>
+            </div>
 
-        <div style="margin-top:10px;">
-          <div style="font-size:10.5px; font-weight:300; color:#333333; text-transform:uppercase; margin-bottom:14px;">
-            APURAMENTO
-          </div>
+            <div style="margin-top:26px; font-size:10.5px; font-weight:300; color:#333333; line-height:1.6;">
+              <div>A Advogada,</div>
+              <div style="margin-top:4px;">${lawyerSign}</div>
+            </div>
 
-          <div style="display:flex; justify-content:space-between; padding:6px 6px; font-size:10.5px; font-weight:300; color:#333333;">
-            <span>Honorários</span>
-            <span>${fmtEuroAlways(totalFees)}</span>
+            <div style="margin-top:22px; font-size:10px; font-weight:300; color:#333333; line-height:1.45;">
+              Documento demonstrativo com dados fictícios. A incidência de IVA, a classificação das despesas e a imputação de provisões dependem da situação concreta e deverão ser confirmadas antes da emissão.
+            </div>
           </div>
-          <div style="display:flex; justify-content:space-between; padding:6px 6px; font-size:10.5px; font-weight:300; color:#333333;">
-            <span>Despesas documentadas</span>
-            <span>${fmtEuroAlways(totalDocExpenses)}</span>
-          </div>
-          <div style="display:flex; justify-content:space-between; padding:6px 6px; font-size:10.5px; font-weight:300; color:#333333;">
-            <span>Despesas não documentadas</span>
-            <span>${fmtEuroAlways(totalUndocExpenses)}</span>
-          </div>
-          <div style="display:flex; justify-content:space-between; padding:6px 6px; font-size:10.5px; font-weight:300; color:#333333;">
-            <span>IVA (${meta.apply_vat ? "23% — simulação" : "Isento / 0%"})</span>
-            <span>${fmtEuroAlways(vatAmount)}</span>
-          </div>
-          <div style="display:flex; justify-content:space-between; padding:6px 6px; font-size:10.5px; font-weight:300; color:#333333;">
-            <span>Subtotal</span>
-            <span>${fmtEuroAlways(subtotalWithVat)}</span>
-          </div>
-          <div style="display:flex; justify-content:space-between; padding:6px 6px; font-size:10.5px; font-weight:300; color:#333333;">
-            <span>Provisões recebidas (a deduzir)</span>
-            <span>${provisions > 0 ? "-" + fmtEuroAlways(provisions) : fmtEuroAlways(0)}</span>
-          </div>
-          <div style="display:flex; justify-content:space-between; padding:6px 6px; font-size:10.5px; font-weight:300; color:#333333; margin-bottom:4px;">
-            <span>Créditos / pagamentos adicionais</span>
-            <span>${credits > 0 ? "-" + fmtEuroAlways(credits) : fmtEuroAlways(0)}</span>
-          </div>
-
-          <div style="height:1px; background:#C5B38E; margin:2px 0;"></div>
-          <div style="background:#F6F6EE; padding:7px 6px; display:flex; justify-content:space-between; align-items:center; font-size:10.5px; font-weight:300; color:#333333;">
-            <span>SALDO FINAL</span>
-            <span>${fmtEuroAlways(finalBalance)}</span>
-          </div>
-        </div>
-
-        <div style="margin-top:26px; font-size:10.5px; font-weight:300; color:#333333; line-height:1.6;">
-          <div>A Advogada,</div>
-          <div style="margin-top:4px;">${lawyerSign}</div>
-        </div>
-
-        <div style="margin-top:22px; font-size:10px; font-weight:300; color:#333333; line-height:1.45;">
-          Documento demonstrativo com dados fictícios. A incidência de IVA, a classificação das despesas e a imputação de provisões dependem da situação concreta e deverão ser confirmadas antes da emissão.
-        </div>
-      </div>
-
-      ${renderBottomFooter(apuramentoPageNum)}
-    </div>
-  `;
+        </td></tr>
+      </tbody>
+    </table>
+  </div>`;
 
   const htmlDoc = `<!DOCTYPE html>
 <html lang="pt-PT">
@@ -523,78 +442,26 @@ export function openEditorialFeeNotePdf(params: {
     @page {
       size: A4 portrait;
       margin: 12mm 16mm;
+      @bottom-right { content: "Página " counter(page); font-size: 9px; color: #666; }
     }
-    * {
-      box-sizing: border-box;
-      -webkit-print-color-adjust: exact !important;
-      print-color-adjust: exact !important;
-    }
-    body {
-      margin: 0;
-      padding: 0;
-      background: #E8E3DA;
-      font-family: 'Aptos Light', 'Aptos', 'Calibri Light', 'Segoe UI Light', Arial, sans-serif;
-      font-weight: 300;
-      color: #333333;
-    }
-    .toolbar {
-      position: sticky;
-      top: 0;
-      z-index: 50;
-      background: #380723;
-      color: #fff;
-      padding: 12px 24px;
-      display: flex;
-      align-items: center;
-      justify-content: space-between;
-      border-bottom: 2px solid #c5a467;
-    }
-    .toolbar-btn {
-      background: linear-gradient(100deg, #85005f, #640845);
-      color: #fff;
-      border: 1px solid #c5a467;
-      padding: 8px 18px;
-      border-radius: 6px;
-      font-size: 12px;
-      font-weight: 600;
-      cursor: pointer;
-    }
-    .toolbar-btn-close {
-      background: transparent;
-      color: #e6d4e0;
-      border: 1px solid #ffffff40;
-      padding: 8px 14px;
-      border-radius: 6px;
-      font-size: 12px;
-      cursor: pointer;
-      margin-left: 8px;
-    }
-    .a4-sheet {
-      width: 210mm;
-      min-height: 297mm;
-      margin: 24px auto;
-      background: #FFFFFF;
-      padding: 14mm 18mm 12mm 18mm;
-      box-shadow: 0 12px 36px rgba(0,0,0,0.14);
-      display: flex;
-      flex-direction: column;
-      justify-content: space-between;
-      position: relative;
-    }
+    * { box-sizing: border-box; -webkit-print-color-adjust: exact !important; print-color-adjust: exact !important; }
+    body { margin:0; padding:0; background:#E8E3DA; font-family:'Aptos Light','Aptos','Calibri Light','Segoe UI Light',Arial,sans-serif; font-weight:300; color:#333333; }
+    .toolbar { position:sticky; top:0; z-index:50; background:#380723; color:#fff; padding:12px 24px; display:flex; align-items:center; justify-content:space-between; border-bottom:2px solid #c5a467; }
+    .toolbar-btn { background:linear-gradient(100deg,#85005f,#640845); color:#fff; border:1px solid #c5a467; padding:8px 18px; border-radius:6px; font-size:12px; font-weight:600; cursor:pointer; }
+    .toolbar-btn-close { background:transparent; color:#e6d4e0; border:1px solid #ffffff40; padding:8px 14px; border-radius:6px; font-size:12px; cursor:pointer; margin-left:8px; }
+    .a4-sheet { width:210mm; margin:24px auto; background:#FFFFFF; padding:14mm 18mm 12mm 18mm; box-shadow:0 12px 36px rgba(0,0,0,0.14); }
+    table.layout { width:100%; border-collapse:collapse; }
+    table.layout > thead { display:table-header-group; }
+    table.layout > tfoot { display:table-footer-group; }
+    table.layout > thead > tr > td, table.layout > tbody > tr > td, table.layout > tfoot > tr > td { padding:0; }
+    .lbl { font-size:9.5px; font-weight:300; color:#444444; text-transform:uppercase; }
+    .val { font-size:10.5px; font-weight:300; color:#222222; margin-top:3px; }
+    .page-num::after { content:""; }
     @media print {
-      body { background: #FFFFFF; }
-      .toolbar { display: none !important; }
-      .a4-sheet {
-        width: 100%;
-        min-height: 271mm;
-        margin: 0;
-        padding: 0;
-        box-shadow: none;
-      }
-      .page-break {
-        page-break-before: always;
-        break-before: page;
-      }
+      body { background:#FFFFFF; }
+      .toolbar { display:none !important; }
+      .a4-sheet { width:100%; margin:0; padding:0; box-shadow:none; }
+      .page-num { display:none; }
     }
   </style>
 </head>
@@ -609,16 +476,9 @@ export function openEditorialFeeNotePdf(params: {
       <button class="toolbar-btn-close" onclick="window.close()">Fechar</button>
     </div>
   </div>
-
-  ${tablePagesHtml}
-  ${apuramentoPageHtml}
-
+  ${bodyHtml}
   <script>
-    window.onload = function() {
-      setTimeout(function() {
-        window.print();
-      }, 350);
-    };
+    window.onload = function() { setTimeout(function() { window.print(); }, 350); };
   </script>
 </body>
 </html>`;
