@@ -365,7 +365,7 @@ export function openEditorialFeeNotePdf(params: {
               <path d="M 0 20 Q 250 10 470 15 T 600 19" fill="none" stroke="#D8C8A8" stroke-width="3.5" opacity="0.35" />
             </svg>
             <div style="text-align:right; font-size:9.5px; font-weight:300; color:#666666; padding-top:6px;">
-              PCN ADVOGADAS &middot; <span class="page-num"></span>
+              PCN ADVOGADAS
             </div>
           </div>
         </td></tr>
@@ -439,11 +439,7 @@ export function openEditorialFeeNotePdf(params: {
   <meta charset="UTF-8" />
   <title>Nota_Honorarios_${refCode.replace(/\//g, "-")}_${client.name.replace(/\s+/g, "_")}</title>
   <style>
-    @page {
-      size: A4 portrait;
-      margin: 12mm 16mm;
-      @bottom-right { content: "Página " counter(page); font-size: 9px; color: #666; }
-    }
+    @page { size: A4 portrait; margin: 0; }
     * { box-sizing: border-box; -webkit-print-color-adjust: exact !important; print-color-adjust: exact !important; }
     body { margin:0; padding:0; background:#E8E3DA; font-family:'Aptos Light','Aptos','Calibri Light','Segoe UI Light',Arial,sans-serif; font-weight:300; color:#333333; }
     .toolbar { position:sticky; top:0; z-index:50; background:#380723; color:#fff; padding:12px 24px; display:flex; align-items:center; justify-content:space-between; border-bottom:2px solid #c5a467; }
@@ -456,12 +452,12 @@ export function openEditorialFeeNotePdf(params: {
     table.layout > thead > tr > td, table.layout > tbody > tr > td, table.layout > tfoot > tr > td { padding:0; }
     .lbl { font-size:9.5px; font-weight:300; color:#444444; text-transform:uppercase; }
     .val { font-size:10.5px; font-weight:300; color:#222222; margin-top:3px; }
-    .page-num::after { content:""; }
     @media print {
       body { background:#FFFFFF; }
       .toolbar { display:none !important; }
-      .a4-sheet { width:100%; margin:0; padding:0; box-shadow:none; }
-      .page-num { display:none; }
+      .a4-sheet { width:100%; margin:0; padding:0 16mm; box-shadow:none; }
+      table.layout > thead > tr > td { padding-top:12mm; }
+      table.layout > tfoot > tr > td { padding-bottom:12mm; }
     }
   </style>
 </head>

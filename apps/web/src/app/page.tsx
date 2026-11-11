@@ -51,6 +51,17 @@ import {
   Smartphone as PhoneIcon,
   Bell,
   BellOff,
+  Home,
+  Briefcase,
+  ClipboardCheck,
+  CalendarDays,
+  FileText,
+  BarChart3,
+  History,
+  UserCog,
+  ClipboardList,
+  Settings,
+  Landmark,
 } from "lucide-react";
 import {
   INITIAL_USERS,
@@ -4119,31 +4130,31 @@ PCN Advogadas · Plataforma Forense`;
   // Visível a todas as utilizadoras (do Painel de Direção até Agendas e Prazos)
   const publicNavItems: Array<{
     id: typeof activeTab;
-    icon: string;
+    icon: React.ReactNode;
     label: string;
     badge?: number;
   }> = [
-    { id: "dashboard", icon: "✦", label: "Painel de Direção" },
-    { id: "work", icon: "◉", label: "A Minha Área de Trabalho" },
-    { id: "tasks", icon: "✓", label: "Gestão de Tarefas" },
-    { id: "clients", icon: "◈", label: "Clientes PCN" },
-    { id: "calendar", icon: "🗓", label: "Agendas e Prazos" },
+    { id: "dashboard", icon: <Home className="w-[18px] h-[18px]" strokeWidth={1.6} />, label: "Painel de Direção" },
+    { id: "work", icon: <Briefcase className="w-[18px] h-[18px]" strokeWidth={1.6} />, label: "A Minha Área de Trabalho" },
+    { id: "tasks", icon: <ClipboardCheck className="w-[18px] h-[18px]" strokeWidth={1.6} />, label: "Gestão de Tarefas" },
+    { id: "clients", icon: <Users className="w-[18px] h-[18px]" strokeWidth={1.6} />, label: "Clientes PCN" },
+    { id: "calendar", icon: <CalendarDays className="w-[18px] h-[18px]" strokeWidth={1.6} />, label: "Agendas e Prazos" },
   ];
 
   // Grupo exclusivo "Gestão PCN" (visível apenas a Direção / Admin)
   const gestaoPcnNavItems: Array<{
     id: typeof activeTab;
-    icon: string;
+    icon: React.ReactNode;
     label: string;
     badge?: number;
   }> = [
-    { id: "feenotes", icon: "€", label: "Notas de Honorários" },
-    { id: "reports", icon: "▤", label: "Relatório PCN" },
-    { id: "attendance", icon: "📋", label: "Gestão de Assiduidade" },
-    { id: "services", icon: "⚙", label: "Tabela de Serviços (€/h)" },
-    { id: "archived", icon: "🗄", label: "Tarefas Arquivadas", badge: archivedTasksCount },
-    { id: "users", icon: "👥", label: "Utilizadoras & Acessos" },
-    { id: "history", icon: "🕘", label: "Histórico PCN" },
+    { id: "feenotes", icon: <FileText className="w-[18px] h-[18px]" strokeWidth={1.6} />, label: "Notas de Honorários" },
+    { id: "reports", icon: <BarChart3 className="w-[18px] h-[18px]" strokeWidth={1.6} />, label: "Relatório PCN" },
+    { id: "attendance", icon: <ClipboardList className="w-[18px] h-[18px]" strokeWidth={1.6} />, label: "Gestão de Assiduidade" },
+    { id: "services", icon: <Settings className="w-[18px] h-[18px]" strokeWidth={1.6} />, label: "Tabela de Serviços (€/h)" },
+    { id: "archived", icon: <Archive className="w-[18px] h-[18px]" strokeWidth={1.6} />, label: "Tarefas Arquivadas", badge: archivedTasksCount },
+    { id: "users", icon: <UserCog className="w-[18px] h-[18px]" strokeWidth={1.6} />, label: "Utilizadoras & Acessos" },
+    { id: "history", icon: <History className="w-[18px] h-[18px]" strokeWidth={1.6} />, label: "Histórico PCN" },
   ];
 
   const isGestaoChildActive = gestaoPcnNavItems.some((item) => item.id === activeTab);
@@ -4174,7 +4185,7 @@ PCN Advogadas · Plataforma Forense`;
             onClick={() => setIsGestaoPcnOpen((prev) => !prev)}
             className={isGestaoChildActive && !isGestaoPcnOpen ? "active" : ""}
           >
-            <span className="ico">🏛</span>
+            <span className="ico"><Landmark className="w-[18px] h-[18px]" strokeWidth={1.6} /></span>
             <span className="flex-1 text-left font-semibold">Gestão PCN</span>
             <ChevronDown
               className={`w-4 h-4 text-[#f6dc9b] transition-transform ${

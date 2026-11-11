@@ -33,6 +33,8 @@ import {
   MoreHorizontal,
   Archive,
   ExternalLink,
+  UserPlus,
+  CalendarClock,
 } from "lucide-react";
 
 interface WorkspaceV6Props {
@@ -1243,48 +1245,46 @@ export default function WorkspaceV6Tab({
         <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-3">
           <button
             type="button"
-            onClick={() =>
-              isAdmin ? onOpenNewClientModal() : onSwitchTab("clients")
-            }
-            className="v6-card py-3.5 px-4 flex items-center justify-center gap-2.5 font-serif-v6 text-sm text-[#59083e] hover:border-[#c5a467] hover:bg-[#fdfaf6] cursor-pointer transition-all"
+            onClick={() => (isAdmin ? onOpenNewClientModal() : onSwitchTab("clients"))}
+            className="v6-card py-4 px-4 flex flex-col items-center justify-center gap-2 font-serif-v6 text-sm text-[#59083e] hover:border-[#c5a467] hover:bg-[#fdfaf6] cursor-pointer transition-all"
           >
-            <span className="w-7 h-7 rounded-full bg-[#f4ead9] border border-[#e2d0b1] flex items-center justify-center text-sm shrink-0">
-              👤
+            <span className="w-10 h-10 rounded-full bg-[#f4ead9] border border-[#e2d0b1] text-[#966c2d] flex items-center justify-center shrink-0">
+              <UserPlus className="w-[18px] h-[18px]" strokeWidth={1.7} />
             </span>
-            <span className="font-semibold">+ Novo cliente</span>
+            <span>Novo cliente</span>
           </button>
 
           <button
             type="button"
             onClick={onOpenNewTaskModal}
-            className="v6-card py-3.5 px-4 flex items-center justify-center gap-2.5 font-serif-v6 text-sm text-[#59083e] hover:border-[#c5a467] hover:bg-[#fdfaf6] cursor-pointer transition-all"
+            className="v6-card py-4 px-4 flex flex-col items-center justify-center gap-2 font-serif-v6 text-sm text-[#59083e] hover:border-[#c5a467] hover:bg-[#fdfaf6] cursor-pointer transition-all"
           >
-            <span className="w-7 h-7 rounded-full bg-[#faebf6] border border-[#efd0e6] flex items-center justify-center text-sm shrink-0">
-              📋
+            <span className="w-10 h-10 rounded-full bg-[#f4ead9] border border-[#e2d0b1] text-[#966c2d] flex items-center justify-center shrink-0">
+              <Plus className="w-[18px] h-[18px]" strokeWidth={1.7} />
             </span>
-            <span className="font-semibold">+ Nova tarefa</span>
+            <span>Nova tarefa</span>
           </button>
 
           <button
             type="button"
             onClick={() => onOpenNewEventModal("Compromisso")}
-            className="v6-card py-3.5 px-4 flex items-center justify-center gap-2.5 font-serif-v6 text-sm text-[#59083e] hover:border-[#c5a467] hover:bg-[#fdfaf6] cursor-pointer transition-all"
+            className="v6-card py-4 px-4 flex flex-col items-center justify-center gap-2 font-serif-v6 text-sm text-[#59083e] hover:border-[#c5a467] hover:bg-[#fdfaf6] cursor-pointer transition-all"
           >
-            <span className="w-7 h-7 rounded-full bg-[#e0eefc] border border-[#c2dcf7] flex items-center justify-center text-sm shrink-0">
-              📅
+            <span className="w-10 h-10 rounded-full bg-[#f4ead9] border border-[#e2d0b1] text-[#966c2d] flex items-center justify-center shrink-0">
+              <CalendarClock className="w-[18px] h-[18px]" strokeWidth={1.7} />
             </span>
-            <span className="font-semibold">+ Novo compromisso</span>
+            <span>Novo compromisso</span>
           </button>
 
           <button
             type="button"
             onClick={() => onOpenNewEventModal("Prazo")}
-            className="v6-card py-3.5 px-4 flex items-center justify-center gap-2.5 font-serif-v6 text-sm text-[#59083e] hover:border-[#c5a467] hover:bg-[#fdfaf6] cursor-pointer transition-all"
+            className="v6-card py-4 px-4 flex flex-col items-center justify-center gap-2 font-serif-v6 text-sm text-[#59083e] hover:border-[#c5a467] hover:bg-[#fdfaf6] cursor-pointer transition-all"
           >
-            <span className="w-7 h-7 rounded-full bg-[#fff0d6] border border-[#eed6a7] flex items-center justify-center text-sm shrink-0">
-              ⚖️
+            <span className="w-10 h-10 rounded-full bg-[#f4ead9] border border-[#e2d0b1] text-[#966c2d] flex items-center justify-center shrink-0">
+              <Clock className="w-[18px] h-[18px]" strokeWidth={1.7} />
             </span>
-            <span className="font-semibold">+ Novo prazo</span>
+            <span>Novo prazo</span>
           </button>
 
           <div className="v6-card py-3 px-4 bg-[#f9f5f1] flex items-center gap-3">
