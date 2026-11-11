@@ -471,7 +471,7 @@ export default function WorkspaceV6Tab({
             <div className="space-y-3">
               <div className="flex items-center justify-between">
                 <h2 className="font-serif-v6 text-[21px] text-[#28202a] m-0">
-                  Prazos &amp; Compromissos ({events.length})
+                  Prazos &amp; Compromissos
                 </h2>
                 <button
                   type="button"
@@ -1122,7 +1122,7 @@ export default function WorkspaceV6Tab({
           <section className="lg:col-span-6 v6-card space-y-3">
             <div className="flex items-center justify-between border-b border-[#f0eae6] pb-2.5">
               <h2 className="font-serif-v6 text-[21px] text-[#28202a] m-0">
-                Próximos acontecimentos ({events.length})
+                Próximos acontecimentos
               </h2>
               <div className="flex items-center gap-2">
                 <button
