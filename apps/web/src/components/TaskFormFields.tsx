@@ -101,8 +101,19 @@ export default function TaskFormFields({
   };
 
   return (
-    <div className="v6-form-grid">
-      {/* Cliente + Advogada Responsável */}
+    <div className="v6-form-grid compact-4">
+      {/* Linha 1: Descrição (2 cols) + Cliente (1 col) + Responsável (1 col) */}
+      <div className="v6-field span-2">
+        <label>Descrição da tarefa *</label>
+        <input
+          type="text"
+          required
+          placeholder="Ex.: Contestação / Registo predial / Parecer jurídico..."
+          value={form.title}
+          onChange={(e) => onChange({ ...form, title: e.target.value })}
+        />
+      </div>
+
       <div className="v6-field">
         <label>Cliente *</label>
         <select
@@ -133,19 +144,7 @@ export default function TaskFormFields({
         </select>
       </div>
 
-      {/* Descrição da tarefa (Título) */}
-      <div className="v6-field full">
-        <label>Descrição da tarefa *</label>
-        <input
-          type="text"
-          required
-          placeholder="Ex.: Contestação / Registo predial / Parecer jurídico..."
-          value={form.title}
-          onChange={(e) => onChange({ ...form, title: e.target.value })}
-        />
-      </div>
-
-      {/* Serviço / Categoria */}
+      {/* Linha 2: Serviço + Data pedido + Início trabalho + Prazo */}
       <div className="v6-field">
         <label>Serviço / Categoria (€/h)</label>
         <select
@@ -169,7 +168,6 @@ export default function TaskFormFields({
         </select>
       </div>
 
-      {/* Data de entrada do pedido */}
       <div className="v6-field">
         <label>Data de entrada do pedido</label>
         <input
@@ -179,68 +177,6 @@ export default function TaskFormFields({
         />
       </div>
 
-      {form.task_type_id === "__custom__" && (
-        <>
-          <div className="v6-field">
-            <label>Nome da Categoria Personalizada *</label>
-            <input
-              type="text"
-              required
-              placeholder="Ex.: Requerimento avulso, Diligência, Parecer..."
-              value={form.custom_type_name}
-              onChange={(e) =>
-                onChange({ ...form, custom_type_name: e.target.value })
-              }
-            />
-          </div>
-          <div className="v6-field">
-            <label>Taxa / Valor Hora (€/h)</label>
-            <input
-              type="number"
-              step="0.01"
-              min={0}
-              placeholder="120.00"
-              value={form.custom_rate}
-              onChange={(e) =>
-                onChange({ ...form, custom_rate: e.target.value })
-              }
-            />
-          </div>
-        </>
-      )}
-
-      {/* Origem + Referência da comunicação */}
-      <div className="v6-field">
-        <label>Origem</label>
-        <select
-          value={form.origin || "E-mail"}
-          onChange={(e) => onChange({ ...form, origin: e.target.value })}
-        >
-          {TASK_ORIGIN_OPTIONS.map((opt) => (
-            <option key={opt} value={opt}>
-              {opt}
-            </option>
-          ))}
-          {form.origin &&
-            !TASK_ORIGIN_OPTIONS.includes(form.origin as any) && (
-              <option value={form.origin}>{form.origin}</option>
-            )}
-        </select>
-      </div>
-
-      <div className="v6-field">
-        <label>Referência da comunicação (e-mail / mensagem)</label>
-        <input
-          type="text"
-          placeholder="Assunto do e-mail, WhatsApp ou carta..."
-          value={form.communication_ref}
-          onChange={(e) =>
-            onChange({ ...form, communication_ref: e.target.value })
-          }
-        />
-      </div>
-
-      {/* Início do trabalho + Prazo interno / judicial */}
       <div className="v6-field">
         <label>Início do trabalho</label>
         <input
@@ -251,7 +187,7 @@ export default function TaskFormFields({
       </div>
 
       <div className="v6-field">
-        <div className="flex items-center justify-between">
+        <div className="flex items-center justify-between gap-1">
           <label>Prazo interno / judicial</label>
           {form.due_date &&
             (() => {
@@ -271,7 +207,7 @@ export default function TaskFormFields({
               if (sem.level === "red" || sem.level === "yellow") {
                 return (
                   <span
-                    className="text-[10px] font-bold px-2 py-0.5 rounded-full"
+                    className="text-[9.5px] font-bold px-1.5 py-0 rounded-full"
                     style={{
                       background: sem.bg,
                       color: sem.text,
@@ -292,7 +228,37 @@ export default function TaskFormFields({
         />
       </div>
 
-      {/* Estado + Prioridade */}
+      {form.task_type_id === "__custom__" && (
+        <>
+          <div className="v6-field span-2">
+            <label>Nome da Categoria Personalizada *</label>
+            <input
+              type="text"
+              required
+              placeholder="Ex.: Requerimento avulso, Diligência, Parecer..."
+              value={form.custom_type_name}
+              onChange={(e) =>
+                onChange({ ...form, custom_type_name: e.target.value })
+              }
+            />
+          </div>
+          <div className="v6-field span-2">
+            <label>Taxa / Valor Hora (€/h)</label>
+            <input
+              type="number"
+              step="0.01"
+              min={0}
+              placeholder="120.00"
+              value={form.custom_rate}
+              onChange={(e) =>
+                onChange({ ...form, custom_rate: e.target.value })
+              }
+            />
+          </div>
+        </>
+      )}
+
+      {/* Linha 3: Estado + Prioridade + Origem + Ref. comunicação */}
       <div className="v6-field">
         <label>Estado</label>
         <select
@@ -321,12 +287,42 @@ export default function TaskFormFields({
         </select>
       </div>
 
-      {/* Local de distribuição / entidade + Referência do processo / pedido */}
+      <div className="v6-field">
+        <label>Origem</label>
+        <select
+          value={form.origin || "E-mail"}
+          onChange={(e) => onChange({ ...form, origin: e.target.value })}
+        >
+          {TASK_ORIGIN_OPTIONS.map((opt) => (
+            <option key={opt} value={opt}>
+              {opt}
+            </option>
+          ))}
+          {form.origin &&
+            !TASK_ORIGIN_OPTIONS.includes(form.origin as any) && (
+              <option value={form.origin}>{form.origin}</option>
+            )}
+        </select>
+      </div>
+
+      <div className="v6-field">
+        <label>Ref. comunicação (e-mail / msg)</label>
+        <input
+          type="text"
+          placeholder="Assunto do e-mail, WhatsApp..."
+          value={form.communication_ref}
+          onChange={(e) =>
+            onChange({ ...form, communication_ref: e.target.value })
+          }
+        />
+      </div>
+
+      {/* Linha 4: Entidade + Ref. processo + Observações (2 cols) */}
       <div className="v6-field">
         <label>Local de distribuição / entidade</label>
         <input
           type="text"
-          placeholder="Ex.: Conservatória do Porto / Tribunal de Braga..."
+          placeholder="Ex.: Conservatória / Tribunal..."
           value={form.entity}
           onChange={(e) => onChange({ ...form, entity: e.target.value })}
         />
@@ -344,178 +340,184 @@ export default function TaskFormFields({
         />
       </div>
 
-      {/* Painel: Próxima data de acompanhamento & Tempo em Espera de Terceiros / Cliente / Entidade */}
-      <div className="v6-field full">
-        <div className="rounded-xl border border-[#ebd8b9] bg-[#fffaf2] p-3.5 space-y-2.5">
-          <div className="flex flex-wrap items-center justify-between gap-2">
-            <span className="text-xs font-bold text-[#7a5414] flex items-center gap-1.5">
-              <Hourglass className="w-3.5 h-3.5 text-[#966c2d]" />
-              Acompanhamento e Tempo em Espera (Cliente / Entidade / Terceiros)
-            </span>
-            <span className="font-mono text-xs font-bold px-2.5 py-1 rounded-lg bg-[#fff0d6] text-[#7a5414] border border-[#ebd2a6]">
-              Espera acumulada: {formatDaysAndHours(totalWaitingSec)}
-            </span>
-          </div>
+      <div className="v6-field span-2">
+        <label>Observações / Notas Forenses</label>
+        <textarea
+          rows={1}
+          placeholder="Observações, próximos passos ou notas..."
+          value={form.description}
+          onChange={(e) => onChange({ ...form, description: e.target.value })}
+        />
+      </div>
 
-          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-            <div>
-              <span className="block text-[11px] font-semibold text-[#6d5d66] mb-1">
-                Próxima data de acompanhamento
+      {/* Linha 5 (Lado a Lado): Espera Externa (2 cols) + Tempo Acumulado (2 cols) */}
+      <div className="v6-field span-2">
+        <div className="h-full rounded-xl border border-[#ebd8b9] bg-[#fffaf2] p-2.5 space-y-2 flex flex-col justify-between">
+          <div className="space-y-2">
+            <div className="flex flex-wrap items-center justify-between gap-1.5">
+              <span className="text-[11px] font-bold text-[#7a5414] flex items-center gap-1">
+                <Hourglass className="w-3.5 h-3.5 text-[#966c2d]" />
+                Acompanhamento &amp; Tempo em Espera
               </span>
-              <input
-                type="date"
-                value={form.follow_up_date}
-                onChange={(e) =>
-                  onChange({ ...form, follow_up_date: e.target.value })
-                }
-                className="bg-white!"
-              />
+              <span className="font-mono text-[11px] font-bold px-2 py-0.5 rounded-md bg-[#fff0d6] text-[#7a5414] border border-[#ebd2a6]">
+                Espera: {formatDaysAndHours(totalWaitingSec)}
+              </span>
             </div>
 
-            <div>
-              <span className="block text-[11px] font-semibold text-[#6d5d66] mb-1">
-                Em espera desde (início da pendência externa)
-              </span>
-              <input
-                type="datetime-local"
-                disabled={!inWaitingState}
-                value={inWaitingState ? form.waiting_started_at : ""}
-                onChange={(e) =>
-                  onChange({ ...form, waiting_started_at: e.target.value })
-                }
-                className="bg-white! disabled:opacity-50"
-              />
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+              <div>
+                <span className="block text-[10.5px] font-semibold text-[#6d5d66] mb-0.5">
+                  Próxima data de acompanhamento
+                </span>
+                <input
+                  type="date"
+                  value={form.follow_up_date}
+                  onChange={(e) =>
+                    onChange({ ...form, follow_up_date: e.target.value })
+                  }
+                  className="bg-white!"
+                />
+              </div>
+
+              <div>
+                <span className="block text-[10.5px] font-semibold text-[#6d5d66] mb-0.5">
+                  Em espera desde
+                </span>
+                <input
+                  type="datetime-local"
+                  disabled={!inWaitingState}
+                  value={inWaitingState ? form.waiting_started_at : ""}
+                  onChange={(e) =>
+                    onChange({ ...form, waiting_started_at: e.target.value })
+                  }
+                  className="bg-white! disabled:opacity-50"
+                />
+              </div>
             </div>
           </div>
 
-          <p className="text-[11px] text-[#736872] m-0">
+          <p className="text-[10.5px] text-[#736872] m-0 leading-snug">
             {inWaitingState
-              ? `Contagem ativa (${form.v6_status}): ${formatDaysAndHours(
+              ? `Ativa (${form.v6_status}): ${formatDaysAndHours(
                   currentPeriodWaitingSec
-                )} neste período. Separado das horas de trabalho do escritório.`
-              : "Ao colocar o estado em «A aguardar cliente / entidade / terceiros», este contador regista automaticamente em dias e horas o tempo de espera externa."}
+                )}. Não entra em horas faturáveis.`
+              : "Ao mudar para «A aguardar...», conta em dias e horas (separado do trabalho)."}
           </p>
 
           {form.waiting_periods.length > 0 && (
-            <div className="pt-2 border-t border-[#efe2ca] space-y-1">
-              <span className="text-[10.5px] font-bold text-[#7a5414] uppercase tracking-wide block">
-                Registo de períodos de espera anteriores ({form.waiting_periods.length})
-              </span>
-              <div className="max-h-24 overflow-y-auto space-y-1 text-[11px] text-[#50454b]">
-                {form.waiting_periods.map((wp) => {
-                  const sMs = new Date(wp.started_at).getTime();
-                  const eMs = wp.ended_at ? new Date(wp.ended_at).getTime() : Date.now();
-                  const diffSec =
-                    !isNaN(sMs) && !isNaN(eMs)
-                      ? Math.max(0, Math.floor((eMs - sMs) / 1000))
-                      : 0;
-                  return (
-                    <div
-                      key={wp.id}
-                      className="flex items-center justify-between bg-white/70 px-2 py-1 rounded border border-[#efe2ca]"
-                    >
-                      <span>
-                        <strong>{wp.reason}</strong> ·{" "}
-                        {new Date(wp.started_at).toLocaleDateString("pt-PT")} →{" "}
-                        {wp.ended_at
-                          ? new Date(wp.ended_at).toLocaleDateString("pt-PT")
-                          : "em curso"}
-                      </span>
-                      <span className="font-mono font-bold text-[#7a5414]">
-                        {formatDaysAndHours(diffSec)}
-                      </span>
-                    </div>
-                  );
-                })}
-              </div>
+            <div className="pt-1.5 border-t border-[#efe2ca] max-h-14 overflow-y-auto space-y-1 text-[10.5px] text-[#50454b]">
+              {form.waiting_periods.map((wp) => {
+                const sMs = new Date(wp.started_at).getTime();
+                const eMs = wp.ended_at ? new Date(wp.ended_at).getTime() : Date.now();
+                const diffSec =
+                  !isNaN(sMs) && !isNaN(eMs)
+                    ? Math.max(0, Math.floor((eMs - sMs) / 1000))
+                    : 0;
+                return (
+                  <div
+                    key={wp.id}
+                    className="flex items-center justify-between bg-white/70 px-2 py-0.5 rounded border border-[#efe2ca]"
+                  >
+                    <span className="truncate">
+                      <strong>{wp.reason}</strong> ·{" "}
+                      {new Date(wp.started_at).toLocaleDateString("pt-PT")} →{" "}
+                      {wp.ended_at
+                        ? new Date(wp.ended_at).toLocaleDateString("pt-PT")
+                        : "em curso"}
+                    </span>
+                    <span className="font-mono font-bold text-[#7a5414] shrink-0 ml-2">
+                      {formatDaysAndHours(diffSec)}
+                    </span>
+                  </div>
+                );
+              })}
             </div>
           )}
         </div>
       </div>
 
       {/* Painel Dedicado de Tempo de Trabalho Acumulado na Tarefa */}
-      <div className="v6-field full">
-        <div className="rounded-xl border border-[#e5d8d0] bg-[#faf6f2] p-3.5">
-          <div className="flex flex-wrap items-center justify-between gap-2 mb-2.5">
-            <span className="text-xs font-bold text-[#59083e] flex items-center gap-1.5">
-              <Clock className="w-3.5 h-3.5 text-[#92006f]" />
-              Tempo Acumulado na Tarefa (Trabalho Efetivo)
-            </span>
-            <span className="font-mono text-xs font-bold px-2.5 py-1 rounded-lg bg-[#59083e] text-[#e9c885]">
-              Atual: {formatSeconds(totalWorkSec)}
-            </span>
+      <div className="v6-field span-2">
+        <div className="h-full rounded-xl border border-[#e5d8d0] bg-[#faf6f2] p-2.5 flex flex-col justify-between space-y-2">
+          <div className="space-y-2">
+            <div className="flex flex-wrap items-center justify-between gap-1.5">
+              <span className="text-[11px] font-bold text-[#59083e] flex items-center gap-1">
+                <Clock className="w-3.5 h-3.5 text-[#92006f]" />
+                Tempo Acumulado (Trabalho Efetivo)
+              </span>
+              <span className="font-mono text-[11px] font-bold px-2 py-0.5 rounded-md bg-[#59083e] text-[#e9c885]">
+                Atual: {formatSeconds(totalWorkSec)}
+              </span>
+            </div>
+
+            <div className="grid grid-cols-3 gap-2">
+              <div>
+                <span className="block text-[10.5px] font-semibold text-[#6d5d66] mb-0.5">
+                  Horas (h)
+                </span>
+                <input
+                  type="number"
+                  min={0}
+                  placeholder="0"
+                  value={form.duration_hours}
+                  onChange={(e) =>
+                    onChange({
+                      ...form,
+                      duration_hours: Math.max(0, parseInt(e.target.value, 10) || 0),
+                    })
+                  }
+                  className="bg-white! font-mono font-bold text-center"
+                />
+              </div>
+              <div>
+                <span className="block text-[10.5px] font-semibold text-[#6d5d66] mb-0.5">
+                  Minutos (min)
+                </span>
+                <input
+                  type="number"
+                  min={0}
+                  max={59}
+                  placeholder="0"
+                  value={form.duration_minutes}
+                  onChange={(e) =>
+                    onChange({
+                      ...form,
+                      duration_minutes: Math.min(
+                        59,
+                        Math.max(0, parseInt(e.target.value, 10) || 0)
+                      ),
+                    })
+                  }
+                  className="bg-white! font-mono font-bold text-center"
+                />
+              </div>
+              <div>
+                <span className="block text-[10.5px] font-semibold text-[#6d5d66] mb-0.5">
+                  Segundos (seg)
+                </span>
+                <input
+                  type="number"
+                  min={0}
+                  max={59}
+                  placeholder="0"
+                  value={form.duration_seconds}
+                  onChange={(e) =>
+                    onChange({
+                      ...form,
+                      duration_seconds: Math.min(
+                        59,
+                        Math.max(0, parseInt(e.target.value, 10) || 0)
+                      ),
+                    })
+                  }
+                  className="bg-white! font-mono font-bold text-center"
+                />
+              </div>
+            </div>
           </div>
 
-          <div className="grid grid-cols-3 gap-3">
-            <div>
-              <span className="block text-[11px] font-semibold text-[#6d5d66] mb-1">
-                Horas (h)
-              </span>
-              <input
-                type="number"
-                min={0}
-                placeholder="0"
-                value={form.duration_hours}
-                onChange={(e) =>
-                  onChange({
-                    ...form,
-                    duration_hours: Math.max(0, parseInt(e.target.value, 10) || 0),
-                  })
-                }
-                className="bg-white! font-mono font-bold text-center"
-              />
-            </div>
-            <div>
-              <span className="block text-[11px] font-semibold text-[#6d5d66] mb-1">
-                Minutos (min)
-              </span>
-              <input
-                type="number"
-                min={0}
-                max={59}
-                placeholder="0"
-                value={form.duration_minutes}
-                onChange={(e) =>
-                  onChange({
-                    ...form,
-                    duration_minutes: Math.min(
-                      59,
-                      Math.max(0, parseInt(e.target.value, 10) || 0)
-                    ),
-                  })
-                }
-                className="bg-white! font-mono font-bold text-center"
-              />
-            </div>
-            <div>
-              <span className="block text-[11px] font-semibold text-[#6d5d66] mb-1">
-                Segundos (seg)
-              </span>
-              <input
-                type="number"
-                min={0}
-                max={59}
-                placeholder="0"
-                value={form.duration_seconds}
-                onChange={(e) =>
-                  onChange({
-                    ...form,
-                    duration_seconds: Math.min(
-                      59,
-                      Math.max(0, parseInt(e.target.value, 10) || 0)
-                    ),
-                  })
-                }
-                className="bg-white! font-mono font-bold text-center"
-              />
-            </div>
-          </div>
-
-          <div className="flex flex-wrap items-center justify-between gap-2 mt-3 pt-2.5 border-t border-[#ece2dc]">
-            <div className="flex flex-wrap items-center gap-1.5">
-              <span className="text-[11px] text-[#736872] mr-1">
-                Adicionar rápido:
-              </span>
+          <div className="flex flex-wrap items-center justify-between gap-1.5 pt-1.5 border-t border-[#ece2dc]">
+            <div className="flex flex-wrap items-center gap-1">
               {[
                 { label: "+15m", sec: 900 },
                 { label: "+30m", sec: 1800 },
@@ -551,20 +553,10 @@ export default function TaskFormFields({
                 })
               }
             >
-              Zerar tempo
+              Zerar
             </button>
           </div>
         </div>
-      </div>
-
-      {/* Observações / Notas Forenses */}
-      <div className="v6-field full">
-        <label>Observações / Notas Forenses</label>
-        <textarea
-          placeholder="Registe observações, próximos passos ou informações relevantes..."
-          value={form.description}
-          onChange={(e) => onChange({ ...form, description: e.target.value })}
-        />
       </div>
     </div>
   );

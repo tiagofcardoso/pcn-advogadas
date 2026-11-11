@@ -5674,11 +5674,11 @@ PCN Advogadas · Plataforma Forense`;
             className="v6-modal-backdrop"
             onClick={() => setIsNewTaskModalOpen(false)}
           >
-            <div className="v6-modal" onClick={(e) => e.stopPropagation()}>
-              <div className="flex items-start justify-between gap-3 pb-3.5 mb-4 border-b border-[#efe6e0]">
+            <div className="v6-modal wide" onClick={(e) => e.stopPropagation()}>
+              <div className="flex items-start justify-between gap-3 pb-2.5 mb-3 border-b border-[#efe6e0]">
                 <div>
-                  <h3 className="m-0! p-0! border-0! text-[20px]">Nova Tarefa PCN</h3>
-                  <p className="text-xs text-[#736872] mt-1">
+                  <h3 className="m-0! p-0! border-0! text-[19px]">Nova Tarefa PCN</h3>
+                  <p className="text-[11.5px] text-[#736872] mt-0.5">
                     Preencha os dados da diligência, prazos, estado e acompanhamento.
                   </p>
                 </div>
@@ -5728,12 +5728,12 @@ PCN Advogadas · Plataforma Forense`;
             className="v6-modal-backdrop"
             onClick={() => setSelectedTaskForDetails(null)}
           >
-            <div className="v6-modal" onClick={(e) => e.stopPropagation()}>
+            <div className="v6-modal wide" onClick={(e) => e.stopPropagation()}>
               {/* Cabeçalho Executivo da Tarefa */}
-              <div className="flex items-start justify-between gap-3 pb-3.5 mb-4 border-b border-[#efe6e0]">
+              <div className="flex items-start justify-between gap-3 pb-2.5 mb-3 border-b border-[#efe6e0]">
                 <div>
                   <div className="flex flex-wrap items-center gap-2">
-                    <h3 className="m-0! p-0! border-0! text-[20px]">Editar Tarefa</h3>
+                    <h3 className="m-0! p-0! border-0! text-[19px]">Editar Tarefa</h3>
                     <span className="v6-badge wait">
                       ◈{" "}
                       {effectiveClients.find((c) => c.id === detailsForm.client_id)?.name ||
