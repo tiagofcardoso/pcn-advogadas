@@ -22,6 +22,10 @@ import {
   normalizeEventType,
 } from "@/lib/v6Helpers";
 import {
+  AlertTriangle,
+  Calendar,
+  CheckSquare,
+  Clock,
   ExternalLink,
   Plus,
   Settings,
@@ -57,7 +61,6 @@ export default function CalendarV6Tab({
   const [isConfigOpen, setIsConfigOpen] = useState<boolean>(false);
   const [configInput, setConfigInput] = useState<string>("");
 
-  const [eventFilter, setEventFilter] = useState<string>("Todos");
   const [isBirthdayModalOpen, setIsBirthdayModalOpen] = useState<boolean>(false);
   const [isEventModalOpen, setIsEventModalOpen] = useState<boolean>(false);
   const [editingEvent, setEditingEvent] = useState<CalendarEvent | null>(null);
@@ -197,33 +200,222 @@ export default function CalendarV6Tab({
     return found ? found.name : uid;
   };
 
-  const filteredEvents = events
-    .filter(
-      (e) =>
-        eventFilter === "Todos" || normalizeEventType(e.type) === eventFilter
-    )
-    .filter(
-      (e) =>
-        !globalQuery ||
-        e.title.toLowerCase().includes(globalQuery.toLowerCase()) ||
-        (e.subtitle || "").toLowerCase().includes(globalQuery.toLowerCase()) ||
-        e.type.toLowerCase().includes(globalQuery.toLowerCase())
-    )
-    .sort((a, b) =>
-      `${a.date} ${a.time}`.localeCompare(`${b.date} ${b.time}`)
+  const todayIso = new Date().toISOString().slice(0, 10);
+
+  const matchesSearch = (e: CalendarEvent) =>
+    !globalQuery ||
+    e.title.toLowerCase().includes(globalQuery.toLowerCase()) ||
+    (e.subtitle || "").toLowerCase().includes(globalQuery.toLowerCase()) ||
+    e.type.toLowerCase().includes(globalQuery.toLowerCase());
+
+  const sortClosestFirst = (a: CalendarEvent, b: CalendarEvent) =>
+    `${a.date} ${a.time}`.localeCompare(`${b.date} ${b.time}`);
+
+  const scopedEvents = events.filter(matchesSearch).sort(sortClosestFirst);
+
+  const compromissosEvents = scopedEvents.filter((e) => {
+    const t = normalizeEventType(e.type);
+    return t === "Compromisso" || t === "Diligência";
+  });
+
+  const prazosEvents = scopedEvents.filter(
+    (e) => normalizeEventType(e.type) === "Prazo"
+  );
+
+  const prazosInternosEvents = scopedEvents.filter(
+    (e) => normalizeEventType(e.type) === "Prazo de tarefa"
+  );
+
+  const feriasEvents = scopedEvents.filter(
+    (e) => normalizeEventType(e.type) === "Férias / Ausência"
+  );
+
+  const overduePrazosCount = [...prazosEvents, ...prazosInternosEvents].filter(
+    (e) => e.date && e.date < todayIso
+  ).length;
+
+  const scrollToSection = (id: string) => {
+    if (typeof document === "undefined") return;
+    const el = document.getElementById(id);
+    if (el) el.scrollIntoView({ behavior: "smooth", block: "start" });
+  };
+
+  const openGoogleTemplate = (evt: CalendarEvent) => {
+    const iso = evt.date.replace(/-/g, "");
+    const gUrl = `https://calendar.google.com/calendar/render?action=TEMPLATE&text=${encodeURIComponent(
+      evt.title
+    )}&dates=${iso}/${iso}&details=${encodeURIComponent(
+      evt.subtitle || evt.type
+    )}`;
+    window.open(gUrl, "_blank");
+  };
+
+  const renderAgendaSection = (params: {
+    id: string;
+    title: string;
+    subtitle: string;
+    items: CalendarEvent[];
+    emptyText: string;
+    newButtonLabel?: string;
+    newButtonType?: CalendarEvent["type"];
+    isInternalTaskDeadline?: boolean;
+  }) => {
+    const {
+      id,
+      title,
+      subtitle,
+      items,
+      emptyText,
+      newButtonLabel,
+      newButtonType,
+      isInternalTaskDeadline,
+    } = params;
+
+    return (
+      <div id={id} className="v6-card space-y-2.5">
+        <div className="flex flex-wrap items-center justify-between gap-2 border-b border-[#f0eae6] pb-2">
+          <div>
+            <div className="flex items-center gap-2">
+              <h2 className="font-serif-v6 text-[18px] text-[#28202a] m-0">
+                {title}
+              </h2>
+              <span className="v6-badge text-[11px]! py-0.5! px-2!">
+                {items.length}
+              </span>
+            </div>
+            <p className="text-[11.5px] text-[#776f73] mt-0.5">{subtitle}</p>
+          </div>
+
+          {newButtonLabel && newButtonType && (
+            <button
+              type="button"
+              onClick={() => openNewEventModal(newButtonType)}
+              className="v6-btn sm primary"
+            >
+              <Plus className="w-3.5 h-3.5" />
+              <span>{newButtonLabel}</span>
+            </button>
+          )}
+        </div>
+
+        <div className="overflow-x-auto">
+          <table className="w-full text-left border-collapse text-[12.5px]">
+            <thead>
+              <tr className="bg-[#f7f3ef] text-[#50454b] border-b border-[#f0eae6] text-[11.5px]">
+                <th className="py-2 px-3">Data</th>
+                <th className="py-2 px-3">Hora</th>
+                <th className="py-2 px-3">
+                  {isInternalTaskDeadline ? "Tarefa / Cliente" : "Assunto"}
+                </th>
+                <th className="py-2 px-3">Responsável</th>
+                <th className="py-2 px-3">Situação</th>
+                <th className="py-2 px-3 text-right">Ações</th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-[#f0eae6]">
+              {items.map((evt) => {
+                const isOverdue = Boolean(evt.date && evt.date < todayIso);
+                const isToday = evt.date === todayIso;
+                return (
+                  <tr
+                    key={evt.id}
+                    className={`hover:bg-[#fdfbf9] ${
+                      isOverdue ? "bg-[#fff5f5]" : isToday ? "bg-[#fffdf5]" : ""
+                    }`}
+                  >
+                    <td className="py-2.5 px-3 whitespace-nowrap font-medium">
+                      {formatIsoDatePt(evt.date)}
+                    </td>
+                    <td className="py-2.5 px-3 font-semibold text-[#59083e] whitespace-nowrap">
+                      {evt.time}
+                    </td>
+                    <td className="py-2.5 px-3">
+                      <div className="font-semibold text-[#28202a]">
+                        {evt.title}
+                      </div>
+                      {evt.subtitle && (
+                        <div className="text-[11px] text-[#776f73]">
+                          {evt.subtitle}
+                        </div>
+                      )}
+                    </td>
+                    <td className="py-2.5 px-3 whitespace-nowrap">
+                      {resolveUserName(evt.owner)}
+                    </td>
+                    <td className="py-2.5 px-3 whitespace-nowrap">
+                      {isOverdue ? (
+                        <span className="v6-badge urgent text-[11px]! py-0.5! px-2!">
+                          Ultrapassado
+                        </span>
+                      ) : isToday ? (
+                        <span className="v6-badge wait text-[11px]! py-0.5! px-2!">
+                          Hoje
+                        </span>
+                      ) : (
+                        <span className="v6-badge start text-[11px]! py-0.5! px-2!">
+                          Agendado
+                        </span>
+                      )}
+                    </td>
+                    <td className="py-2.5 px-3 text-right whitespace-nowrap">
+                      <div className="inline-flex items-center gap-1.5">
+                        <button
+                          type="button"
+                          onClick={() => openEditEventModal(evt)}
+                          className="v6-btn py-1 px-2.5 text-xs"
+                        >
+                          Editar
+                        </button>
+                        {!evt.id.startsWith("task_deadline_") && (
+                          <button
+                            type="button"
+                            onClick={() => onDeleteEvent(evt.id)}
+                            className="v6-btn danger py-1 px-2 text-xs"
+                            title="Eliminar registo da agenda"
+                          >
+                            <Trash2 className="w-3.5 h-3.5" />
+                          </button>
+                        )}
+                        <button
+                          type="button"
+                          onClick={() => openGoogleTemplate(evt)}
+                          className="v6-btn gold py-1 px-2.5 text-xs"
+                          title="Enviar para o Google Calendar"
+                        >
+                          + Google
+                        </button>
+                      </div>
+                    </td>
+                  </tr>
+                );
+              })}
+              {items.length === 0 && (
+                <tr>
+                  <td
+                    colSpan={6}
+                    className="py-5 text-center text-xs text-[#776f73] italic"
+                  >
+                    {emptyText}
+                  </td>
+                </tr>
+              )}
+            </tbody>
+          </table>
+        </div>
+      </div>
     );
+  };
 
   return (
-    <div className="space-y-5">
+    <div className="space-y-3.5">
       {/* Header */}
-      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2.5">
         <div>
-          <h1 className="font-serif-v6 text-[31px] text-[#28202a] leading-tight">
+          <h1 className="font-serif-v6 text-[26px] text-[#28202a] leading-tight">
             Agendas e Prazos
           </h1>
-          <p className="text-[#6e6569] text-sm mt-0.5">
-            Calendário Google partilhado PCN · Compromissos · Prazos ·
-            Aniversários PCN
+          <p className="text-[#6e6569] text-xs mt-0.5">
+            Calendário Google partilhado PCN · Compromissos · Prazos · Prazos Internos PCN
           </p>
         </div>
 
@@ -231,7 +423,7 @@ export default function CalendarV6Tab({
           <button
             type="button"
             onClick={() => openNewEventModal("Compromisso")}
-            className="v6-btn primary"
+            className="v6-btn primary sm"
           >
             <Plus className="w-3.5 h-3.5" />
             <span>+ Novo registo</span>
@@ -240,7 +432,7 @@ export default function CalendarV6Tab({
           <button
             type="button"
             onClick={() => setIsConfigOpen(!isConfigOpen)}
-            className="v6-btn"
+            className="v6-btn sm"
             title="Configurar conta ou calendário Google partilhado"
           >
             <Settings className="w-3.5 h-3.5 text-[#59083e]" />
@@ -249,20 +441,106 @@ export default function CalendarV6Tab({
         </div>
       </div>
 
-      {/* Birthday Banner Alert (Moved from Minha Área de Trabalho to Calendar) */}
+      {/* Barra de Estatísticas Compacta (Estilo V5.2 antes do Google Calendar) */}
+      <div className="grid grid-cols-2 lg:grid-cols-4 gap-2.5">
+        <button
+          type="button"
+          onClick={() => scrollToSection("sec-compromissos")}
+          className="v6-card py-2! px-3.5! flex items-center gap-2.5 text-left hover:border-[#c5a467] transition-colors cursor-pointer"
+        >
+          <span className="w-8 h-8 rounded-full bg-[#f4e3ef] text-[#7b175f] flex items-center justify-center shrink-0">
+            <Calendar className="w-4 h-4" />
+          </span>
+          <div className="min-w-0">
+            <div className="text-[20px] font-semibold text-[#59083e] leading-none">
+              {compromissosEvents.length}
+            </div>
+            <div className="text-[11px] text-[#6e6569] truncate mt-0.5">
+              Compromissos (Agenda PCN)
+            </div>
+          </div>
+        </button>
+
+        <button
+          type="button"
+          onClick={() => scrollToSection("sec-prazos")}
+          className="v6-card py-2! px-3.5! flex items-center gap-2.5 text-left hover:border-[#c5a467] transition-colors cursor-pointer"
+        >
+          <span className="w-8 h-8 rounded-full bg-[#fff0d6] text-[#805c17] flex items-center justify-center shrink-0">
+            <Clock className="w-4 h-4" />
+          </span>
+          <div className="min-w-0">
+            <div className="text-[20px] font-semibold text-[#59083e] leading-none">
+              {prazosEvents.length}
+            </div>
+            <div className="text-[11px] text-[#6e6569] truncate mt-0.5">
+              Prazos PCN
+            </div>
+          </div>
+        </button>
+
+        <button
+          type="button"
+          onClick={() => scrollToSection("sec-prazos-internos")}
+          className="v6-card py-2! px-3.5! flex items-center gap-2.5 text-left hover:border-[#c5a467] transition-colors cursor-pointer"
+        >
+          <span className="w-8 h-8 rounded-full bg-[#e0eefc] text-[#2b5c85] flex items-center justify-center shrink-0">
+            <CheckSquare className="w-4 h-4" />
+          </span>
+          <div className="min-w-0">
+            <div className="text-[20px] font-semibold text-[#59083e] leading-none">
+              {prazosInternosEvents.length}
+            </div>
+            <div className="text-[11px] text-[#6e6569] truncate mt-0.5">
+              Prazos Internos PCN (Tarefas)
+            </div>
+          </div>
+        </button>
+
+        <button
+          type="button"
+          onClick={() => scrollToSection("sec-prazos-internos")}
+          className={`v6-card py-2! px-3.5! flex items-center gap-2.5 text-left transition-colors cursor-pointer ${
+            overduePrazosCount > 0
+              ? "border-[#f5c2c7]! bg-[#fff7f7]! hover:border-[#dc2626]!"
+              : "hover:border-[#c5a467]"
+          }`}
+        >
+          <span
+            className={`w-8 h-8 rounded-full flex items-center justify-center shrink-0 ${
+              overduePrazosCount > 0
+                ? "bg-[#fde8e8] text-[#9b2226]"
+                : "bg-[#e1f3d9] text-[#326421]"
+            }`}
+          >
+            <AlertTriangle className="w-4 h-4" />
+          </span>
+          <div className="min-w-0">
+            <div
+              className={`text-[20px] font-semibold leading-none ${
+                overduePrazosCount > 0 ? "text-[#9b2226]" : "text-[#326421]"
+              }`}
+            >
+              {overduePrazosCount}
+            </div>
+            <div className="text-[11px] text-[#6e6569] truncate mt-0.5">
+              Prazos Ultrapassados
+            </div>
+          </div>
+        </button>
+      </div>
+
+      {/* Birthday Banner Alert (compacto) */}
       {(birthdayClientsToday.length > 0 || clientsWithBirthday.length > 0) && (
-        <div className="bg-gradient-to-r from-[#f8f0f5] via-[#faf4eb] to-[#f4ead9] border border-[#e5d2b8] rounded-[13px] px-5 py-3.5 flex flex-col sm:flex-row sm:items-center justify-between gap-3 shadow-xs">
-          <div className="flex items-center gap-3">
-            <div className="w-10 h-10 rounded-full bg-[#59083e] text-[#e9c885] flex items-center justify-center text-lg shrink-0">
+        <div className="bg-gradient-to-r from-[#f8f0f5] via-[#faf4eb] to-[#f4ead9] border border-[#e5d2b8] rounded-[11px] px-4 py-2 flex flex-col sm:flex-row sm:items-center justify-between gap-2 shadow-2xs">
+          <div className="flex items-center gap-2.5 min-w-0">
+            <div className="w-7 h-7 rounded-full bg-[#59083e] text-[#e9c885] flex items-center justify-center text-sm shrink-0">
               🎂
             </div>
-            <div>
-              <span className="text-[10px] font-bold uppercase tracking-widest text-[#7b175f] block">
-                ANIVERSÁRIO PCN · CALENDÁRIO DE CLIENTES
-              </span>
+            <div className="min-w-0">
               {birthdayClientsToday.length > 0 ? (
-                <p className="text-sm font-bold text-[#28202a]">
-                  Hoje é aniversário de:{" "}
+                <p className="text-xs font-bold text-[#28202a] truncate">
+                  🎂 Aniversário hoje:{" "}
                   {birthdayClientsToday
                     .map(
                       (c) => `${c.name}${c.number ? ` (PCN ${c.number})` : ""}`
@@ -270,8 +548,8 @@ export default function CalendarV6Tab({
                     .join(", ")}
                 </p>
               ) : (
-                <p className="text-xs text-[#50454b]">
-                  Próximos aniversários registados:{" "}
+                <p className="text-xs text-[#50454b] truncate">
+                  <strong>Aniversários PCN:</strong>{" "}
                   {clientsWithBirthday
                     .map(
                       (c) =>
@@ -288,9 +566,9 @@ export default function CalendarV6Tab({
           <button
             type="button"
             onClick={() => setIsBirthdayModalOpen(true)}
-            className="v6-btn bg-white/90 text-xs shrink-0"
+            className="v6-btn sm bg-white/90 shrink-0"
           >
-            Ver todos os aniversários
+            Ver aniversários
           </button>
         </div>
       )}
@@ -397,139 +675,51 @@ export default function CalendarV6Tab({
             title="Calendário Google PCN Advogadas"
             style={{ border: 0 }}
             width="100%"
-            height="560"
+            height="430"
             frameBorder="0"
             scrolling="no"
           />
         </div>
       </div>
 
-      {/* V6 Registos da Agenda Table */}
-      <div className="v6-card space-y-3">
-        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
-          <h2 className="font-serif-v6 text-xl text-[#28202a] m-0">
-            Registos da Agenda Interna PCN
-          </h2>
+      {/* Secções Organizadas por Tipo (Estilo V5.2, data mais próxima no topo de cada secção) */}
+      {renderAgendaSection({
+        id: "sec-compromissos",
+        title: "Agenda PCN — Compromissos",
+        subtitle: "Reuniões, diligências e compromissos ordenados pela data mais próxima",
+        items: compromissosEvents,
+        emptyText: "Sem compromissos registados.",
+        newButtonLabel: "+ Novo compromisso",
+        newButtonType: "Compromisso",
+      })}
 
-          <div className="flex items-center gap-1.5 flex-wrap">
-            {[
-              "Todos",
-              "Compromisso",
-              "Diligência",
-              "Prazo",
-              "Prazo de tarefa",
-              "Férias / Ausência",
-            ].map((pill) => (
-              <button
-                key={pill}
-                type="button"
-                onClick={() => setEventFilter(pill)}
-                className={`px-3 py-1.5 rounded-full text-xs font-medium cursor-pointer transition-colors ${
-                  eventFilter === pill
-                    ? "bg-[#59083e] text-white"
-                    : "bg-white text-[#50454b] border border-[#e1d5d9] hover:border-[#c5a467]"
-                }`}
-              >
-                {pill}
-              </button>
-            ))}
-          </div>
-        </div>
+      {renderAgendaSection({
+        id: "sec-prazos",
+        title: "Prazos PCN",
+        subtitle: "Prazos gerais registados na agenda, ordenados do mais próximo ao mais distante",
+        items: prazosEvents,
+        emptyText: "Sem prazos gerais registados.",
+        newButtonLabel: "+ Novo prazo",
+        newButtonType: "Prazo",
+      })}
 
-        <div className="overflow-x-auto">
-          <table className="w-full text-left border-collapse text-[13px]">
-            <thead>
-              <tr className="bg-[#f7f3ef] text-[#50454b] border-b border-[#f0eae6]">
-                <th className="py-3 px-3">Data</th>
-                <th className="py-3 px-3">Hora</th>
-                <th className="py-3 px-3">Tipo</th>
-                <th className="py-3 px-3">Descrição</th>
-                <th className="py-3 px-3">Responsável</th>
-                <th className="py-3 px-3 text-right">Ações</th>
-              </tr>
-            </thead>
-            <tbody className="divide-y divide-[#f0eae6]">
-              {filteredEvents.map((evt) => (
-                <tr key={evt.id} className="hover:bg-[#fdfbf9]">
-                  <td className="py-3 px-3 whitespace-nowrap">
-                    {formatIsoDatePt(evt.date)}
-                  </td>
-                  <td className="py-3 px-3 font-semibold text-[#59083e]">
-                    {evt.time}
-                  </td>
-                  <td className="py-3 px-3">
-                    <span
-                      className={`v6-badge ${
-                        evt.type.includes("Prazo")
-                          ? "wait"
-                          : evt.type.includes("Férias")
-                          ? "start"
-                          : ""
-                      }`}
-                    >
-                      {evt.type}
-                    </span>
-                  </td>
-                  <td className="py-3 px-3">
-                    <div className="font-medium text-[#28202a]">{evt.title}</div>
-                    {evt.subtitle && (
-                      <div className="text-xs text-[#776f73]">{evt.subtitle}</div>
-                    )}
-                  </td>
-                  <td className="py-3 px-3">{resolveUserName(evt.owner)}</td>
-                  <td className="py-3 px-3 text-right whitespace-nowrap">
-                    <div className="inline-flex items-center gap-1.5">
-                      <button
-                        type="button"
-                        onClick={() => openEditEventModal(evt)}
-                        className="v6-btn py-1 px-2.5 text-xs"
-                      >
-                        Editar
-                      </button>
-                      {!evt.id.startsWith("task_deadline_") && (
-                        <button
-                          type="button"
-                          onClick={() => onDeleteEvent(evt.id)}
-                          className="v6-btn danger py-1 px-2 text-xs"
-                          title="Eliminar registo da agenda"
-                        >
-                          <Trash2 className="w-3.5 h-3.5" />
-                        </button>
-                      )}
-                      <button
-                        type="button"
-                        onClick={() => {
-                          const iso = evt.date.replace(/-/g, "");
-                          const gUrl = `https://calendar.google.com/calendar/render?action=TEMPLATE&text=${encodeURIComponent(
-                            evt.title
-                          )}&dates=${iso}/${iso}&details=${encodeURIComponent(
-                            evt.subtitle || evt.type
-                          )}`;
-                          window.open(gUrl, "_blank");
-                        }}
-                        className="v6-btn gold py-1 px-2.5 text-xs"
-                        title="Enviar para o Google Calendar"
-                      >
-                        + Google
-                      </button>
-                    </div>
-                  </td>
-                </tr>
-              ))}
-              {filteredEvents.length === 0 && (
-                <tr>
-                  <td
-                    colSpan={6}
-                    className="py-8 text-center text-xs text-[#776f73] italic"
-                  >
-                    Sem registos para o filtro selecionado.
-                  </td>
-                </tr>
-              )}
-            </tbody>
-          </table>
-        </div>
-      </div>
+      {renderAgendaSection({
+        id: "sec-prazos-internos",
+        title: "Prazos Internos PCN (Associados a Tarefas)",
+        subtitle: "Prazos das tarefas ativas do escritório, ordenados pela data limite mais próxima",
+        items: prazosInternosEvents,
+        emptyText: "Sem prazos internos associados a tarefas ativas.",
+        isInternalTaskDeadline: true,
+      })}
+
+      {feriasEvents.length > 0 &&
+        renderAgendaSection({
+          id: "sec-ferias",
+          title: "Férias / Ausências",
+          subtitle: "Ausências registadas na agenda da equipa",
+          items: feriasEvents,
+          emptyText: "Sem ausências registadas.",
+        })}
 
       {/* Modal: Aniversários PCN (Exact V6 dialog) */}
       {isBirthdayModalOpen && (
