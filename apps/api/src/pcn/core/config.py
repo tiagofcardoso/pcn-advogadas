@@ -75,6 +75,9 @@ class Settings(BaseSettings):
     SMTP_FROM: str = "notificacoes@pcnadvogadas.pt"
     RESEND_API_KEY: str | None = None
 
+    # ── Google Calendar (.ics) Feed ──
+    GOOGLE_CALENDAR_ICS_URL: str | None = None
+
     @field_validator("BACKEND_CORS_ORIGINS", mode="before")
     @classmethod
     def _split_origins(cls, value: object) -> object:

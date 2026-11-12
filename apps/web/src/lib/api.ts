@@ -636,6 +636,46 @@ export async function ackRedistributionNoticeApi(token: string, noticeId: string
   });
 }
 
+// ── Google Calendar iCal (.ics -> App) ──
+
+export async function getGoogleIcsConfigApi(token: string) {
+  return apiFetch<{
+    configured: boolean;
+    ics_url_masked?: string | null;
+    updated_at?: string | null;
+  }>("/agenda/google-ics/config", { token });
+}
+
+export async function updateGoogleIcsConfigApi(token: string, icsUrl: string) {
+  return apiFetch<{
+    configured: boolean;
+    ics_url_masked?: string | null;
+    updated_at?: string | null;
+  }>("/agenda/google-ics/config", {
+    method: "PUT",
+    token,
+    body: JSON.stringify({ ics_url: icsUrl }),
+  });
+}
+
+export async function getGoogleIcsEventsApi(token: string, forceRefresh = false) {
+  return apiFetch<{
+    configured: boolean;
+    synced_at: string;
+    error?: string | null;
+    events: Array<{
+      uid: string;
+      title: string;
+      subtitle?: string | null;
+      date: string;
+      time: string;
+      type: string;
+    }>;
+  }>(`/agenda/google-ics/events?force_refresh=${forceRefresh ? "true" : "false"}`, {
+    token,
+  });
+}
+
 
 
 

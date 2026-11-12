@@ -158,6 +158,9 @@ import {
   getRedistributedTaskIdsApi,
   createRedistributionNoticesApi,
   ackRedistributionNoticeApi,
+  getGoogleIcsConfigApi,
+  updateGoogleIcsConfigApi,
+  getGoogleIcsEventsApi,
 } from "@/lib/api";
 
 function formatIsoToEuropean(iso?: string): string {
@@ -422,6 +425,59 @@ export default function App() {
   // Search in Reports
   const [searchQuery, setSearchQuery] = useState<string>("");
   const [reportsData, setReportsData] = useState<any>(null);
+
+  // Google Calendar .ics -> App Auto-Sync State
+  const [googleIcsEvents, setGoogleIcsEvents] = useState<CalendarEvent[]>([]);
+  const [googleIcsConfigured, setGoogleIcsConfigured] = useState<boolean>(false);
+  const [googleIcsMaskedUrl, setGoogleIcsMaskedUrl] = useState<string | null>(null);
+  const [googleIcsSyncError, setGoogleIcsSyncError] = useState<string | null>(null);
+  const [googleIcsLastSyncedAt, setGoogleIcsLastSyncedAt] = useState<string | null>(null);
+  const [isSyncingGoogleIcs, setIsSyncingGoogleIcs] = useState<boolean>(false);
+
+  const syncGoogleIcsNow = async (token: string, forceRefresh = false) => {
+    if (!token) return;
+    setIsSyncingGoogleIcs(true);
+    try {
+      const [cfg, evRes] = await Promise.all([
+        getGoogleIcsConfigApi(token).catch(() => null),
+        getGoogleIcsEventsApi(token, forceRefresh).catch(() => null),
+      ]);
+      if (cfg) {
+        setGoogleIcsConfigured(Boolean(cfg.configured));
+        setGoogleIcsMaskedUrl(cfg.ics_url_masked || null);
+      }
+      if (evRes) {
+        setGoogleIcsConfigured(Boolean(evRes.configured));
+        setGoogleIcsSyncError(evRes.error || null);
+        setGoogleIcsLastSyncedAt(evRes.synced_at || null);
+        if (Array.isArray(evRes.events)) {
+          setGoogleIcsEvents(
+            evRes.events.map((ge) => ({
+              id: `gcal_${ge.uid}`,
+              title: ge.title,
+              subtitle: ge.subtitle || "Google Calendar",
+              date: ge.date,
+              time: ge.time || "09:00",
+              type: normalizeEventType(ge.type),
+              owner: "Google Calendar",
+              source: "google",
+            }))
+          );
+        }
+      }
+    } finally {
+      setIsSyncingGoogleIcs(false);
+    }
+  };
+
+  useEffect(() => {
+    if (!isAuthenticated || !authToken || !apiConnected) return;
+    syncGoogleIcsNow(authToken, false);
+    const id = setInterval(() => {
+      syncGoogleIcsNow(authToken, false);
+    }, 60000);
+    return () => clearInterval(id);
+  }, [isAuthenticated, authToken, apiConnected]);
 
   // Judicial Deadline Calculator State (Art. 138/139 CPC)
   const [calcStartDate, setCalcStartDate] = useState<string>("");
@@ -4531,7 +4587,19 @@ PCN Advogadas · Plataforma Forense`;
   const effectiveClients = clients;
   const effectiveTasks = tasks;
   const effectiveUsers = usersList && usersList.length > 0 ? usersList : INITIAL_USERS;
-  const unifiedEvents = buildUnifiedEvents(events, effectiveTasks, effectiveClients);
+  const baseUnifiedEvents = buildUnifiedEvents(events, effectiveTasks, effectiveClients);
+  const unifiedEvents: CalendarEvent[] = (() => {
+    if (googleIcsEvents.length === 0) return baseUnifiedEvents;
+    const existingKeys = new Set(
+      baseUnifiedEvents.map(
+        (e) => `${e.date}|${e.title.trim().toLowerCase()}`
+      )
+    );
+    const nonDuplicateGoogle = googleIcsEvents.filter(
+      (ge) => !existingKeys.has(`${ge.date}|${ge.title.trim().toLowerCase()}`)
+    );
+    return [...baseUnifiedEvents, ...nonDuplicateGoogle];
+  })();
 
   const filteredClientsList = effectiveClients.filter((c) => {
     const q = (globalQuery || clientSearchQuery).trim().toLowerCase();
@@ -5041,6 +5109,28 @@ PCN Advogadas · Plataforma Forense`;
               onEditClientBirthday={(c) => openEditClientModal(c)}
               onOpenNewEventModal={(type) => openQuickEventModal(type)}
               onEditEvent={(evt) => openEditEventFromAnyTab(evt)}
+              isAdmin={isAdmin}
+              googleIcsStatus={{
+                configured: googleIcsConfigured,
+                maskedUrl: googleIcsMaskedUrl,
+                error: googleIcsSyncError,
+                lastSyncedAt: googleIcsLastSyncedAt,
+                isSyncing: isSyncingGoogleIcs,
+              }}
+              onSaveGoogleIcsUrl={async (icsUrl) => {
+                if (!authToken || !apiConnected) {
+                  throw new Error("Sem ligação à API.");
+                }
+                const saved = await updateGoogleIcsConfigApi(authToken, icsUrl);
+                setGoogleIcsConfigured(Boolean(saved.configured));
+                setGoogleIcsMaskedUrl(saved.ics_url_masked || null);
+                await syncGoogleIcsNow(authToken, true);
+              }}
+              onSyncGoogleIcs={async () => {
+                if (authToken && apiConnected) {
+                  await syncGoogleIcsNow(authToken, true);
+                }
+              }}
             />
           )}
 

@@ -98,6 +98,7 @@ export interface CalendarEvent {
   time: string; // HH:MM
   type: "Compromisso" | "Diligência" | "Prazo" | "Prazo de tarefa" | "Férias / Ausência";
   owner: string;
+  source?: "app" | "google" | "task";
 }
 
 export interface FeeNoteCustomLine {
